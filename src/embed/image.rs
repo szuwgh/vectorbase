@@ -1,6 +1,9 @@
 use crate::util::error::GyResult;
 use image::{self, ImageFormat};
-use std::io::{BufRead, BufReader, BufWriter, Seek};
+use std::{
+    io::{BufRead, BufReader, BufWriter, Seek},
+    path::PathBuf,
+};
 use tract_onnx::prelude::*;
 
 type TractSimplePlan = SimplePlan<TypedFact, Box<dyn TypedOp>, Graph<TypedFact, Box<dyn TypedOp>>>;
@@ -11,23 +14,27 @@ struct ImageSize {
 }
 
 pub(crate) struct ModelConfig {
-    model_path: String,
+    model_path: PathBuf,
     image_size: ImageSize,
     layer_name: Option<String>,
 }
 
 pub(crate) struct DefaultImageEmbed {
     model: TractSimplePlan,
+    config: ModelConfig,
 }
 
 impl DefaultImageEmbed {
-    pub(crate) fn new(m: ModelConfig) -> Self {
-        let model = Self::load_model(m);
-        Self { model }
+    pub(crate) fn new(config: ModelConfig) -> Self {
+        let model = Self::load_model(&config);
+        Self {
+            model: model,
+            config: config,
+        }
     }
 
     //加载模型
-    fn load_model(m: ModelConfig) -> TractSimplePlan {
+    fn load_model(m: &ModelConfig) -> TractSimplePlan {
         let mut model = tract_onnx::onnx()
             .model_for_path(m.model_path.clone())
             .expect("not found file")
@@ -45,11 +52,55 @@ impl DefaultImageEmbed {
         model.into_optimized().unwrap().into_runnable().unwrap()
     }
 
-    pub(crate) fn embed<R: BufRead + Seek>(r: R, image_ext: &str) -> GyResult<()> {
+    pub(crate) fn embed<R: BufRead + Seek>(&self, r: R, image_ext: &str) -> GyResult<Vec<f32>> {
         let image_format =
             ImageFormat::from_extension(image_ext).ok_or("not surrport extension")?;
         let im = image::load(r, image_format)?;
+        let resized = image::imageops::resize(
+            &im,
+            self.config.image_size.width as u32,
+            self.config.image_size.height as u32,
+            ::image::imageops::FilterType::Triangle,
+        );
+        let image: Tensor = tract_ndarray::Array4::from_shape_fn(
+            (
+                1,
+                3,
+                self.config.image_size.width,
+                self.config.image_size.height,
+            ),
+            |(_, c, y, x)| {
+                let mean = [0.485, 0.456, 0.406][c];
+                let std = [0.229, 0.224, 0.225][c];
+                (resized[(x as _, y as _)][c] as f32 / 255.0 - mean) / std
+            },
+        )
+        .into();
+        let result = self.model.run(tvec!(image))?;
+        let best: Vec<f32> = result[0].to_array_view::<f32>()?.iter().cloned().collect();
+        Ok(best)
+    }
+}
 
-        Ok(())
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_embed() {
+        let dirPath = std::env::current_dir().unwrap();
+
+        println!("{:?}", dirPath);
+        let model_path = dirPath.join("model").join("mobilenetv2-7.onnx");
+        let config = ModelConfig {
+            model_path: model_path,
+            image_size: ImageSize {
+                width: 224,
+                height: 224,
+            },
+            layer_name: Some("Reshape_103".to_string()),
+        };
+
+        let model = DefaultImageEmbed::new(config);
     }
 }
