@@ -3,6 +3,7 @@ mod embed;
 mod field;
 mod memory;
 mod util;
+mod tokenize;
 
 use crate::document::Document;
 use crate::memory::mem;
