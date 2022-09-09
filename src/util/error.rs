@@ -1,8 +1,6 @@
-use image::error::ImageError;
 use std::io;
 use std::io::Error as IOError;
 use thiserror::Error;
-use tract_onnx::tract_core::anyhow;
 
 pub type GyResult<T> = Result<T, GyError>;
 
@@ -51,17 +49,5 @@ impl From<IOError> for GyError {
 impl From<GyError> for String {
     fn from(e: GyError) -> Self {
         format!("{}", e)
-    }
-}
-
-impl From<ImageError> for GyError {
-    fn from(e: ImageError) -> Self {
-        GyError::Unexpected(e.to_string())
-    }
-}
-
-impl From<anyhow::Error> for GyError {
-    fn from(e: anyhow::Error) -> Self {
-        GyError::Unexpected(e.to_string())
     }
 }

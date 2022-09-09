@@ -1,23 +1,25 @@
-mod document;
-mod embed;
-mod field;
 mod memory;
-mod util;
+mod query;
+mod schema;
 mod tokenize;
+mod util;
 
-use crate::document::Document;
 use crate::memory::mem;
+use crate::query::Query;
+use crate::schema::document::Document;
 
-pub struct IndexWriter {
+pub struct Indexer {
     mem_table: mem::MemTable,
 }
 
-impl IndexWriter {
-    fn new() -> IndexWriter {
+impl Indexer {
+    fn new() -> Indexer {
         Self {
             mem_table: mem::MemTable::default(),
         }
     }
+
+    fn add_document(doc: &Document) {}
 }
 
 pub struct IndexDiskWriter {}
@@ -25,5 +27,5 @@ pub struct IndexDiskWriter {}
 struct IndexReader {}
 
 impl IndexReader {
-    fn search(doc: &Document) {}
+    fn search(query: &Query) {}
 }

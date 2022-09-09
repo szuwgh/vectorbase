@@ -1,1 +1,1 @@
-struct Query {}
+pub struct Query {}

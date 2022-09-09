@@ -1,10 +1,12 @@
 [package]
-name = "gypaetus"
+name = "embed"
 version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+image = "0.23.14"
 thiserror = "1.0"
-hnsw = "0.11.0"
+tract = "0.15.8"
+tract-onnx = "0.15.8"

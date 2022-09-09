@@ -55,7 +55,7 @@ impl DefaultImageEmbed {
     pub(crate) fn embed<R: BufRead + Seek>(&self, r: R, image_ext: &str) -> GyResult<Vec<f32>> {
         let image_format =
             ImageFormat::from_extension(image_ext).ok_or("not surrport extension")?;
-        let im = image::load(r, image_format)?;
+        let im = image::load(r, image_format)?.to_rgb8();
         let resized = image::imageops::resize(
             &im,
             self.config.image_size.width as u32,
@@ -85,6 +85,8 @@ impl DefaultImageEmbed {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::File;
+    use std::io::BufReader;
 
     #[test]
     fn test_embed() {
@@ -100,7 +102,10 @@ mod tests {
             },
             layer_name: Some("Reshape_103".to_string()),
         };
-
+        let image_path = dirPath.join("images").join("cat.jpeg");
         let model = DefaultImageEmbed::new(config);
+        let f = File::open(image_path).unwrap(); // Read<[u8]>
+        let f = BufReader::new(f);
+        let res = model.embed(f, "jpeg").unwrap();
     }
 }
