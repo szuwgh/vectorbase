@@ -1,4 +1,4 @@
-use crate::util::error::GyResult;
+use crate::error::GyResult;
 use image::{self, ImageFormat};
 use std::{
     io::{BufRead, BufReader, BufWriter, Seek},
@@ -13,19 +13,19 @@ struct ImageSize {
     pub height: usize,
 }
 
-pub(crate) struct ModelConfig {
+pub struct ModelConfig {
     model_path: PathBuf,
     image_size: ImageSize,
     layer_name: Option<String>,
 }
 
-pub(crate) struct DefaultImageEmbed {
+pub struct DefaultImageEmbed {
     model: TractSimplePlan,
     config: ModelConfig,
 }
 
 impl DefaultImageEmbed {
-    pub(crate) fn new(config: ModelConfig) -> Self {
+    pub fn new(config: ModelConfig) -> Self {
         let model = Self::load_model(&config);
         Self {
             model: model,
@@ -52,7 +52,7 @@ impl DefaultImageEmbed {
         model.into_optimized().unwrap().into_runnable().unwrap()
     }
 
-    pub(crate) fn embed<R: BufRead + Seek>(&self, r: R, image_ext: &str) -> GyResult<Vec<f32>> {
+    pub fn embed<R: BufRead + Seek>(&self, r: R, image_ext: &str) -> GyResult<Vec<f32>> {
         let image_format =
             ImageFormat::from_extension(image_ext).ok_or("not surrport extension")?;
         let im = image::load(r, image_format)?.to_rgb8();

@@ -1,5 +1,6 @@
-pub(crate) mod image;
-use crate::util::error::GyResult;
+pub mod error;
+pub mod image;
+use crate::error::GyResult;
 use std::io::{BufRead, BufReader, BufWriter, Seek};
 
 pub trait ImageEmbed {

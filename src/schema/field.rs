@@ -1,11 +1,16 @@
 //域接口定义
 pub struct Field {
-    name: String,
-    value: Value,
+    pub(crate) name: String,
+    pub(crate) value: Value,
 }
 
 impl Field {
-    fn text(name: &str) {}
+    fn text(name: &str, text: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            value: Value::Str(text.to_string()),
+        }
+    }
 
     fn new(name: &str, value: Value) -> Self {
         Self {
