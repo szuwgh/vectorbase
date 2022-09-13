@@ -4,22 +4,28 @@ mod schema;
 mod tokenize;
 mod util;
 
-use crate::memory::mem;
+use crate::memory::MemTable;
 use crate::query::Query;
-use crate::schema::document::Document;
+use crate::schema::Document;
+
+pub struct IndexConfig {}
 
 pub struct Indexer {
-    mem_table: mem::MemTable,
+    mem_table: MemTable,
+    doc_id: u64,
 }
 
 impl Indexer {
     fn new() -> Indexer {
         Self {
-            mem_table: mem::MemTable::default(),
+            mem_table: MemTable::default(),
+            doc_id: 0,
         }
     }
 
-    fn add_document(doc: &Document) {}
+    fn add_document(&mut self, doc: &Document) {
+        self.mem_table.index_document(doc);
+    }
 }
 
 pub struct IndexDiskWriter {}

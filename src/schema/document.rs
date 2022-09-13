@@ -1,7 +1,7 @@
-use super::field::Field;
+use super::Field;
 
 pub(crate) struct Document {
-    fields: Vec<Field>,
+    pub(crate) fields: Vec<Field>,
 }
 
 impl Document {
@@ -12,7 +12,7 @@ impl Document {
         Self { fields: Vec::new() }
     }
 
-    pub fn add(field: Field) {}
-
-    pub(crate) fn build() {}
+    pub fn add(&mut self, field: Field) {
+        self.fields.push(field);
+    }
 }
