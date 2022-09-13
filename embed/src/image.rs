@@ -90,10 +90,10 @@ mod tests {
 
     #[test]
     fn test_embed() {
-        let dirPath = std::env::current_dir().unwrap();
+        let dir_path = std::env::current_dir().unwrap();
 
-        println!("{:?}", dirPath);
-        let model_path = dirPath.join("model").join("mobilenetv2-7.onnx");
+        println!("{:?}", dir_path);
+        let model_path = dir_path.join("model").join("mobilenetv2-7.onnx");
         let config = ModelConfig {
             model_path: model_path,
             image_size: ImageSize {
@@ -102,7 +102,7 @@ mod tests {
             },
             layer_name: Some("Reshape_103".to_string()),
         };
-        let image_path = dirPath.join("images").join("cat.jpeg");
+        let image_path = dir_path.join("images").join("cat.jpeg");
         let model = DefaultImageEmbed::new(config);
         let f = File::open(image_path).unwrap(); // Read<[u8]>
         let f = BufReader::new(f);

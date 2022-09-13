@@ -1,3 +1,4 @@
+pub mod knn;
 mod memory;
 mod query;
 mod schema;
