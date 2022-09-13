@@ -8,15 +8,15 @@ use tract_onnx::prelude::*;
 
 type TractSimplePlan = SimplePlan<TypedFact, Box<dyn TypedOp>, Graph<TypedFact, Box<dyn TypedOp>>>;
 
-struct ImageSize {
+pub struct ImageSize {
     pub width: usize,
     pub height: usize,
 }
 
 pub struct ModelConfig {
-    model_path: PathBuf,
-    image_size: ImageSize,
-    layer_name: Option<String>,
+    pub model_path: PathBuf,
+    pub image_size: ImageSize,
+    pub layer_name: Option<String>,
 }
 
 pub struct DefaultImageEmbed {

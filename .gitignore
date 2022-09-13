@@ -19,3 +19,5 @@ Cargo.lock
 /pkg
 
 /embed/target
+
+/tests/target
