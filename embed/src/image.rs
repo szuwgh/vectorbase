@@ -1,8 +1,4 @@
-<<<<<<< HEAD
-use crate::util::error::GyResult;
-=======
 use crate::error::GyResult;
->>>>>>> 552a6b1108881e635c37b79112b4a44f67fe8bdc
 use image::{self, ImageFormat};
 use std::{
     io::{BufRead, BufReader, BufWriter, Seek},
@@ -17,31 +13,19 @@ struct ImageSize {
     pub height: usize,
 }
 
-<<<<<<< HEAD
-pub(crate) struct ModelConfig {
-=======
 pub struct ModelConfig {
->>>>>>> 552a6b1108881e635c37b79112b4a44f67fe8bdc
     model_path: PathBuf,
     image_size: ImageSize,
     layer_name: Option<String>,
 }
 
-<<<<<<< HEAD
-pub(crate) struct DefaultImageEmbed {
-=======
 pub struct DefaultImageEmbed {
->>>>>>> 552a6b1108881e635c37b79112b4a44f67fe8bdc
     model: TractSimplePlan,
     config: ModelConfig,
 }
 
 impl DefaultImageEmbed {
-<<<<<<< HEAD
-    pub(crate) fn new(config: ModelConfig) -> Self {
-=======
     pub fn new(config: ModelConfig) -> Self {
->>>>>>> 552a6b1108881e635c37b79112b4a44f67fe8bdc
         let model = Self::load_model(&config);
         Self {
             model: model,
@@ -68,11 +52,7 @@ impl DefaultImageEmbed {
         model.into_optimized().unwrap().into_runnable().unwrap()
     }
 
-<<<<<<< HEAD
-    pub(crate) fn embed<R: BufRead + Seek>(&self, r: R, image_ext: &str) -> GyResult<Vec<f32>> {
-=======
     pub fn embed<R: BufRead + Seek>(&self, r: R, image_ext: &str) -> GyResult<Vec<f32>> {
->>>>>>> 552a6b1108881e635c37b79112b4a44f67fe8bdc
         let image_format =
             ImageFormat::from_extension(image_ext).ok_or("not surrport extension")?;
         let im = image::load(r, image_format)?.to_rgb8();
