@@ -21,3 +21,5 @@ Cargo.lock
 /embed/target
 
 /tests/target
+
+/example/target

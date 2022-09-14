@@ -2,7 +2,9 @@ use super::KnnIndex;
 use hnsw::{Hnsw, Searcher};
 use rand_pcg::Pcg64;
 use space::{Metric, Neighbor};
-
+use std::iter::Sum;
+use std::marker::PhantomData;
+use std::ops::Sub;
 struct Euclidean;
 
 impl Metric<Vec<f64>> for Euclidean {
@@ -10,20 +12,20 @@ impl Metric<Vec<f64>> for Euclidean {
     fn distance(&self, a: &Vec<f64>, b: &Vec<f64>) -> u64 {
         a.iter()
             .zip(b.iter())
-            .map(|(&a, &b)| (a - b).powi(2))
+            .map(|(&a1, &b1)| (a1 - b1).powi(2))
             .sum::<f64>()
             .sqrt()
-            .to_bits()
+            .to_bits() as u64
     }
 }
 
-pub struct HNSW {
-    hnsw: Hnsw<Euclidean, Vec<f64>, Pcg64, 12, 24>,
+pub struct HNSW<T> {
+    hnsw: Hnsw<Euclidean, Vec<T>, Pcg64, 12, 24>,
     searcher: Searcher<u64>,
 }
 
-impl HNSW {
-    fn new() -> HNSW {
+impl<T> HNSW<T> {
+    pub fn new() -> HNSW<T> {
         Self {
             hnsw: Hnsw::new(Euclidean),
             searcher: Searcher::default(),
@@ -31,12 +33,15 @@ impl HNSW {
     }
 }
 
-impl KnnIndex for HNSW {
-    fn insert(&mut self, k: Vec<f64>, v: u64) {
+impl<T> KnnIndex<T> for HNSW<T>
+where
+    T: Sub + Sum,
+{
+    fn insert(&mut self, k: Vec<T>, v: u64) {
         self.hnsw.insert(k, &mut self.searcher);
     }
 
-    fn near(&mut self, k: &Vec<f64>) -> Vec<Neighbor<u64>> {
+    fn near(&mut self, k: &Vec<T>) -> Vec<Neighbor<u64>> {
         let mut neighbors = [Neighbor {
             index: !0,
             distance: !0,
@@ -52,7 +57,7 @@ mod tests {
     use hnsw::{Hnsw, Searcher};
     use rand_pcg::Pcg64;
 
-    fn test_hnsw() -> (Hnsw<Euclidean, Vec<f64>, Pcg64, 12, 24>, Searcher<u64>) {
+    fn test_hnsw() -> (Hnsw<Euclidean, Vec<f32>, Pcg64, 12, 24>, Searcher<u64>) {
         let mut searcher = Searcher::default();
         let mut hnsw = Hnsw::new(Euclidean);
 
@@ -83,7 +88,7 @@ mod tests {
             distance: !0,
         }; 8];
         let n = hnsw.nearest(
-            &[0.0f64, 1.0, 0.0, 0.0][..].to_vec(),
+            &[0.0f32, 1.0, 0.0, 0.0][..].to_vec(),
             24,
             searcher,
             &mut neighbors,

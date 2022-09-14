@@ -9,17 +9,19 @@ pub(crate) trait TextIndex {
 }
 
 #[derive(Default)]
-pub(crate) struct MemTable {
+pub(crate) struct MemTable<T> {
     indexs: HashMap<String, Box<dyn TextIndex + 'static>>,
-    vectors: HashMap<String, Box<dyn KnnIndex + 'static>>,
+    vectors: HashMap<String, Box<dyn KnnIndex<T> + 'static>>,
     doc_id: u64,
 }
 
-impl MemTable {
+impl<T> MemTable<T> {
+    //   fn new<T>() -> MemTable {}
+
     pub(crate) fn index_document(&mut self, doc: &Document) {
         for field in doc.fields.iter() {
             match &field.value {
-                Value::Vector(v) => {
+                Value::Vector64(v) => {
                     //  let index = self.vectors.get(&field.name).get_or_insert(value);
                 }
                 _ => {}

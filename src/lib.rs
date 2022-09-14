@@ -11,13 +11,13 @@ use crate::schema::Document;
 
 pub struct IndexConfig {}
 
-pub struct Indexer {
-    mem_table: MemTable,
+pub struct Indexer<T> {
+    mem_table: MemTable<T>,
     doc_id: u64,
 }
 
-impl Indexer {
-    fn new() -> Indexer {
+impl<T> Indexer<T> {
+    fn new() -> Indexer<T> {
         Self {
             mem_table: MemTable::default(),
             doc_id: 0,

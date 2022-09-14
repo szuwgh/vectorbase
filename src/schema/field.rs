@@ -23,7 +23,8 @@ pub enum Value {
     Str(String),
     Tag(String),
     Column(Column),
-    Vector(Vec<f32>),
+    Vector64(Vec<f64>),
+    Vector32(Vec<f32>),
     Bytes(Vec<u8>),
     U64(u64),
 }
