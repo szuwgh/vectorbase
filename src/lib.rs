@@ -8,16 +8,18 @@ mod util;
 use crate::memory::MemTable;
 use crate::query::Query;
 use crate::schema::Document;
-
+use knn::hnsw::Euclidean;
+use knn::HNSW;
+use space::Metric;
 pub struct IndexConfig {}
 
-pub struct Indexer<T> {
-    mem_table: MemTable<T>,
+pub struct IndexTextWriter {
+    mem_table: MemTable,
     doc_id: u64,
 }
 
-impl<T> Indexer<T> {
-    fn new() -> Indexer<T> {
+impl IndexTextWriter {
+    fn new() -> IndexTextWriter {
         Self {
             mem_table: MemTable::default(),
             doc_id: 0,
@@ -29,10 +31,20 @@ impl<T> Indexer<T> {
     }
 }
 
-pub struct IndexDiskWriter {}
+struct IndexDiskWriter {}
 
 struct IndexReader {}
 
 impl IndexReader {
     fn search(query: &Query) {}
+}
+
+pub struct IndexVectorWriter<I> {
+    vector: I,
+}
+
+impl<T> IndexVectorWriter<T> {
+    fn new() {
+        //let mut hnsw = HNSW::<Euclidean, Vec<f32>>::new(Euclidean);
+    }
 }

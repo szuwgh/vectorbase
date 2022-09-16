@@ -1,53 +1,58 @@
 use super::KnnIndex;
+
 use hnsw::{Hnsw, Searcher};
+use num_traits::float::Float;
 use rand_pcg::Pcg64;
 use space::{Metric, Neighbor};
 use std::iter::Sum;
-use std::marker::PhantomData;
-use std::ops::Sub;
-struct Euclidean;
+pub struct Euclidean;
 
-impl Metric<Vec<f64>> for Euclidean {
+impl<T> Metric<Vec<T>> for Euclidean
+where
+    T: Float + Sum,
+{
     type Unit = u64;
-    fn distance(&self, a: &Vec<f64>, b: &Vec<f64>) -> u64 {
+    fn distance(&self, a: &Vec<T>, b: &Vec<T>) -> u64 {
         a.iter()
             .zip(b.iter())
             .map(|(&a1, &b1)| (a1 - b1).powi(2))
-            .sum::<f64>()
+            .sum::<T>()
             .sqrt()
-            .to_bits() as u64
+            .to_u64()
+            .unwrap()
     }
 }
 
-pub struct HNSW<T> {
-    hnsw: Hnsw<Euclidean, Vec<T>, Pcg64, 12, 24>,
-    searcher: Searcher<u64>,
+pub struct HNSW<M, T>
+where
+    M: Metric<T>,
+{
+    hnsw: Hnsw<M, T, Pcg64, 12, 24>,
+    searcher: Searcher<M::Unit>,
 }
 
-impl<T> HNSW<T> {
-    pub fn new() -> HNSW<T> {
+impl<M, T> HNSW<M, T>
+where
+    M: Metric<T>,
+{
+    pub fn new(m: M) -> HNSW<M, T> {
         Self {
-            hnsw: Hnsw::new(Euclidean),
+            hnsw: Hnsw::new(m),
             searcher: Searcher::default(),
         }
     }
 }
 
-impl<T> KnnIndex<T> for HNSW<T>
+impl<M, T> HNSW<M, T>
 where
-    T: Sub + Sum,
+    M: Metric<T>,
 {
-    fn insert(&mut self, k: Vec<T>, v: u64) {
+    fn insert(&mut self, k: T, v: u64) {
         self.hnsw.insert(k, &mut self.searcher);
     }
 
-    fn near(&mut self, k: &Vec<T>) -> Vec<Neighbor<u64>> {
-        let mut neighbors = [Neighbor {
-            index: !0,
-            distance: !0,
-        }; 8];
-        self.hnsw.nearest(k, 24, &mut self.searcher, &mut neighbors);
-        neighbors.to_vec()
+    fn near(&mut self, k: &T, dest: &mut [Neighbor<M::Unit>]) {
+        self.hnsw.nearest(k, 24, &mut self.searcher, dest);
     }
 }
 
@@ -94,5 +99,31 @@ mod tests {
             &mut neighbors,
         );
         println!("{:?}", n);
+    }
+
+    #[test]
+    fn test_my_hnsw() {
+        let mut hnsw = HNSW::<Euclidean, Vec<f32>>::new(Euclidean);
+
+        let features = [
+            &[0.0, 0.0, 0.0, 1.0],
+            &[0.0, 0.0, 1.0, 0.0],
+            &[0.0, 1.0, 0.0, 0.0],
+            &[1.0, 0.0, 0.0, 0.0],
+            &[0.0, 0.0, 1.0, 1.0],
+            &[0.0, 1.0, 1.0, 0.0],
+            &[1.0, 1.0, 0.0, 0.0],
+            &[1.0, 0.0, 0.0, 1.0],
+        ];
+
+        for &feature in &features {
+            hnsw.insert(feature.to_vec(), 0);
+        }
+        let mut neighbors = [Neighbor {
+            index: !0,
+            distance: !0u64,
+        }; 8];
+        hnsw.near(&[0.0f32, 1.0, 0.0, 0.0][..].to_vec(), &mut neighbors);
+        println!("{:?}", neighbors);
     }
 }

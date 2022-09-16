@@ -10,4 +10,6 @@ thiserror = "1.0"
 hnsw = "0.11.0"
 space = { version = "0.17.0", default-features = false, features = ["alloc"] }
 rand_pcg = { version = "0.3.1", features = ["serde1"] }
+num-traits = "0.2"
+sp-std = "4.0.0"
 
