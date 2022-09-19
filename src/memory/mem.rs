@@ -1,4 +1,4 @@
-use crate::knn::KnnIndex;
+use crate::ann::KnnIndex;
 use crate::schema::field::Value;
 use crate::schema::Document;
 
