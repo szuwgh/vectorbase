@@ -1,8 +1,8 @@
 use embed::image::DefaultImageEmbed;
 use embed::image::ImageSize;
 use embed::image::ModelConfig;
-use gypaetus::knn::KnnIndex;
-use gypaetus::knn::HNSW;
+use gypaetus::ann::AnnIndex;
+use gypaetus::ann::HNSW;
 use std::fs::{self, File};
 use std::io::BufReader;
 
@@ -30,7 +30,7 @@ fn main() {
         .unwrap()
         .map(|r| r.unwrap())
         .collect();
-    files.sort_by_key(|dir| dir.file_name());
+    files.sort_by_key(|dir| dir.file_name()); 
     for file in files {
         //let file = entry.unwrap();
         let image_path = &image_path.join(file.file_name());

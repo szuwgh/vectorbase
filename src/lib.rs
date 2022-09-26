@@ -27,6 +27,8 @@ impl IndexWriter {
     fn add_document(&mut self, doc: &Document) {
         self.mem_table.index_document(doc);
     }
+
+    
 }
 
 struct IndexDiskWriter {}

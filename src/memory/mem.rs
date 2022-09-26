@@ -1,4 +1,4 @@
-use crate::ann::KnnIndex;
+use crate::ann::AnnIndex;
 use crate::schema::field::Value;
 use crate::schema::Document;
 
@@ -15,7 +15,6 @@ pub(crate) struct MemTable {
 }
 
 impl MemTable {
-    //   fn new<T>() -> MemTable {}
     pub(crate) fn index_document(&mut self, doc: &Document) {
         for field in doc.fields.iter() {
             match &field.value {
