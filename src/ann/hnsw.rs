@@ -101,7 +101,7 @@ impl HNSW {
 
         while candidates.len() > 0 {
             let c = candidates.pop().unwrap();
-            let d = results.pop().unwrap();
+            let d = results.top().unwrap();
             //从candidates中选择距离查询点最近的点c，和results中距离查询点最远的点d进行比较，如果c和查询点q的距离大于d和查询点q的距离，则结束查询
             if c.d > d.d {
                 break;
@@ -114,6 +114,10 @@ impl HNSW {
                 if !visited_set.contains_key(&n) {
                     visited_set.insert(n, n);
                     let dist = distance(&q, self.nodes.get(n).unwrap().p.borrow());
+                    let top_d = results.top().unwrap();
+                    if results.len() < self.ef_construction{
+                        results.push()
+                    }
                 }
             }
         }
