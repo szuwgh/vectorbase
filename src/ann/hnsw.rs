@@ -105,11 +105,13 @@ impl HNSW {
     // 检查每个neighbors的连接数，如果大于Mmax，则需要缩减连接到最近邻的Mmax个
     fn connect_neighbor(&self, cur_id: usize, mut candidates: BinaryHeap<Neighbor>, level: usize) {
         let maxl = self.M;
-        let selected_neighbors: Vec<usize> = vec![0usize; candidates.len()];
+        let mut selected_neighbors: Vec<usize> = vec![0usize; candidates.len()];
         while let Some(n) = candidates.pop() {
             selected_neighbors.push(n.id);
         }
-        
+        selected_neighbors.reverse();
+        //检查cur_id 个邻居的 邻居 是否超标
+        for n in selected_neighbors.iter() {}
     }
 
     fn get_neighbors_nodes(&self, n: usize, level: usize) -> impl Iterator<Item = usize> + '_ {
