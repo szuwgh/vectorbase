@@ -2,6 +2,7 @@ use core::cmp::Ordering;
 use num_traits::Float;
 use rand::prelude::ThreadRng;
 use rand::Rng;
+use std::borrow::BorrowMut;
 use std::collections::BinaryHeap;
 use std::collections::HashSet;
 use std::{
@@ -10,6 +11,7 @@ use std::{
 };
 #[derive(Default)]
 struct Node {
+    id: usize,
     level: usize,
     neighbors: Vec<Vec<usize>>,
     p: Vec<f32>,
@@ -99,19 +101,68 @@ impl HNSW {
         }
 
         //从curlevel依次开始往下，每一层寻找离data_point最接近的ef_construction_（构建HNSW是可指定）个节点构成候选集
-        for level in (0..core::cmp::min(cur_level, current_max_layer)).rev() {}
+        for level in (0..core::cmp::min(cur_level, current_max_layer)).rev() {
+            //在每层选择
+            let x = self.search_at_layer(&q, self.ef_construction, ep, level);
+        }
+    }
+
+    fn get_node(&self, x: usize) -> &Node {
+        self.nodes.get(x).unwrap()
+    }
+
+    fn get_node_mut(&mut self, x: usize) -> &mut Node {
+        self.nodes.get_mut(x).unwrap()
     }
 
     // 检查每个neighbors的连接数，如果大于Mmax，则需要缩减连接到最近邻的Mmax个
-    fn connect_neighbor(&self, cur_id: usize, mut candidates: BinaryHeap<Neighbor>, level: usize) {
+    fn connect_neighbor(
+        &mut self,
+        cur_id: usize,
+        mut candidates: BinaryHeap<Neighbor>,
+        level: usize,
+    ) {
         let maxl = self.M;
         let mut selected_neighbors: Vec<usize> = vec![0usize; candidates.len()];
         while let Some(n) = candidates.pop() {
             selected_neighbors.push(n.id);
         }
         selected_neighbors.reverse();
-        //检查cur_id 个邻居的 邻居 是否超标
-        for n in selected_neighbors.iter() {}
+        //检查cur_id 的邻居的 邻居 是否超标
+        for n in selected_neighbors.iter() {
+            let l = {
+                let node = self.get_node_mut(*n);
+                if node.neighbors.len() < level + 1 {
+                    for _ in node.neighbors.len()..=level {
+                        node.neighbors.push(Vec::with_capacity(maxl));
+                    }
+                }
+                let x = node.neighbors.get_mut(level).unwrap();
+                x.push(cur_id);
+                x.len()
+            };
+            //如果邻居大于最大邻居数 需要调整
+            if l > maxl {
+                let mut result_set: BinaryHeap<Neighbor> = BinaryHeap::with_capacity(maxl);
+                {
+                    let p = self.get_node(*n).p.borrow();
+                    for x in self.get_neighbors_nodes(*n, level) {
+                        result_set.push(Neighbor {
+                            id: x,
+                            d: -distance(p, self.get_node(x).p.borrow()),
+                        });
+                    }
+                }
+                self.get_neighbors_by_heuristic_closest_frist(&mut result_set, self.M);
+                let neighbors = self.get_node_mut(*n).neighbors.get_mut(level).unwrap();
+                neighbors.clear();
+                for x in result_set.iter() {
+                    neighbors.push(x.id);
+                }
+                neighbors.reverse();
+            }
+        }
+        self.nodes[cur_id].neighbors[level] = selected_neighbors;
     }
 
     fn get_neighbors_nodes(&self, n: usize, level: usize) -> impl Iterator<Item = usize> + '_ {
@@ -119,9 +170,10 @@ impl HNSW {
         node.get_neighbors(level)
     }
 
+    // 返回 result 从远到近
     fn search_at_layer(
         &mut self,
-        q: Vec<f32>,
+        q: &[f32],
         ef_construction: usize,
         ep: Neighbor,
         level: usize,
@@ -155,7 +207,7 @@ impl HNSW {
                 }
                 //不存在则加入visitedset
                 visited_set.insert(n);
-                let dist = distance(&q, self.nodes.get(n).unwrap().p.borrow());
+                let dist = distance(q, self.nodes.get(n).unwrap().p.borrow());
                 let top_d = results.peek().unwrap();
                 //如果results未满，则把所有的e都加入candidates、results
 
@@ -171,6 +223,50 @@ impl HNSW {
             });
         }
         results
+    }
+
+    fn get_neighbors_by_heuristic_closest_frist(&mut self, w: &mut BinaryHeap<Neighbor>, M: usize) {
+        if w.len() <= M {
+            return;
+        }
+        let mut temp_list: BinaryHeap<Neighbor> = BinaryHeap::with_capacity(w.len());
+        let mut result: BinaryHeap<Neighbor> = BinaryHeap::new();
+        // let mut w: BinaryHeap<Neighbor> = BinaryHeap::with_capacity(candidates.len());
+        // while let Some(e) = candidates.pop() {
+        //     w.push(Neighbor { id: e.id, d: -e.d });
+        // }
+
+        while w.len() > 0 {
+            if result.len() >= M {
+                break;
+            }
+            //从w中提取q得最近邻 e
+            let e = w.pop().unwrap();
+            let dist = -e.d;
+            //如果e和q的距离比e和R中的其中一个元素的距离更小，就把e加入到result中
+            if result
+                .iter()
+                .map(|r| distance(self.nodes[r.id].p.borrow(), &self.nodes[e.id].p))
+                .any(|x| dist < x)
+            {
+                result.push(e);
+            } else {
+                temp_list.push(e);
+            }
+        }
+        while result.len() < M {
+            if let Some(e) = temp_list.pop() {
+                result.push(e);
+            } else {
+                break;
+            }
+        }
+        result.iter().for_each(|item| {
+            w.push(Neighbor {
+                id: item.id,
+                d: -item.d,
+            })
+        });
     }
 
     // 探索式寻找最近邻
@@ -226,7 +322,7 @@ impl HNSW {
     fn search(&mut self) {}
 }
 
-fn distance(a: &Vec<f32>, b: &Vec<f32>) -> f32 {
+fn distance(a: &[f32], b: &[f32]) -> f32 {
     a.iter()
         .zip(b.iter())
         .map(|(&a1, &b1)| (a1 - b1).powi(2))
