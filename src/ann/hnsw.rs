@@ -11,7 +11,7 @@ use std::{
 };
 #[derive(Default)]
 struct Node {
-    id: usize,
+    //   id: usize,
     level: usize,
     neighbors: Vec<Vec<usize>>,
     p: Vec<f32>,
@@ -45,6 +45,7 @@ impl Eq for Neighbor {}
 
 pub struct HNSW {
     enter_point: usize,
+    max_layer: usize,
     ef_construction: usize,
     rng: ThreadRng,
     level_mut: f64,
@@ -57,6 +58,7 @@ impl HNSW {
     fn new(M: usize) -> HNSW {
         Self {
             enter_point: 0,
+            max_layer: 0,
             ef_construction: 400,
             rng: rand::thread_rng(),
             level_mut: 1f64 / ((M as f64).ln()),
@@ -71,7 +73,35 @@ impl HNSW {
         ((-(x * self.level_mut).ln()).floor()) as usize
     }
 
-    fn insert(&mut self, q: Vec<f32>, id: u32) {
+    fn search(&self, q: Vec<f32>, K: usize) -> Vec<Neighbor> {
+        let current_max_layer = self.max_layer;
+        let mut ep = Neighbor {
+            id: self.enter_point,
+            d: distance(self.nodes.get(self.enter_point).unwrap().p.borrow(), &q),
+        };
+        let mut changed = true;
+        for level in (0..current_max_layer).rev() {
+            changed = true;
+            while changed {
+                changed = false;
+                for i in self.get_neighbors_nodes(ep.id, level) {
+                    let d = distance(self.nodes.get(self.enter_point).unwrap().p.borrow(), &q);
+                    if d < ep.d {
+                        ep.id = i;
+                        ep.d = d;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        let mut x = self.search_at_layer(&q, self.ef_construction, ep, 0);
+        while x.len() > K {
+            x.pop();
+        }
+        x.into_sorted_vec()
+    }
+
+    fn insert(&mut self, q: Vec<f32>, id: usize) {
         let cur_level = self.get_random_level();
         let ep_id = self.enter_point;
         let current_max_layer = self.nodes.get(ep_id).unwrap().level;
@@ -100,10 +130,27 @@ impl HNSW {
             }
         }
 
+        if self.nodes.len() < new_id + 1 {
+            self.nodes.reserve(new_id + 1);
+        }
+        self.nodes.insert(
+            new_id,
+            Node {
+                level: cur_level,
+                neighbors: Vec::new(),
+                p: q,
+            },
+        );
         //从curlevel依次开始往下，每一层寻找离data_point最接近的ef_construction_（构建HNSW是可指定）个节点构成候选集
         for level in (0..core::cmp::min(cur_level, current_max_layer)).rev() {
-            //在每层选择
+            //在每层选择data_point最接近的ef_construction_（构建HNSW是可指定）个节点构成候选集
             let x = self.search_at_layer(&q, self.ef_construction, ep, level);
+            //连接邻居
+            self.connect_neighbor(new_id, x, level)
+        }
+        if current_max_layer > self.max_layer {
+            self.max_layer = current_max_layer;
+            self.enter_point = new_id;
         }
     }
 
@@ -115,7 +162,7 @@ impl HNSW {
         self.nodes.get_mut(x).unwrap()
     }
 
-    // 检查每个neighbors的连接数，如果大于Mmax，则需要缩减连接到最近邻的Mmax个
+    //连接邻居
     fn connect_neighbor(
         &mut self,
         cur_id: usize,
@@ -141,7 +188,7 @@ impl HNSW {
                 x.push(cur_id);
                 x.len()
             };
-            //如果邻居大于最大邻居数 需要调整
+            //检查每个neighbors的连接数，如果大于Mmax，则需要缩减连接到最近邻的Mmax个
             if l > maxl {
                 let mut result_set: BinaryHeap<Neighbor> = BinaryHeap::with_capacity(maxl);
                 {
@@ -172,7 +219,7 @@ impl HNSW {
 
     // 返回 result 从远到近
     fn search_at_layer(
-        &mut self,
+        &self,
         q: &[f32],
         ef_construction: usize,
         ep: Neighbor,
@@ -231,11 +278,6 @@ impl HNSW {
         }
         let mut temp_list: BinaryHeap<Neighbor> = BinaryHeap::with_capacity(w.len());
         let mut result: BinaryHeap<Neighbor> = BinaryHeap::new();
-        // let mut w: BinaryHeap<Neighbor> = BinaryHeap::with_capacity(candidates.len());
-        // while let Some(e) = candidates.pop() {
-        //     w.push(Neighbor { id: e.id, d: -e.d });
-        // }
-
         while w.len() > 0 {
             if result.len() >= M {
                 break;
@@ -318,8 +360,6 @@ impl HNSW {
             })
         });
     }
-
-    fn search(&mut self) {}
 }
 
 fn distance(a: &[f32], b: &[f32]) -> f32 {
@@ -362,7 +402,8 @@ mod tests {
         heap.push(Neighbor { id: 0, d: 10.0 });
         heap.push(Neighbor { id: 2, d: 9.0 });
         heap.push(Neighbor { id: 1, d: 15.0 });
-        println!("{:?}", heap.peek()); //
-        println!("{:?}", heap);
+        println!("{:?}", heap.into_sorted_vec()); //
+                                                  //  println!("{:?}", heap.peek()); //
+                                                  //   println!("{:?}", heap);
     }
 }
