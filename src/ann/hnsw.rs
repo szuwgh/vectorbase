@@ -3,6 +3,7 @@ use num_traits::Float;
 use rand::prelude::ThreadRng;
 use rand::Rng;
 use std::borrow::BorrowMut;
+use std::cmp::max;
 use std::collections::BinaryHeap;
 use std::collections::HashSet;
 use std::{
@@ -11,7 +12,7 @@ use std::{
 };
 #[derive(Default)]
 struct Node {
-    //   id: usize,
+    //id: usize,
     level: usize,
     neighbors: Vec<Vec<usize>>,
     p: Vec<f32>,
@@ -47,11 +48,13 @@ pub struct HNSW {
     enter_point: usize,
     max_layer: usize,
     ef_construction: usize,
+    M: usize,
+    M0: usize,
+    n_items: usize,
     rng: ThreadRng,
     level_mut: f64,
     nodes: Vec<Node>,
-    features: Vec<Vec<f32>>,
-    M: usize,
+    // features: Vec<Vec<f32>>,
 }
 
 impl HNSW {
@@ -62,9 +65,15 @@ impl HNSW {
             ef_construction: 400,
             rng: rand::thread_rng(),
             level_mut: 1f64 / ((M as f64).ln()),
-            nodes: Vec::new(),
-            features: Vec::new(),
+            nodes: vec![Node {
+                level: 0,
+                neighbors: Vec::new(),
+                p: Vec::new(),
+            }],
+            //features: Vec::new(),
             M: M,
+            M0: M * 2,
+            n_items: 0,
         }
     }
 
@@ -73,7 +82,7 @@ impl HNSW {
         ((-(x * self.level_mut).ln()).floor()) as usize
     }
 
-    fn search(&self, q: Vec<f32>, K: usize) -> Vec<Neighbor> {
+    fn search(&self, q: &[f32], K: usize) -> Vec<Neighbor> {
         let current_max_layer = self.max_layer;
         let mut ep = Neighbor {
             id: self.enter_point,
@@ -101,11 +110,11 @@ impl HNSW {
         x.into_sorted_vec()
     }
 
-    fn insert(&mut self, q: Vec<f32>, id: usize) {
+    fn insert(&mut self, q: Vec<f32>) {
         let cur_level = self.get_random_level();
         let ep_id = self.enter_point;
         let current_max_layer = self.nodes.get(ep_id).unwrap().level;
-        let new_id = id;
+        let new_id = self.n_items;
 
         //起始点
         let mut ep = Neighbor {
@@ -113,14 +122,13 @@ impl HNSW {
             d: distance(self.nodes.get(ep_id).unwrap().p.borrow(), &q),
         };
         let mut changed = true;
-
         //那么从当前图的从最高层逐层往下寻找直至节点的层数+1停止，寻找到离data_point最近的节点，作为下面一层寻找的起始点
         for level in (cur_level..current_max_layer).rev() {
             changed = true;
             while changed {
                 changed = false;
                 for i in self.get_neighbors_nodes(ep.id, level) {
-                    let d = distance(self.nodes.get(ep_id).unwrap().p.borrow(), &q);
+                    let d = distance(self.get_node(ep_id).p.borrow(), &q);
                     if d < ep.d {
                         ep.id = i;
                         ep.d = d;
@@ -130,24 +138,22 @@ impl HNSW {
             }
         }
 
-        if self.nodes.len() < new_id + 1 {
-            self.nodes.reserve(new_id + 1);
-        }
-        self.nodes.insert(
-            new_id,
-            Node {
-                level: cur_level,
-                neighbors: Vec::new(),
-                p: q,
-            },
-        );
+        let mut new_node = Node {
+            //id: new_id,
+            level: cur_level,
+            neighbors: vec![Vec::new(); cur_level],
+            p: q,
+        };
         //从curlevel依次开始往下，每一层寻找离data_point最接近的ef_construction_（构建HNSW是可指定）个节点构成候选集
         for level in (0..core::cmp::min(cur_level, current_max_layer)).rev() {
             //在每层选择data_point最接近的ef_construction_（构建HNSW是可指定）个节点构成候选集
-            let x = self.search_at_layer(&q, self.ef_construction, ep, level);
+            let x = self.search_at_layer(&new_node.p, self.ef_construction, ep, level);
             //连接邻居
-            self.connect_neighbor(new_id, x, level)
+            self.connect_neighbor(new_id, x, level);
         }
+        self.nodes.push(new_node);
+        self.n_items += 1;
+
         if current_max_layer > self.max_layer {
             self.max_layer = current_max_layer;
             self.enter_point = new_id;
@@ -155,11 +161,11 @@ impl HNSW {
     }
 
     fn get_node(&self, x: usize) -> &Node {
-        self.nodes.get(x).unwrap()
+        self.nodes.get(x).expect("get node fail")
     }
 
     fn get_node_mut(&mut self, x: usize) -> &mut Node {
-        self.nodes.get_mut(x).unwrap()
+        self.nodes.get_mut(x).expect("get mut node fail")
     }
 
     //连接邻居
@@ -168,8 +174,9 @@ impl HNSW {
         cur_id: usize,
         mut candidates: BinaryHeap<Neighbor>,
         level: usize,
-    ) {
-        let maxl = self.M;
+    ) -> Vec<usize> {
+        let maxl = if level == 0 { self.M0 } else { self.M };
+
         let mut selected_neighbors: Vec<usize> = vec![0usize; candidates.len()];
         while let Some(n) = candidates.pop() {
             selected_neighbors.push(n.id);
@@ -209,7 +216,7 @@ impl HNSW {
                 neighbors.reverse();
             }
         }
-        self.nodes[cur_id].neighbors[level] = selected_neighbors;
+        selected_neighbors
     }
 
     fn get_neighbors_nodes(&self, n: usize, level: usize) -> impl Iterator<Item = usize> + '_ {
@@ -239,7 +246,8 @@ impl HNSW {
         // 从candidates中选择距离查询点最近的点c
         while let Some(c) = candidates.pop() {
             let d = results.peek().unwrap();
-            // 从candidates中选择距离查询点最近的点c，和results中距离查询点最远的点d进行比较，如果c和查询点q的距离大于d和查询点q的距离，则结束查询
+            // 从candidates中选择距离查询点最近的点c，和results中距离查询点最远的点d进行比较，
+            // 如果c和查询点q的距离大于d和查询点q的距离，则结束查询
             if -c.d > d.d {
                 break;
             }
@@ -376,7 +384,7 @@ mod tests {
     use rand::{thread_rng, Rng};
 
     #[test]
-    fn test_hnsw() {
+    fn test_rng() {
         let mut rng = rand::thread_rng();
         let x: f64 = rng.gen();
         println!("x = {x}");
@@ -390,8 +398,9 @@ mod tests {
     fn test_hnsw_rand_level() {
         let mut hnsw = HNSW::new(32);
         println!("{}", hnsw.level_mut);
-        for _ in 0..100000 {
+        for x in 0..100 {
             let x1 = hnsw.get_random_level();
+            println!("x1 = {x1}");
         }
     }
 
@@ -405,5 +414,28 @@ mod tests {
         println!("{:?}", heap.into_sorted_vec()); //
                                                   //  println!("{:?}", heap.peek()); //
                                                   //   println!("{:?}", heap);
+    }
+
+    #[test]
+    fn test_hnsw_search() {
+        let mut hnsw = HNSW::new(32);
+
+        let features = [
+            &[0.0, 0.0, 0.0, 1.0],
+            &[0.0, 0.0, 1.0, 0.0],
+            &[0.0, 1.0, 0.0, 0.0],
+            &[1.0, 0.0, 0.0, 0.0],
+            &[0.0, 0.0, 1.0, 1.0],
+            &[0.0, 1.0, 1.0, 0.0],
+            &[1.0, 1.0, 0.0, 0.0],
+            &[1.0, 0.0, 0.0, 1.0],
+        ];
+
+        for &feature in &features {
+            hnsw.insert(feature.to_vec());
+        }
+
+        let neighbors = hnsw.search(&[0.0f32, 1.0, 0.0, 0.0][..].to_vec(), 8);
+        println!("{:?}", neighbors);
     }
 }

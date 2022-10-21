@@ -1,5 +1,6 @@
 pub mod annoy;
 pub mod hnsw;
+mod hnsw2;
 pub use self::hnsw::HNSW;
 
 pub trait AnnIndex<T, B> {
