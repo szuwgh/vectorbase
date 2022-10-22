@@ -144,14 +144,15 @@ impl HNSW {
             neighbors: vec![Vec::new(); cur_level],
             p: q,
         };
+        self.nodes.push(new_node);
         //从curlevel依次开始往下，每一层寻找离data_point最接近的ef_construction_（构建HNSW是可指定）个节点构成候选集
         for level in (0..core::cmp::min(cur_level, current_max_layer)).rev() {
             //在每层选择data_point最接近的ef_construction_（构建HNSW是可指定）个节点构成候选集
-            let x = self.search_at_layer(&new_node.p, self.ef_construction, ep, level);
+            let x = self.search_at_layer(&self.nodes[new_id].p, self.ef_construction, ep, level);
             //连接邻居
             self.connect_neighbor(new_id, x, level);
         }
-        self.nodes.push(new_node);
+
         self.n_items += 1;
 
         if current_max_layer > self.max_layer {
@@ -174,18 +175,19 @@ impl HNSW {
         cur_id: usize,
         mut candidates: BinaryHeap<Neighbor>,
         level: usize,
-    ) -> Vec<usize> {
+    ) {
         let maxl = if level == 0 { self.M0 } else { self.M };
 
-        let mut selected_neighbors: Vec<usize> = vec![0usize; candidates.len()];
-        while let Some(n) = candidates.pop() {
-            selected_neighbors.push(n.id);
+        let selected_neighbors = &mut self.get_node_mut(cur_id).neighbors[level]; //vec![0usize; candidates.len()]; // self.get_node_mut(cur_id); //vec![0usize; candidates.len()];
+        let sort_neighbors = candidates.into_sorted_vec();
+        for x in sort_neighbors.iter() {
+            selected_neighbors.push(x.id);
         }
         selected_neighbors.reverse();
         //检查cur_id 的邻居的 邻居 是否超标
-        for n in selected_neighbors.iter() {
+        for n in sort_neighbors.iter() {
             let l = {
-                let node = self.get_node_mut(*n);
+                let node = self.get_node_mut(n.id);
                 if node.neighbors.len() < level + 1 {
                     for _ in node.neighbors.len()..=level {
                         node.neighbors.push(Vec::with_capacity(maxl));
@@ -199,8 +201,8 @@ impl HNSW {
             if l > maxl {
                 let mut result_set: BinaryHeap<Neighbor> = BinaryHeap::with_capacity(maxl);
                 {
-                    let p = self.get_node(*n).p.borrow();
-                    for x in self.get_neighbors_nodes(*n, level) {
+                    let p = self.get_node(n.id).p.borrow();
+                    for x in self.get_neighbors_nodes(n.id, level) {
                         result_set.push(Neighbor {
                             id: x,
                             d: -distance(p, self.get_node(x).p.borrow()),
@@ -208,7 +210,7 @@ impl HNSW {
                     }
                 }
                 self.get_neighbors_by_heuristic_closest_frist(&mut result_set, self.M);
-                let neighbors = self.get_node_mut(*n).neighbors.get_mut(level).unwrap();
+                let neighbors = self.get_node_mut(n.id).neighbors.get_mut(level).unwrap();
                 neighbors.clear();
                 for x in result_set.iter() {
                     neighbors.push(x.id);
@@ -216,7 +218,6 @@ impl HNSW {
                 neighbors.reverse();
             }
         }
-        selected_neighbors
     }
 
     fn get_neighbors_nodes(&self, n: usize, level: usize) -> impl Iterator<Item = usize> + '_ {
