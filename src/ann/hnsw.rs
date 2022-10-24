@@ -77,6 +77,8 @@ impl HNSW {
         }
     }
 
+    fn print(&self) {}
+
     fn get_random_level(&mut self) -> usize {
         let x: f64 = self.rng.gen();
         ((-(x * self.level_mut).ln()).floor()) as usize
@@ -86,7 +88,7 @@ impl HNSW {
         let current_max_layer = self.max_layer;
         let mut ep = Neighbor {
             id: self.enter_point,
-            d: distance(self.nodes.get(self.enter_point).unwrap().p.borrow(), &q),
+            d: distance(self.get_node(self.enter_point).p.borrow(), &q),
         };
         let mut changed = true;
         for level in (0..current_max_layer).rev() {
@@ -94,7 +96,7 @@ impl HNSW {
             while changed {
                 changed = false;
                 for i in self.get_neighbors_nodes(ep.id, level) {
-                    let d = distance(self.nodes.get(self.enter_point).unwrap().p.borrow(), &q);
+                    let d = distance(self.get_node(self.enter_point).p.borrow(), &q);
                     if d < ep.d {
                         ep.id = i;
                         ep.d = d;
@@ -103,23 +105,24 @@ impl HNSW {
                 }
             }
         }
-        let mut x = self.search_at_layer(&q, self.ef_construction, ep, 0);
+        let mut x = self.search_at_layer(&q, ep, 0);
         while x.len() > K {
             x.pop();
         }
         x.into_sorted_vec()
     }
 
+    //插入
     fn insert(&mut self, q: Vec<f32>) {
         let cur_level = self.get_random_level();
         let ep_id = self.enter_point;
-        let current_max_layer = self.nodes.get(ep_id).unwrap().level;
+        let current_max_layer = self.get_node(ep_id).level;
         let new_id = self.n_items;
 
         //起始点
         let mut ep = Neighbor {
             id: self.enter_point,
-            d: distance(self.nodes.get(ep_id).unwrap().p.borrow(), &q),
+            d: distance(self.get_node(ep_id).p.borrow(), &q),
         };
         let mut changed = true;
         //那么从当前图的从最高层逐层往下寻找直至节点的层数+1停止，寻找到离data_point最近的节点，作为下面一层寻找的起始点
@@ -148,9 +151,9 @@ impl HNSW {
         //从curlevel依次开始往下，每一层寻找离data_point最接近的ef_construction_（构建HNSW是可指定）个节点构成候选集
         for level in (0..core::cmp::min(cur_level, current_max_layer)).rev() {
             //在每层选择data_point最接近的ef_construction_（构建HNSW是可指定）个节点构成候选集
-            let x = self.search_at_layer(&self.nodes[new_id].p, self.ef_construction, ep, level);
+            let candidates = self.search_at_layer(&self.nodes[new_id].p, ep, level);
             //连接邻居
-            self.connect_neighbor(new_id, x, level);
+            self.connect_neighbor(new_id, candidates, level);
         }
 
         self.n_items += 1;
@@ -170,14 +173,8 @@ impl HNSW {
     }
 
     //连接邻居
-    fn connect_neighbor(
-        &mut self,
-        cur_id: usize,
-        mut candidates: BinaryHeap<Neighbor>,
-        level: usize,
-    ) {
+    fn connect_neighbor(&mut self, cur_id: usize, candidates: BinaryHeap<Neighbor>, level: usize) {
         let maxl = if level == 0 { self.M0 } else { self.M };
-
         let selected_neighbors = &mut self.get_node_mut(cur_id).neighbors[level]; //vec![0usize; candidates.len()]; // self.get_node_mut(cur_id); //vec![0usize; candidates.len()];
         let sort_neighbors = candidates.into_sorted_vec();
         for x in sort_neighbors.iter() {
@@ -221,18 +218,11 @@ impl HNSW {
     }
 
     fn get_neighbors_nodes(&self, n: usize, level: usize) -> impl Iterator<Item = usize> + '_ {
-        let node = self.nodes.get(n).unwrap();
-        node.get_neighbors(level)
+        self.get_node(n).get_neighbors(level)
     }
 
     // 返回 result 从远到近
-    fn search_at_layer(
-        &self,
-        q: &[f32],
-        ef_construction: usize,
-        ep: Neighbor,
-        level: usize,
-    ) -> BinaryHeap<Neighbor> {
+    fn search_at_layer(&self, q: &[f32], ep: Neighbor, level: usize) -> BinaryHeap<Neighbor> {
         let mut visited_set: HashSet<usize> = HashSet::new();
         let mut candidates: BinaryHeap<Neighbor> = BinaryHeap::new();
         let mut results: BinaryHeap<Neighbor> = BinaryHeap::new();
@@ -256,6 +246,10 @@ impl HNSW {
             // 把比d和q距离更近的e加入candidates、results中，如果results未满，
             // 则把所有的e都加入candidates、results
             // 如果results已满，则弹出和q距离最远的点
+            println!("id={} , level={}", c.id, level);
+            if self.get_node(c.id).neighbors.len() < level + 1 {
+                continue;
+            }
             self.get_neighbors_nodes(c.id, level).for_each(|n| {
                 //如果e已经在visitedset中存在则跳过，
                 if visited_set.contains(&n) {

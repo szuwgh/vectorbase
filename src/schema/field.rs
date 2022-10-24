@@ -25,6 +25,8 @@ pub enum Value {
     Column(Column),
     Bytes(Vec<u8>),
     U64(u64),
+    Vector32(Vec<f32>),
+    Vector64(Vec<f64>),
 }
 
 pub enum Column {
