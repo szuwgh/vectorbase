@@ -12,7 +12,7 @@ use std::{
 };
 #[derive(Default)]
 struct Node {
-    //id: usize,
+    id: usize,
     level: usize,
     neighbors: Vec<Vec<usize>>,
     p: Vec<f32>,
@@ -66,6 +66,7 @@ impl HNSW {
             rng: rand::thread_rng(),
             level_mut: 1f64 / ((M as f64).ln()),
             nodes: vec![Node {
+                id: 0,
                 level: 0,
                 neighbors: Vec::new(),
                 p: Vec::new(),
@@ -73,11 +74,15 @@ impl HNSW {
             //features: Vec::new(),
             M: M,
             M0: M * 2,
-            n_items: 0,
+            n_items: 1,
         }
     }
 
-    fn print(&self) {}
+    fn print(&self) {
+        for x in self.nodes.iter() {
+            println!("id:{},level:{:?},{:?}", x.id, x.level, x.neighbors);
+        }
+    }
 
     fn get_random_level(&mut self) -> usize {
         let x: f64 = self.rng.gen();
@@ -142,7 +147,7 @@ impl HNSW {
         }
 
         let mut new_node = Node {
-            //id: new_id,
+            id: new_id,
             level: cur_level,
             neighbors: vec![Vec::new(); cur_level],
             p: q,
@@ -151,15 +156,16 @@ impl HNSW {
         //从curlevel依次开始往下，每一层寻找离data_point最接近的ef_construction_（构建HNSW是可指定）个节点构成候选集
         for level in (0..core::cmp::min(cur_level, current_max_layer)).rev() {
             //在每层选择data_point最接近的ef_construction_（构建HNSW是可指定）个节点构成候选集
-            let candidates = self.search_at_layer(&self.nodes[new_id].p, ep, level);
-            //连接邻居
+            let candidates = self.search_at_layer(self.nodes[new_id].p.borrow(), ep, level);
+            println!("new_id:{},{},{:?}", new_id, level, candidates);
+            //连接邻居?
             self.connect_neighbor(new_id, candidates, level);
         }
 
         self.n_items += 1;
 
-        if current_max_layer > self.max_layer {
-            self.max_layer = current_max_layer;
+        if cur_level > self.max_layer {
+            self.max_layer = cur_level;
             self.enter_point = new_id;
         }
     }
@@ -191,21 +197,22 @@ impl HNSW {
                     }
                 }
                 let x = node.neighbors.get_mut(level).unwrap();
+                //将cur_id插入到 邻居的 neighbors中
                 x.push(cur_id);
                 x.len()
             };
-            //检查每个neighbors的连接数，如果大于Mmax，则需要缩减连接到最近邻的Mmax个
+            //检查每个neighbors的连接数，如果大于maxl，则需要缩减连接到最近邻的maxl个
             if l > maxl {
                 let mut result_set: BinaryHeap<Neighbor> = BinaryHeap::with_capacity(maxl);
-                {
-                    let p = self.get_node(n.id).p.borrow();
-                    for x in self.get_neighbors_nodes(n.id, level) {
-                        result_set.push(Neighbor {
-                            id: x,
-                            d: -distance(p, self.get_node(x).p.borrow()),
-                        });
-                    }
-                }
+
+                let p = self.get_node(n.id).p.borrow();
+                self.get_neighbors_nodes(n.id, level).for_each(|x| {
+                    result_set.push(Neighbor {
+                        id: x,
+                        d: -distance(p, self.get_node(x).p.borrow()),
+                    });
+                });
+
                 self.get_neighbors_by_heuristic_closest_frist(&mut result_set, self.M);
                 let neighbors = self.get_node_mut(n.id).neighbors.get_mut(level).unwrap();
                 neighbors.clear();
@@ -242,14 +249,13 @@ impl HNSW {
             if -c.d > d.d {
                 break;
             }
+            if self.get_node(c.id).neighbors.len() < level + 1 {
+                continue;
+            }
             // 查询c的所有邻居e，如果e已经在visitedset中存在则跳过，不存在则加入visitedset
             // 把比d和q距离更近的e加入candidates、results中，如果results未满，
             // 则把所有的e都加入candidates、results
             // 如果results已满，则弹出和q距离最远的点
-            println!("id={} , level={}", c.id, level);
-            if self.get_node(c.id).neighbors.len() < level + 1 {
-                continue;
-            }
             self.get_neighbors_nodes(c.id, level).for_each(|n| {
                 //如果e已经在visitedset中存在则跳过，
                 if visited_set.contains(&n) {
@@ -377,6 +383,7 @@ fn distance(a: &[f32], b: &[f32]) -> f32 {
 mod tests {
     use super::*;
     use rand::{thread_rng, Rng};
+    use std::collections::HashMap;
 
     #[test]
     fn test_rng() {
@@ -426,11 +433,21 @@ mod tests {
             &[1.0, 0.0, 0.0, 1.0],
         ];
 
-        for &feature in &features {
-            hnsw.insert(feature.to_vec());
+        let mut x: HashMap<usize, usize> = HashMap::new();
+        for _ in 0..=10000 {
+            let l = hnsw.get_random_level();
+            let i = x.entry(l).or_insert(0);
+            *i = *i + 1;
         }
+        println!("{:?}", x);
 
-        let neighbors = hnsw.search(&[0.0f32, 1.0, 0.0, 0.0][..].to_vec(), 8);
-        println!("{:?}", neighbors);
+        // for &feature in &features {
+        //     hnsw.insert(feature.to_vec());
+        // }
+
+        // hnsw.print();
+
+        // let neighbors = hnsw.search(&[0.0f32, 1.0, 0.0, 0.0][..].to_vec(), 8);
+        // println!("{:?}", neighbors);
     }
 }

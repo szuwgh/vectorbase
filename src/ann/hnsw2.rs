@@ -80,7 +80,7 @@ mod tests {
         }
         let mut neighbors = [Neighbor {
             index: !0,
-            distance: !0u64,
+            distance: 0u64,
         }; 8];
         hnsw.near(&[0.0f32, 1.0, 0.0, 0.0][..].to_vec(), &mut neighbors);
         println!("{:?}", neighbors);
