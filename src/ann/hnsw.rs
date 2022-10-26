@@ -1,20 +1,18 @@
 use core::cmp::Ordering;
-use num_traits::Float;
 use rand::prelude::ThreadRng;
 use rand::Rng;
-use std::borrow::BorrowMut;
-use std::cmp::max;
+use std::borrow::Borrow;
 use std::collections::BinaryHeap;
 use std::collections::HashSet;
-use std::{
-    borrow::Borrow,
-    f64::consts::{self, *},
-};
+use std::fs::File;
+use std::path::Path;
+
+use super::WriteDisk;
+use crate::util::error::GyResult;
 #[derive(Default)]
 struct Node {
-    id: usize,
     level: usize,
-    neighbors: Vec<Vec<usize>>,
+    neighbors: Vec<Vec<usize>>, //layer --> vec
     p: Vec<f32>,
 }
 
@@ -54,10 +52,33 @@ pub struct HNSW {
     rng: ThreadRng,
     level_mut: f64,
     nodes: Vec<Node>,
-    // features: Vec<Vec<f32>>,
 }
 
 impl HNSW {
+    fn load() {}
+
+    fn save(&self, filename: &Path) -> GyResult<()> {
+        let mut file = File::create(filename).unwrap();
+        let mut w = WriteDisk::new(file);
+        w.write_usize(self.M)?;
+        w.write_usize(self.M0)?;
+        w.write_usize(self.ef_construction)?;
+        w.write_f64(self.level_mut)?;
+        w.write_usize(self.max_layer)?;
+        w.write_usize(self.enter_point)?;
+        w.write_usize(self.nodes.len())?;
+        for n in self.nodes.iter() {
+            w.write_usize(n.p.len())?;
+            w.write_vec_f32(&n.p)?;
+            w.write_usize(n.level)?;
+            w.write_usize(n.neighbors.len())?;
+            for x in n.neighbors.iter() {
+                w.write_vec_usize(x)?;
+            }
+        }
+        Ok(())
+    }
+
     fn new(M: usize) -> HNSW {
         Self {
             enter_point: 0,
@@ -66,12 +87,10 @@ impl HNSW {
             rng: rand::thread_rng(),
             level_mut: 1f64 / ((M as f64).ln()),
             nodes: vec![Node {
-                id: 0,
                 level: 0,
                 neighbors: Vec::new(),
                 p: Vec::new(),
             }],
-            //features: Vec::new(),
             M: M,
             M0: M * 2,
             n_items: 1,
@@ -80,7 +99,7 @@ impl HNSW {
 
     fn print(&self) {
         for x in self.nodes.iter() {
-            println!("id:{},level:{:?},{:?}", x.id, x.level, x.neighbors);
+            println!("level:{:?},{:?}", x.level, x.neighbors);
         }
     }
 
@@ -146,8 +165,7 @@ impl HNSW {
             }
         }
 
-        let mut new_node = Node {
-            id: new_id,
+        let new_node = Node {
             level: cur_level,
             neighbors: vec![Vec::new(); cur_level],
             p: q,
@@ -156,8 +174,7 @@ impl HNSW {
         //从curlevel依次开始往下，每一层寻找离data_point最接近的ef_construction_（构建HNSW是可指定）个节点构成候选集
         for level in (0..core::cmp::min(cur_level, current_max_layer)).rev() {
             //在每层选择data_point最接近的ef_construction_（构建HNSW是可指定）个节点构成候选集
-            let candidates = self.search_at_layer(self.nodes[new_id].p.borrow(), ep, level);
-            println!("new_id:{},{},{:?}", new_id, level, candidates);
+            let candidates = self.search_at_layer(self.get_node(new_id).p.borrow(), ep, level);
             //连接邻居?
             self.connect_neighbor(new_id, candidates, level);
         }
@@ -231,7 +248,8 @@ impl HNSW {
     // 返回 result 从远到近
     fn search_at_layer(&self, q: &[f32], ep: Neighbor, level: usize) -> BinaryHeap<Neighbor> {
         let mut visited_set: HashSet<usize> = HashSet::new();
-        let mut candidates: BinaryHeap<Neighbor> = BinaryHeap::new();
+        let mut candidates: BinaryHeap<Neighbor> =
+            BinaryHeap::with_capacity(self.ef_construction * 3);
         let mut results: BinaryHeap<Neighbor> = BinaryHeap::new();
 
         candidates.push(Neighbor {
