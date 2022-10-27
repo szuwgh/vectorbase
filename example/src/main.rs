@@ -25,22 +25,22 @@ fn main() {
     let f = File::open(check_image_path).unwrap(); // Read<[u8]>
     let f = BufReader::new(f);
     let check_embed = model.embed(f, "jpeg").unwrap();
-    let mut hnsw = HNSW::new();
+    let mut hnsw = HNSW::new(32);
     let mut files: Vec<_> = fs::read_dir(&image_path)
         .unwrap()
         .map(|r| r.unwrap())
         .collect();
-    files.sort_by_key(|dir| dir.file_name()); 
+    //files.sort_by_key(|dir| dir.file_name());
     for file in files {
         //let file = entry.unwrap();
         let image_path = &image_path.join(file.file_name());
         let f = File::open(image_path).unwrap(); // Read<[u8]>
         let f = BufReader::new(f);
         let embedding = model.embed(f, "jpeg").unwrap();
-        hnsw.insert(embedding, 0);
+        hnsw.insert(embedding);
         println!("embeding :{:?}", image_path);
     }
     // hnsw.insert(res, 0);
-    let a = hnsw.near(&check_embed);
+    let a = hnsw.search(&check_embed, 10);
     println!("{:?}", a)
 }

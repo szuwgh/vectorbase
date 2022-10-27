@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use std::fs::File;
 use std::path::Path;
 
-use super::WriteDisk;
+use super::{ReadDisk, WriteDisk};
 use crate::util::error::GyResult;
 #[derive(Default)]
 struct Node {
@@ -23,7 +23,7 @@ impl Node {
 }
 
 #[derive(Default, Clone, Copy, PartialEq, Debug)]
-struct Neighbor {
+pub struct Neighbor {
     id: usize,
     d: f32, //distance
 }
@@ -55,7 +55,43 @@ pub struct HNSW {
 }
 
 impl HNSW {
-    fn load() {}
+    fn load(&self, filename: &Path) -> GyResult<HNSW> {
+        let mut file = File::open(filename).unwrap();
+        let mut r = ReadDisk::new(file);
+        let M = r.read_usize()?;
+        let M0 = r.read_usize()?;
+        let ef_construction = r.read_usize()?;
+        let level_mut = r.read_f64()?;
+        let max_layer = r.read_usize()?;
+        let enter_point = r.read_usize()?;
+        let node_len = r.read_usize()?;
+        let mut nodes: Vec<Node> = Vec::with_capacity(node_len);
+        for _ in 0..node_len {
+            let p = r.read_vec_f32()?;
+            let level = r.read_usize()?;
+            let neighbor_len = r.read_usize()?;
+            let mut neighbors: Vec<Vec<usize>> = Vec::with_capacity(neighbor_len);
+            for _ in 0..neighbor_len {
+                neighbors.push(r.read_vec_usize()?);
+            }
+            nodes.push(Node {
+                level: level,
+                neighbors: neighbors,
+                p: p,
+            });
+        }
+        Ok(HNSW {
+            enter_point: enter_point,
+            max_layer: max_layer,
+            ef_construction: ef_construction,
+            M: M,
+            M0: M0,
+            n_items: 0,
+            rng: rand::thread_rng(),
+            level_mut: level_mut,
+            nodes: nodes,
+        })
+    }
 
     fn save(&self, filename: &Path) -> GyResult<()> {
         let mut file = File::create(filename).unwrap();
@@ -68,7 +104,6 @@ impl HNSW {
         w.write_usize(self.enter_point)?;
         w.write_usize(self.nodes.len())?;
         for n in self.nodes.iter() {
-            w.write_usize(n.p.len())?;
             w.write_vec_f32(&n.p)?;
             w.write_usize(n.level)?;
             w.write_usize(n.neighbors.len())?;
@@ -79,7 +114,7 @@ impl HNSW {
         Ok(())
     }
 
-    fn new(M: usize) -> HNSW {
+    pub fn new(M: usize) -> HNSW {
         Self {
             enter_point: 0,
             max_layer: 0,
@@ -108,7 +143,7 @@ impl HNSW {
         ((-(x * self.level_mut).ln()).floor()) as usize
     }
 
-    fn search(&self, q: &[f32], K: usize) -> Vec<Neighbor> {
+    pub fn search(&self, q: &[f32], K: usize) -> Vec<Neighbor> {
         let current_max_layer = self.max_layer;
         let mut ep = Neighbor {
             id: self.enter_point,
@@ -137,7 +172,7 @@ impl HNSW {
     }
 
     //插入
-    fn insert(&mut self, q: Vec<f32>) {
+    pub fn insert(&mut self, q: Vec<f32>) {
         let cur_level = self.get_random_level();
         let ep_id = self.enter_point;
         let current_max_layer = self.get_node(ep_id).level;
