@@ -1,6 +1,6 @@
 use crate::ann::AnnIndex;
-use crate::schema::field::Value;
 use crate::schema::Document;
+use crate::schema::Value;
 
 use std::collections::HashMap;
 

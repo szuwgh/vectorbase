@@ -2,6 +2,7 @@ pub mod ann;
 mod memory;
 mod query;
 mod schema;
+mod store;
 mod tokenize;
 mod util;
 
@@ -27,8 +28,6 @@ impl IndexWriter {
     fn add_document(&mut self, doc: &Document) {
         self.mem_table.index_document(doc);
     }
-
-    
 }
 
 struct IndexDiskWriter {}
