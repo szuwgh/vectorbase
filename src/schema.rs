@@ -1,12 +1,12 @@
-pub(crate) struct Document {
+pub(crate) struct Row {
     pub(crate) fields: Vec<Field>,
 }
 
-impl Document {
-    pub fn with_field(fields: Vec<Field>) -> Document {
+impl Row {
+    pub fn with_field(fields: Vec<Field>) -> Row {
         Self { fields: fields }
     }
-    pub fn new() -> Document {
+    pub fn new() -> Row {
         Self { fields: Vec::new() }
     }
 

@@ -172,7 +172,7 @@ impl HNSW {
     }
 
     //插入
-    pub fn insert(&mut self, q: Vec<f32>) {
+    pub fn insert(&mut self, q: Vec<f32>) -> usize {
         let cur_level = self.get_random_level();
         let ep_id = self.enter_point;
         let current_max_layer = self.get_node(ep_id).level;
@@ -220,6 +220,7 @@ impl HNSW {
             self.max_layer = cur_level;
             self.enter_point = new_id;
         }
+        new_id
     }
 
     fn get_node(&self, x: usize) -> &Node {

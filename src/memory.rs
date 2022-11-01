@@ -1,5 +1,5 @@
 use crate::ann::AnnIndex;
-use crate::schema::Document;
+use crate::schema::Row;
 use crate::schema::Value;
 
 use std::collections::HashMap;
@@ -15,7 +15,7 @@ pub(crate) struct MemTable {
 }
 
 impl MemTable {
-    pub(crate) fn index_document(&mut self, doc: &Document) {
+    pub(crate) fn index_row(&mut self, doc: &Row) {
         for field in doc.fields.iter() {
             match &field.value {
                 _ => {}

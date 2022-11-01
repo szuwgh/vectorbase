@@ -8,8 +8,8 @@ mod util;
 
 use crate::memory::MemTable;
 use crate::query::Query;
-use crate::schema::Document;
-use space::Metric;
+use crate::schema::Row;
+
 pub struct IndexConfig {}
 
 pub struct IndexWriter {
@@ -25,8 +25,8 @@ impl IndexWriter {
         }
     }
 
-    fn add_document(&mut self, doc: &Document) {
-        self.mem_table.index_document(doc);
+    fn add_row(&mut self, doc: &Row) {
+        self.mem_table.index_row(doc);
     }
 }
 
