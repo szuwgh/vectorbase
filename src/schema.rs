@@ -1,3 +1,4 @@
+// 每一行数据
 pub(crate) struct Row {
     pub(crate) fields: Vec<Field>,
 }
@@ -15,7 +16,7 @@ impl Row {
     }
 }
 
-//域接口定义
+//域定义
 pub struct Field {
     pub(crate) name: String,
     pub(crate) value: Value,
@@ -36,6 +37,8 @@ impl Field {
         }
     }
 }
+
+//域 值类型
 pub enum Value {
     Str(String),
     Tag(String),

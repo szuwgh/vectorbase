@@ -20,7 +20,7 @@ pub struct IndexWriter {
 impl IndexWriter {
     fn new() -> IndexWriter {
         Self {
-            mem_table: MemTable::default(),
+            mem_table: MemTable::new(),
             doc_id: 0,
         }
     }
@@ -28,6 +28,8 @@ impl IndexWriter {
     fn add_row(&mut self, doc: &Row) {
         self.mem_table.index_row(doc);
     }
+
+    fn commit() {}
 }
 
 struct IndexDiskWriter {}
