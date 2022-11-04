@@ -1,13 +1,13 @@
 // 每一行数据
-pub(crate) struct Row {
+pub(crate) struct Document {
     pub(crate) fields: Vec<Field>,
 }
 
-impl Row {
-    pub fn with_field(fields: Vec<Field>) -> Row {
+impl Document {
+    pub fn with_field(fields: Vec<Field>) -> Document {
         Self { fields: fields }
     }
-    pub fn new() -> Row {
+    pub fn new() -> Document {
         Self { fields: Vec::new() }
     }
 
