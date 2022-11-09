@@ -42,6 +42,7 @@ impl PartialOrd for Neighbor {
 
 impl Eq for Neighbor {}
 
+#[warn(non_snake_case)]
 pub struct HNSW {
     enter_point: usize,
     max_layer: usize,
@@ -55,6 +56,7 @@ pub struct HNSW {
 }
 
 impl HNSW {
+    #[warn(non_snake_case)]
     fn load(&self, filename: &Path) -> GyResult<HNSW> {
         let mut file = File::open(filename).unwrap();
         let mut r = ReadDisk::new(file);

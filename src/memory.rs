@@ -5,4 +5,6 @@ pub(crate) trait TextIndex {
 }
 
 trait Block {}
-pub(crate) struct BytesBlock {}
+pub(crate) struct BytesBlock {
+    
+}

@@ -1,3 +1,4 @@
+mod analyzer;
 pub mod ann;
 mod disk;
 mod memory;
@@ -40,9 +41,9 @@ impl IndexWriter {
                 .or_insert(FieldWriter {
                     indexs: HashMap::new(),
                 });
-            match &field.value {
+            match field.value() {
                 // 这里要进行分词
-                Value::Str(s) => fw.add(s),
+                Value::Str(s) => fw.add(self.doc_id, &s),
                 _ => {}
             };
         }
@@ -55,26 +56,34 @@ impl IndexWriter {
     fn flush(&mut self) {}
 }
 
-struct PostingList {}
+// 倒排表
+struct PostingList {
+    last_doc_id: usize,
+}
 
 impl PostingList {
-    fn add_doc(&mut self) {}
+    fn new() -> PostingList {
+        Self { last_doc_id: 0 }
+    }
+
+    fn add_doc(&mut self, doc_id: usize) {}
 }
 
 pub(crate) struct FieldWriter {
-    indexs: HashMap<String, PostingList>, // term --> posting list
+    indexs: HashMap<String, PostingList>, // term --> posting list 后续换成 radix-tree
 }
 
 impl FieldWriter {
-    fn add(&mut self, token: &str) {
+    fn add(&mut self, doc_id: usize, token: &str) {
         if !self.indexs.contains_key(token) {
-            self.indexs.insert(token.to_string(), PostingList {});
+            self.indexs.insert(token.to_string(), PostingList::new());
         }
+        // 获取词典的倒排表
         let posting_list = self
             .indexs
             .get_mut(token)
             .expect("get term posting list fail");
-        posting_list.add_doc()
+        posting_list.add_doc(doc_id)
     }
 }
 

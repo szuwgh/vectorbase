@@ -36,6 +36,10 @@ impl Field {
             value: value,
         }
     }
+
+    pub fn value(&self) -> &Value {
+        &self.value
+    }
 }
 
 //域 值类型
@@ -47,11 +51,17 @@ pub enum Value {
     U64(u64),
     Vector32(Vec<f32>),
     Vector64(Vec<f64>),
+    Matrix(Matrix), //后期实现
 }
+
+pub struct Matrix {}
 
 pub enum Column {
     Str(String),
     I64(i64),
+    I32(i32),
     U64(u64),
+    U32(u32),
     F64(f64),
+    F32(f32),
 }
