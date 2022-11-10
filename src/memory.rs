@@ -1,10 +1,8 @@
-
-
-pub(crate) trait TextIndex {
+pub(super) trait TextIndex {
     fn insert(&mut self, k: Vec<u8>, v: u64);
 }
 
-trait Block {}
-pub(crate) struct BytesBlock {
-    
-}
+pub(super) trait Block {}
+pub(super) struct BytesBlock {}
+
+impl BytesBlock {}

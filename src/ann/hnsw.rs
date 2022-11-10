@@ -105,6 +105,7 @@ impl HNSW {
         w.write_usize(self.max_layer)?;
         w.write_usize(self.enter_point)?;
         w.write_usize(self.nodes.len())?;
+
         for n in self.nodes.iter() {
             w.write_vec_f32(&n.p)?;
             w.write_usize(n.level)?;
