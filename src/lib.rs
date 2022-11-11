@@ -8,7 +8,7 @@ mod tokenize;
 mod util;
 
 use crate::ann::AnnIndex;
-use crate::memory::BytesBlock;
+use crate::memory::ByteBlockPool;
 use crate::query::Query;
 use crate::schema::Document;
 use crate::schema::Value;
@@ -20,7 +20,7 @@ pub struct IndexWriter {
     field_writers: HashMap<String, FieldWriter>,
     doc_id: usize,
     store_writer: StoreWriter,
-    share_bytes_block: BytesBlock,
+    share_bytes_block: ByteBlockPool,
 }
 
 impl IndexWriter {
@@ -29,7 +29,7 @@ impl IndexWriter {
             field_writers: HashMap::new(),
             doc_id: 0,
             store_writer: StoreWriter {},
-            share_bytes_block: BytesBlock {},
+            share_bytes_block: ByteBlockPool::new(),
         }
     }
 
@@ -57,12 +57,12 @@ impl IndexWriter {
 }
 
 // 倒排表
-struct PostingList {
+struct Posting {
     last_doc_id: usize,
 }
 
-impl PostingList {
-    fn new() -> PostingList {
+impl Posting {
+    fn new() -> Posting {
         Self { last_doc_id: 0 }
     }
 
@@ -70,19 +70,20 @@ impl PostingList {
 }
 
 pub(crate) struct FieldWriter {
-    indexs: HashMap<String, PostingList>, // term --> posting list 后续换成 radix-tree
+    indexs: HashMap<String, Posting>, // term --> posting list 后续换成 radix-tree
 }
 
 impl FieldWriter {
     fn add(&mut self, doc_id: usize, token: &str) {
         if !self.indexs.contains_key(token) {
-            self.indexs.insert(token.to_string(), PostingList::new());
+            self.indexs.insert(token.to_string(), Posting::new());
         }
         // 获取词典的倒排表
         let posting_list = self
             .indexs
             .get_mut(token)
             .expect("get term posting list fail");
+        // 倒排表中加入文档id
         posting_list.add_doc(doc_id)
     }
 }
