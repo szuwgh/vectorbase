@@ -7,38 +7,39 @@ mod schema;
 mod tokenize;
 mod util;
 
-use crate::ann::AnnIndex;
 use crate::memory::ByteBlockPool;
 use crate::query::Query;
 use crate::schema::Document;
 use crate::schema::Value;
 use std::collections::HashMap;
+use std::path::Path;
+use std::sync::Arc;
 
 pub struct IndexConfig {}
 
 pub struct IndexWriter {
-    field_writers: HashMap<String, FieldWriter>,
+    field_cache: HashMap<String, FieldCache>,
     doc_id: usize,
     store_writer: StoreWriter,
-    share_bytes_block: ByteBlockPool,
+    share_bytes_block: Arc<ByteBlockPool>,
 }
 
 impl IndexWriter {
     fn new() -> IndexWriter {
         Self {
-            field_writers: HashMap::new(),
+            field_cache: HashMap::new(),
             doc_id: 0,
             store_writer: StoreWriter {},
-            share_bytes_block: ByteBlockPool::new(),
+            share_bytes_block: Arc::new(ByteBlockPool::new()),
         }
     }
 
-    pub(crate) fn add(&mut self, doc: &Document) {
+    pub fn add(&mut self, doc: &Document) {
         for field in doc.fields.iter() {
             let fw = self
-                .field_writers
+                .field_cache
                 .entry(field.name.clone())
-                .or_insert(FieldWriter {
+                .or_insert(FieldCache {
                     indexs: HashMap::new(),
                 });
             match field.value() {
@@ -52,28 +53,40 @@ impl IndexWriter {
     // commit 能搜索得到
     fn commit(&mut self) {}
 
+    fn auto_flush(&mut self, path: Path) {}
+
     // flush到磁盘中
-    fn flush(&mut self) {}
+    fn flush(&mut self, path: Path) {}
 }
 
 // 倒排表
 struct Posting {
     last_doc_id: usize,
+    doc_freq_index: usize,
 }
 
 impl Posting {
     fn new() -> Posting {
-        Self { last_doc_id: 0 }
+        Self {
+            last_doc_id: 0,
+            doc_freq_index: 0,
+        }
     }
 
     fn add_doc(&mut self, doc_id: usize) {}
 }
 
-pub(crate) struct FieldWriter {
+pub(crate) struct FieldCache {
     indexs: HashMap<String, Posting>, // term --> posting list 后续换成 radix-tree
 }
 
-impl FieldWriter {
+impl FieldCache {
+    fn new() -> FieldCache {
+        Self {
+            indexs: HashMap::new(),
+        }
+    }
+
     fn add(&mut self, doc_id: usize, token: &str) {
         if !self.indexs.contains_key(token) {
             self.indexs.insert(token.to_string(), Posting::new());
@@ -89,8 +102,6 @@ impl FieldWriter {
 }
 
 pub(crate) struct StoreWriter {}
-
-struct IndexDiskWriter {}
 
 struct IndexReader {}
 

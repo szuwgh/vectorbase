@@ -1,5 +1,5 @@
 // 每一行数据
-pub(crate) struct Document {
+pub struct Document {
     pub(crate) fields: Vec<Field>,
 }
 
