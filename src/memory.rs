@@ -1,5 +1,7 @@
 use std::io::Write;
 
+use std::cell::RefCell;
+use std::sync::Weak;
 use varintrs::{Binary, WriteBytesVarExt};
 
 //参考 lucene 设计 缓存管理
@@ -50,7 +52,7 @@ impl ByteBlockPool {
         Ok(self.pos)
     }
 
-    fn write_u64(&mut self, pos: usize, v: u64) -> Result<usize, std::io::Error> {
+    pub(super) fn write_u64(&mut self, pos: usize, v: u64) -> Result<usize, std::io::Error> {
         self.pos = pos;
         self.write_vu64::<Binary>(v)?;
         Ok(self.pos)
@@ -61,7 +63,7 @@ impl ByteBlockPool {
         self.alloc_bytes(next_level, last)
     }
 
-    fn new_bytes(&mut self, size: usize) -> usize {
+    pub(super) fn new_bytes(&mut self, size: usize) -> usize {
         if self.buffers.is_empty() {
             self.expand_buffer();
         }
@@ -140,6 +142,10 @@ impl Write for ByteBlockPool {
     fn flush(&mut self) -> Result<(), std::io::Error> {
         Ok(())
     }
+}
+
+pub(super) struct ByteBlockReader {
+    pool: Weak<RefCell<ByteBlockPool>>,
 }
 
 #[cfg(test)]
