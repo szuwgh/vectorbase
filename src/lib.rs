@@ -1,13 +1,13 @@
 mod analyzer;
 pub mod ann;
+mod block;
 mod disk;
-mod memory;
 mod query;
 mod schema;
 mod tokenize;
 mod util;
 
-use crate::memory::ByteBlockPool;
+use crate::block::ByteBlockPool;
 use crate::query::Query;
 use crate::schema::Document;
 use crate::schema::Value;
