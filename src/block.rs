@@ -1,9 +1,9 @@
 use std::io::{Read, Write};
 
 use std::cell::RefCell;
+use std::sync::Arc;
 use std::sync::Weak;
 use varintrs::{Binary, WriteBytesVarExt};
-
 //参考 lucene 设计 缓存管理
 //https://www.cnblogs.com/forfuture1978/archive/2010/02/02/1661441.html
 
@@ -62,6 +62,18 @@ impl ByteBlockPool {
         let next_level = LEVEL_CLASS[cur_level as usize];
         self.alloc_bytes(next_level, last)
     }
+
+    fn get_u8(&self, pos: usize) -> u8 {
+        let pos_tuple = Self::get_pos(pos);
+        *self
+            .buffers
+            .get(pos_tuple.0)
+            .expect("buffer block out of bounds")
+            .get(pos_tuple.1)
+            .expect("buffer u8 out of bounds")
+    }
+
+    fn get_next_index(&self) {}
 
     pub(super) fn new_bytes(&mut self, size: usize) -> usize {
         if self.buffers.is_empty() {
@@ -148,29 +160,54 @@ impl Write for ByteBlockPool {
 }
 
 pub(super) struct ByteBlockReader {
-    pool: Weak<ByteBlockPool>,
+    pool: Weak<RefCell<ByteBlockPool>>,
     start_pos: usize,
     end_pos: usize,
     limit: usize,
 }
 
 impl ByteBlockReader {
-    fn new(pool: Weak<ByteBlockPool>, start_pos: usize, end_pos: usize) -> ByteBlockReader {
+    fn new(
+        pool: Weak<RefCell<ByteBlockPool>>,
+        start_pos: usize,
+        end_pos: usize,
+    ) -> ByteBlockReader {
         let mut reader = Self {
             pool: pool,
             start_pos: start_pos,
             end_pos: end_pos,
             limit: 0,
         };
-        reader.limit = SIZE_CLASS[0] - POINTER_LEN;
+        reader.limit = if start_pos + SIZE_CLASS[0] - POINTER_LEN > end_pos {
+            // 只用一个块能读
+            end_pos
+        } else {
+            // 有多个块 先读第一个块
+            SIZE_CLASS[0] - POINTER_LEN
+        };
         reader
+    }
+
+    fn next_block(&mut self) -> Result<(), std::io::Error> {
+        Ok(())
     }
 }
 
 impl Read for ByteBlockReader {
     fn read(&mut self, x: &mut [u8]) -> Result<usize, std::io::Error> {
-        // self.read_exact(buf)
-        todo!()
+        let pool = self.pool.upgrade().unwrap();
+        let mut pos = self.start_pos;
+        let mut i: usize = 0;
+        while pos < self.end_pos {
+            if pos == self.limit {
+                // 获取下一个可读的块
+            }
+            x[i] = (*pool).borrow().get_u8(pos);
+            pos += 1;
+            i += 1;
+        }
+
+        Ok(0)
     }
 }
 
@@ -211,5 +248,12 @@ mod tests {
         let pos = b.alloc_bytes(0, None);
         b.write_array(pos, &x).unwrap();
         println!("{:?}", b.buffers);
+    }
+
+    #[test]
+    fn test_read() {
+        let pool = Arc::new(RefCell::new(ByteBlockPool::new()));
+        //let p = pool.borrow();
+        let reader = ByteBlockReader::new(Arc::downgrade(&pool), 0, 0);
     }
 }
