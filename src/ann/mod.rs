@@ -1,6 +1,5 @@
 pub mod annoy;
 pub mod hnsw;
-mod hnsw2;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
 pub use self::hnsw::HNSW;

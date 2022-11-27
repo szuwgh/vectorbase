@@ -12,6 +12,7 @@ use crate::query::Query;
 use crate::schema::Document;
 use crate::schema::Value;
 
+use crate::disk::StoreWriter;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -112,8 +113,6 @@ impl FieldCache {
         // posting_list.add_doc(doc_id)
     }
 }
-
-pub(crate) struct StoreWriter {}
 
 struct IndexReader {}
 
