@@ -73,7 +73,9 @@ impl ByteBlockPool {
             .expect("buffer u8 out of bounds")
     }
 
-    fn get_next_index(&self) {}
+    fn get_next_index(&self, limit: usize) -> usize {
+        0
+    }
 
     pub(super) fn new_bytes(&mut self, size: usize) -> usize {
         if self.buffers.is_empty() {

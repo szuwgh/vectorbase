@@ -57,7 +57,7 @@ impl IndexWriter {
     fn commit(&mut self) {}
 
     // 自动flush到磁盘中
-    fn auto_flush(&mut self, path: PathBuf) {}
+    fn set_auto_flush(&mut self, path: PathBuf) {}
 
     // flush到磁盘中
     fn flush(&mut self, path: PathBuf) {}
