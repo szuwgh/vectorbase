@@ -74,7 +74,13 @@ impl ByteBlockPool {
     }
 
     fn get_next_index(&self, limit: usize) -> usize {
-        0
+        let pos_tuple = Self::get_pos(limit);
+        let b = self.buffers.get(pos_tuple.0).unwrap();
+        let next_index = ((b[pos_tuple.1]) as usize & 0xff << 24)
+            + ((b[pos_tuple.1 + 1]) as usize & 0xff << 16)
+            + ((b[pos_tuple.1 + 2]) as usize & 0xff << 8)
+            + ((b[pos_tuple.1 + 3]) as usize & 0xff);
+        next_index
     }
 
     pub(super) fn new_bytes(&mut self, size: usize) -> usize {
@@ -112,6 +118,9 @@ impl ByteBlockPool {
         let v = vec![0u8; BYTE_BLOCK_SIZE];
         self.buffers.push(v);
         self.buffer_pos = 0;
+        if self.buffers.len() > 1 {
+            self.used_pos += BYTE_BLOCK_SIZE;
+        }
     }
 
     fn get_pos(pos: usize) -> PosTuple {
@@ -127,8 +136,8 @@ impl Write for ByteBlockPool {
     // 在 byteblockpool 写入 [u8]
     // 当内存块不足时将申请新得内存块
     fn write(&mut self, mut x: &[u8]) -> Result<usize, std::io::Error> {
-        let total = x.len();
         while x.len() > 0 {
+            let total = x.len();
             let mut pos_tuple = Self::get_pos(self.pos);
             let (i, cur_level) = {
                 let b = self.buffers.get_mut(pos_tuple.0).unwrap();
@@ -142,7 +151,7 @@ impl Write for ByteBlockPool {
                 });
                 if i.is_none() {
                     self.pos += total;
-                    return Ok(total);
+                    return Ok(self.pos);
                 }
                 let i = i.unwrap().0;
                 pos_tuple.1 += i;
@@ -153,7 +162,7 @@ impl Write for ByteBlockPool {
             self.pos = self.next_bytes(cur_level as usize, Some(pos_tuple));
             x = &x[i..];
         }
-        Ok(total)
+        Ok(self.pos)
     }
 
     fn flush(&mut self) -> Result<(), std::io::Error> {
@@ -166,6 +175,7 @@ pub(super) struct ByteBlockReader {
     start_pos: usize,
     end_pos: usize,
     limit: usize,
+    level: usize,
 }
 
 impl ByteBlockReader {
@@ -179,6 +189,7 @@ impl ByteBlockReader {
             start_pos: start_pos,
             end_pos: end_pos,
             limit: 0,
+            level: 0,
         };
         reader.limit = if start_pos + SIZE_CLASS[0] - POINTER_LEN > end_pos {
             // 只用一个块能读
@@ -190,7 +201,19 @@ impl ByteBlockReader {
         reader
     }
 
-    fn next_block(&mut self) -> Result<(), std::io::Error> {
+    fn next_block(&mut self, limit: usize) -> Result<(), std::io::Error> {
+        let pool = self.pool.upgrade().unwrap();
+        if self.level < 9 {
+            self.level += 1;
+        }
+        let next_index = (*pool).borrow().get_next_index(limit);
+        println!("next_index:{}", next_index);
+        self.start_pos = next_index;
+        self.limit = if self.start_pos + SIZE_CLASS[self.level] - POINTER_LEN > self.end_pos {
+            self.end_pos
+        } else {
+            next_index + SIZE_CLASS[self.level] - POINTER_LEN
+        };
         Ok(())
     }
 }
@@ -202,14 +225,14 @@ impl Read for ByteBlockReader {
         let mut i: usize = 0;
         while pos < self.end_pos {
             if pos == self.limit {
-                // 获取下一个可读的块
+                self.next_block(self.limit)?;
+                pos = self.start_pos;
             }
             x[i] = (*pool).borrow().get_u8(pos);
             pos += 1;
             i += 1;
         }
-
-        Ok(0)
+        Ok(i)
     }
 }
 
@@ -253,9 +276,19 @@ mod tests {
     }
 
     #[test]
+
     fn test_read() {
-        let pool = Arc::new(RefCell::new(ByteBlockPool::new()));
-        //let p = pool.borrow();
-        let reader = ByteBlockReader::new(Arc::downgrade(&pool), 0, 0);
+        let mut b = ByteBlockPool::new();
+        let x: [u8; 12] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+        let mut pos = b.alloc_bytes(0, None);
+        pos = b.write_array(pos, &x).unwrap();
+        println!("{:?}", b.buffers);
+        println!("pos{:?}", pos);
+
+        let pool = Arc::new(RefCell::new(b));
+        let mut reader = ByteBlockReader::new(Arc::downgrade(&pool), 0, pos);
+        let mut a = [0u8; 12];
+        reader.read(&mut a);
+        println!("a{:?}", a);
     }
 }
