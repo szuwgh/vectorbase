@@ -8,7 +8,7 @@ use varintrs::{Binary, WriteBytesVarExt};
 //https://www.cnblogs.com/forfuture1978/archive/2010/02/02/1661441.html
 
 //const SIZE_CLASS: [usize; 10] = [9, 18, 24, 34, 44, 64, 84, 104, 148, 204];
-const SIZE_CLASS: [usize; 10] = [9, 10, 11, 12, 13, 14, 15, 16, 17, 18];
+pub(crate) const SIZE_CLASS: [usize; 10] = [9, 10, 11, 12, 13, 14, 15, 16, 17, 18];
 const LEVEL_CLASS: [usize; 10] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 9];
 const BYTE_BLOCK_SIZE: usize = 32; //1 << 15; //64 KB
 const POINTER_LEN: usize = 4;

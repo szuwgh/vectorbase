@@ -8,6 +8,7 @@ mod tokenize;
 mod util;
 
 use crate::block::ByteBlockPool;
+use crate::block::SIZE_CLASS;
 use crate::query::Query;
 use crate::schema::Document;
 use crate::schema::Value;
@@ -68,13 +69,15 @@ impl IndexWriter {
 struct Posting {
     last_doc_id: usize,
     doc_freq_index: usize,
+    pos_index: usize,
 }
 
 impl Posting {
-    fn new(doc_freq_index: usize) -> Posting {
+    fn new(doc_freq_index: usize, pos_index: usize) -> Posting {
         Self {
             last_doc_id: 0,
             doc_freq_index: doc_freq_index,
+            pos_index: pos_index,
         }
     }
 }
@@ -95,8 +98,9 @@ impl FieldCache {
     fn add(&mut self, doc_id: u64, token: &str) -> Result<(), std::io::Error> {
         if !self.indexs.contains_key(token) {
             let pool = self.share_bytes_block.upgrade().unwrap();
-            let pos = (*pool).borrow_mut().new_bytes(10);
-            self.indexs.insert(token.to_string(), Posting::new(pos));
+            let pos = (*pool).borrow_mut().new_bytes(SIZE_CLASS[1] * 2);
+            self.indexs
+                .insert(token.to_string(), Posting::new(pos, pos - SIZE_CLASS[1]));
         }
         // 获取词典的倒排表
         let posting_list = self
