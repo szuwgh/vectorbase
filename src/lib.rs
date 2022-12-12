@@ -18,12 +18,13 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Weak};
+use std::usize;
 
 pub struct IndexConfig {}
 
 pub struct IndexWriter {
     field_cache: HashMap<String, FieldCache>,
-    doc_id: u64,
+    doc_id: usize,
     store_writer: StoreWriter,
     share_bytes_block: Arc<RefCell<ByteBlockPool>>,
 }
@@ -70,6 +71,7 @@ struct Posting {
     last_doc_id: usize,
     doc_freq_index: usize,
     pos_index: usize,
+    log_num: usize,
 }
 
 impl Posting {
@@ -78,6 +80,7 @@ impl Posting {
             last_doc_id: 0,
             doc_freq_index: doc_freq_index,
             pos_index: pos_index,
+            log_num: 0,
         }
     }
 }
@@ -95,7 +98,7 @@ impl FieldCache {
         }
     }
 
-    fn add(&mut self, doc_id: u64, token: &str) -> Result<(), std::io::Error> {
+    fn add(&mut self, doc_id: usize, token: &str) -> Result<(), std::io::Error> {
         if !self.indexs.contains_key(token) {
             let pool = self.share_bytes_block.upgrade().unwrap();
             let pos = (*pool).borrow_mut().new_bytes(SIZE_CLASS[1] * 2);
@@ -103,18 +106,39 @@ impl FieldCache {
                 .insert(token.to_string(), Posting::new(pos, pos - SIZE_CLASS[1]));
         }
         // 获取词典的倒排表
-        let posting_list = self
+        let posting = self
             .indexs
             .get_mut(token)
             .expect("get term posting list fail");
 
         let pool = self.share_bytes_block.upgrade().unwrap();
         // 倒排表中加入文档id
-        posting_list.doc_freq_index = (*pool)
-            .borrow_mut()
-            .write_u64(posting_list.doc_freq_index, doc_id)?;
+        Self::add_term(doc_id, posting, pool)?;
         Ok(())
-        // posting_list.add_doc(doc_id)
+    }
+
+    fn add_term(
+        doc_id: usize,
+        posting: &mut Posting,
+        pool: Arc<RefCell<ByteBlockPool>>,
+    ) -> Result<(), std::io::Error> {
+        if posting.last_doc_id == doc_id {
+            posting.log_num += 1;
+        } else {
+            posting.doc_freq_index = (*pool)
+                .borrow_mut()
+                .write_vusize(posting.doc_freq_index, doc_id)?;
+            posting.last_doc_id = doc_id;
+        }
+        Ok(())
+    }
+
+    fn add_pos(
+        pos: usize,
+        posting: &mut Posting,
+        pool: Arc<RefCell<ByteBlockPool>>,
+    ) -> Result<(), std::io::Error> {
+        Ok(())
     }
 }
 

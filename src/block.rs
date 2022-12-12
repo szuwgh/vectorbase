@@ -41,12 +41,12 @@ impl ByteBlockPool {
         self.write(&[v])
     }
 
-    fn write_array(&mut self, pos: usize, v: &[u8]) -> Result<usize, std::io::Error> {
+    pub(super) fn write_array(&mut self, pos: usize, v: &[u8]) -> Result<usize, std::io::Error> {
         self.pos = pos;
         self.write(v)
     }
 
-    fn write_vusize(&mut self, pos: usize, v: usize) -> Result<usize, std::io::Error> {
+    pub(super) fn write_vusize(&mut self, pos: usize, v: usize) -> Result<usize, std::io::Error> {
         self.pos = pos;
         self.write_vu64::<Binary>(v as u64)?;
         Ok(self.pos)
