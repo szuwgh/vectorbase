@@ -14,6 +14,7 @@ use crate::schema::Document;
 use crate::schema::Value;
 
 use crate::disk::StoreWriter;
+use jiebars::Jieba;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -27,15 +28,17 @@ pub struct IndexWriter {
     doc_id: usize,
     store_writer: StoreWriter,
     share_bytes_block: Arc<RefCell<ByteBlockPool>>,
+    tokenizer: Jieba,
 }
 
 impl IndexWriter {
-    fn new() -> IndexWriter {
+    fn new(config: IndexConfig) -> IndexWriter {
         Self {
             field_cache: HashMap::new(),
             doc_id: 0,
             store_writer: StoreWriter {},
             share_bytes_block: Arc::new(RefCell::new(ByteBlockPool::new())),
+            tokenizer: Jieba::new().unwrap(),
         }
     }
 
@@ -48,7 +51,11 @@ impl IndexWriter {
             match field.value() {
                 // 这里要进行分词
                 Value::Str(s) => {
-                    fw.add(self.doc_id, &s)?;
+                    //初步分词
+                    let words = self.tokenizer.cut_for_search(s);
+                    for x in words {
+                        fw.add(self.doc_id, x)?;
+                    }
                 }
                 _ => {}
             };
@@ -72,6 +79,8 @@ struct Posting {
     doc_freq_index: usize,
     pos_index: usize,
     log_num: usize,
+    is_commit: bool,
+    freq: u32,
 }
 
 impl Posting {
@@ -81,13 +90,16 @@ impl Posting {
             doc_freq_index: doc_freq_index,
             pos_index: pos_index,
             log_num: 0,
+            is_commit: false,
+            freq: 0,
         }
     }
 }
 
 pub(crate) struct FieldCache {
-    indexs: HashMap<String, Posting>, // term --> posting list 后续换成 radix-tree
+    indexs: HashMap<String, Arc<RefCell<Posting>>>, // term --> posting list 后续换成 radix-tree
     share_bytes_block: Weak<RefCell<ByteBlockPool>>,
+    commit_posting: Vec<Arc<RefCell<Posting>>>,
 }
 
 impl FieldCache {
@@ -95,43 +107,51 @@ impl FieldCache {
         Self {
             indexs: HashMap::new(),
             share_bytes_block: pool,
+            commit_posting: Vec::new(),
         }
     }
+
+    fn commit() {}
 
     fn add(&mut self, doc_id: usize, token: &str) -> Result<(), std::io::Error> {
         if !self.indexs.contains_key(token) {
             let pool = self.share_bytes_block.upgrade().unwrap();
             let pos = (*pool).borrow_mut().new_bytes(SIZE_CLASS[1] * 2);
-            self.indexs
-                .insert(token.to_string(), Posting::new(pos, pos - SIZE_CLASS[1]));
+            self.indexs.insert(
+                token.to_string(),
+                Arc::new(RefCell::new(Posting::new(pos, pos - SIZE_CLASS[1]))),
+            );
         }
         // 获取词典的倒排表
-        let posting = self
-            .indexs
-            .get_mut(token)
-            .expect("get term posting list fail");
-
+        let p = self.indexs.get(token).expect("get term posting list fail");
         let pool = self.share_bytes_block.upgrade().unwrap();
         // 倒排表中加入文档id
-        Self::add_term(doc_id, posting, pool)?;
+        Self::add_term(doc_id, p.clone(), pool)?;
+        let posting = (*p).borrow_mut();
+        if !posting.is_commit {
+            self.commit_posting.push(p.clone());
+        }
         Ok(())
     }
 
     fn add_term(
         doc_id: usize,
-        posting: &mut Posting,
+        p: Arc<RefCell<Posting>>,
         pool: Arc<RefCell<ByteBlockPool>>,
     ) -> Result<(), std::io::Error> {
+        let mut posting = (*p).borrow_mut();
         if posting.last_doc_id == doc_id {
-            posting.log_num += 1;
+            posting.freq += 1;
         } else {
             posting.doc_freq_index = (*pool)
                 .borrow_mut()
-                .write_vusize(posting.doc_freq_index, doc_id)?;
+                .write_vusize(posting.doc_freq_index, doc_id - posting.last_doc_id)?;
             posting.last_doc_id = doc_id;
         }
         Ok(())
     }
+
+    fn write_doc_freq(doc_id: usize, p: Arc<RefCell<Posting>>, pool: Arc<RefCell<ByteBlockPool>>) {}
 
     fn add_pos(
         pos: usize,
@@ -146,4 +166,18 @@ struct IndexReader {}
 
 impl IndexReader {
     fn search(query: &Query) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tokenizer() {
+        let jieba = Jieba::new().unwrap();
+        //搜索引擎模式
+        let words = jieba.cut_for_search("小明硕士，毕业于中国科学院计算所，后在日本京都大学深造");
+
+        println!("【搜索引擎模式】:{}\n", words.join(" / "));
+    }
 }
