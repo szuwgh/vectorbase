@@ -126,7 +126,7 @@ impl FieldCache {
         let p = self.indexs.get(token).expect("get term posting list fail");
         let pool = self.share_bytes_block.upgrade().unwrap();
         // 倒排表中加入文档id
-        Self::add_term(doc_id, p.clone(), pool)?;
+        Self::add_doc(doc_id, &mut *p.borrow_mut(), &mut *pool.borrow_mut())?;
         let posting = (*p).borrow_mut();
         if !posting.is_commit {
             self.commit_posting.push(p.clone());
@@ -134,24 +134,37 @@ impl FieldCache {
         Ok(())
     }
 
-    fn add_term(
+    fn add_doc(
         doc_id: usize,
-        p: Arc<RefCell<Posting>>,
-        pool: Arc<RefCell<ByteBlockPool>>,
+        posting: &mut Posting,
+        block_pool: &mut ByteBlockPool,
     ) -> Result<(), std::io::Error> {
-        let mut posting = (*p).borrow_mut();
         if posting.last_doc_id == doc_id {
             posting.freq += 1;
         } else {
-            posting.doc_freq_index = (*pool)
-                .borrow_mut()
-                .write_vusize(posting.doc_freq_index, doc_id - posting.last_doc_id)?;
+            Self::write_doc_freq(doc_id, posting, block_pool)?;
             posting.last_doc_id = doc_id;
         }
         Ok(())
     }
 
-    fn write_doc_freq(doc_id: usize, p: Arc<RefCell<Posting>>, pool: Arc<RefCell<ByteBlockPool>>) {}
+    fn write_doc_freq(
+        doc_id: usize,
+        posting: &mut Posting,
+        block_pool: &mut ByteBlockPool,
+    ) -> Result<(), std::io::Error> {
+        if posting.freq == 1 {
+            posting.doc_freq_index = block_pool.write_vusize(
+                posting.doc_freq_index,
+                (doc_id - posting.last_doc_id) << 1 | 1,
+            )?;
+        } else {
+            let index = block_pool
+                .write_vusize(posting.doc_freq_index, (doc_id - posting.last_doc_id) << 1)?;
+            posting.doc_freq_index = block_pool.write_vu32(index, posting.freq)?;
+        }
+        Ok(())
+    }
 
     fn add_pos(
         pos: usize,
