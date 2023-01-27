@@ -42,6 +42,8 @@ impl IndexWriter {
         }
     }
 
+    pub fn search(&mut self, name: &str, term: &str) {}
+
     pub fn add(&mut self, doc: &Document) -> Result<(), std::io::Error> {
         for field in doc.fields.iter() {
             let fw = self
@@ -52,10 +54,13 @@ impl IndexWriter {
                 // 这里要进行分词
                 Value::Str(s) => {
                     //初步分词
-                    let words = self.tokenizer.cut_for_search(s);
-                    for x in words {
-                        fw.add(self.doc_id, x)?;
-                    }
+                    self.tokenizer.cut_for_search(s).iter().try_for_each(
+                        |token| -> Result<(), std::io::Error> {
+                            //将每个词添加到倒排表中
+                            fw.add(self.doc_id, token)?;
+                            Ok(())
+                        },
+                    )?;
                 }
                 _ => {}
             };
@@ -124,6 +129,7 @@ impl FieldCache {
         }
         // 获取词典的倒排表
         let p = self.indexs.get(token).expect("get term posting list fail");
+        // 获取bytes 池
         let pool = self.share_bytes_block.upgrade().unwrap();
         // 倒排表中加入文档id
         Self::add_doc(doc_id, &mut *p.borrow_mut(), &mut *pool.borrow_mut())?;
