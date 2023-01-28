@@ -116,7 +116,7 @@ impl FieldCache {
         }
     }
 
-    fn commit() {}
+    fn commit(&mut self) {}
 
     fn add(&mut self, doc_id: usize, token: &str) -> Result<(), std::io::Error> {
         if !self.indexs.contains_key(token) {
