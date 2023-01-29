@@ -1,5 +1,27 @@
 // 每一行数据
+use std::collections::HashMap;
 
+#[derive(Default)]
+pub struct Schema {
+    fields: Vec<FieldEntry>,
+    fields_map: HashMap<String, Field>,
+}
+
+pub enum FieldEntry {
+    Str,
+    U64,
+    I64,
+    F64,
+    Matrix,
+}
+
+impl Schema {
+    pub fn new() -> Schema {
+        Schema::default()
+    }
+
+    pub fn add_field(&mut self, field_entry: FieldEntry) {}
+}
 
 pub struct Document {
     pub(crate) fields: Vec<Field>,
