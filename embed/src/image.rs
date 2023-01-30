@@ -66,6 +66,7 @@ impl DefaultImageEmbed {
             (
                 1,
                 3,
+                
                 self.config.image_size.width,
                 self.config.image_size.height,
             ),
