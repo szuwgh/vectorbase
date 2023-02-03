@@ -7,13 +7,10 @@ mod schema;
 mod tokenize;
 mod util;
 
-use crate::block::ByteBlockPool;
-use crate::block::SIZE_CLASS;
+use crate::block::{ByteBlockPool, SIZE_CLASS};
 use crate::query::Query;
-use crate::schema::Document;
-use crate::schema::Value;
+use crate::schema::{Document, Value};
 
-use crate::disk::StoreWriter;
 use jiebars::Jieba;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -23,26 +20,30 @@ use std::usize;
 
 pub struct IndexConfig {}
 
-pub struct IndexWriter {
+#[derive(Clone)]
+pub struct Index {
     field_cache: HashMap<String, FieldCache>,
     doc_id: usize,
-    store_writer: StoreWriter,
     share_bytes_block: Arc<RefCell<ByteBlockPool>>,
     tokenizer: Jieba,
 }
 
-impl IndexWriter {
-    fn new(config: IndexConfig) -> IndexWriter {
+trait DocPosting {}
+
+impl Index {
+    fn new(config: IndexConfig) -> Index {
         Self {
             field_cache: HashMap::new(),
             doc_id: 0,
-            store_writer: StoreWriter {},
+            //   store_writer: StoreWriter {},
             share_bytes_block: Arc::new(RefCell::new(ByteBlockPool::new())),
             tokenizer: Jieba::new().unwrap(),
         }
     }
 
-    pub fn search(&mut self, name: &str, term: &str) {}
+    // pub fn search(&mut self, name: &str, term: &str) -> DocPosting {}
+
+    // pub fn reader() ->{}
 
     pub fn add(&mut self, doc: &Document) -> Result<(), std::io::Error> {
         for field in doc.fields.iter() {
@@ -116,7 +117,18 @@ impl FieldCache {
         }
     }
 
-    fn commit(&mut self) {}
+    fn commit(&mut self) -> Result<(), std::io::Error> {
+        let pool = self.share_bytes_block.upgrade().unwrap();
+        self.commit_posting
+            .iter()
+            .try_for_each(|posting| -> Result<(), std::io::Error> {
+                let p = &mut *posting.borrow_mut();
+                Self::write_doc_freq(p.last_doc_id, p, &mut *pool.borrow_mut())?;
+                Ok(())
+            })?;
+        self.commit_posting.clear();
+        Ok(())
+    }
 
     fn add(&mut self, doc_id: usize, token: &str) -> Result<(), std::io::Error> {
         if !self.indexs.contains_key(token) {
