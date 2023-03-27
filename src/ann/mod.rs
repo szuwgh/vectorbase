@@ -1,16 +1,49 @@
 pub mod annoy;
 pub mod hnsw;
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-
 pub use self::hnsw::HNSW;
 use crate::util::error::GyResult;
+use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use core::cmp::Ordering;
 use std::io::{Read, Write};
 
 type Endian = LittleEndian;
 
-pub trait AnnIndex<T, B> {
-    fn insert(&mut self, k: T, v: u64);
-    fn near(&mut self, k: &T, dest: &mut [B]);
+pub trait Metric<P = Self> {
+    fn distance(&self, b: &P) -> f32;
+}
+
+pub trait Create {
+    fn create() -> Self;
+}
+
+#[derive(Default, Clone, Copy, PartialEq, Debug)]
+pub struct Neighbor {
+    id: usize,
+    d: f32, //distance
+}
+
+impl Ord for Neighbor {
+    fn cmp(&self, other: &Neighbor) -> Ordering {
+        other.d.partial_cmp(&self.d).unwrap()
+    }
+}
+
+impl PartialOrd for Neighbor {
+    fn partial_cmp(&self, other: &Neighbor) -> Option<Ordering> {
+        Some(other.cmp(self))
+    }
+}
+
+impl Eq for Neighbor {}
+
+pub struct BoxedAnnIndex<T>(pub Box<dyn AnnIndex<T>>);
+
+pub trait AnnIndex<T>
+where
+    T: Metric<T> + Create,
+{
+    fn insert(&mut self, q: T) -> usize;
+    fn search(&self, q: &T, K: usize) -> Vec<Neighbor>;
 }
 
 struct ReadDisk<R: Read> {

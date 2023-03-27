@@ -23,3 +23,5 @@ Cargo.lock
 /tests/target
 
 /example/target
+
+/hnsw/target

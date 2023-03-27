@@ -1,13 +1,14 @@
 use std::io::{Read, Write};
 
+use crate::util::error::GyResult;
 use std::cell::RefCell;
 use std::sync::Arc;
 use std::sync::Weak;
-use varintrs::{Binary, WriteBytesVarExt};
+use varintrs::{Binary, ReadBytesVarExt, WriteBytesVarExt};
 //参考 lucene 设计 缓存管理
 //https://www.cnblogs.com/forfuture1978/archive/2010/02/02/1661441.html
 
-//const SIZE_CLASS: [usize; 10] = [9, 18, 24, 34, 44, 64, 84, 104, 148, 204];
+//pub(crate) const SIZE_CLASS: [usize; 10] = [9, 18, 24, 34, 44, 64, 84, 104, 148, 204];
 pub(crate) const SIZE_CLASS: [usize; 10] = [9, 10, 11, 12, 13, 14, 15, 16, 17, 18];
 const LEVEL_CLASS: [usize; 10] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 9];
 const BYTE_BLOCK_SIZE: usize = 32; //1 << 15; //64 KB
@@ -36,9 +37,10 @@ impl ByteBlockPool {
         }
     }
 
-    fn write_u8(&mut self, pos: usize, v: u8) -> Result<usize, std::io::Error> {
+    fn write_u8(&mut self, pos: usize, v: u8) -> GyResult<usize> {
         self.pos = pos;
-        self.write(&[v])
+        let x = self.write(&[v])?;
+        Ok(x)
     }
 
     pub(super) fn write_array(&mut self, pos: usize, v: &[u8]) -> Result<usize, std::io::Error> {
@@ -213,7 +215,7 @@ impl ByteBlockReader {
             self.level += 1;
         }
         let next_index = (*pool).borrow().get_next_index(limit);
-        println!("next_index:{}", next_index);
+        //  println!("next_index:{}", next_index);
         self.start_pos = next_index;
         self.limit = if self.start_pos + SIZE_CLASS[self.level] - POINTER_LEN > self.end_pos {
             self.end_pos
@@ -221,6 +223,11 @@ impl ByteBlockReader {
             next_index + SIZE_CLASS[self.level] - POINTER_LEN
         };
         Ok(())
+    }
+
+    fn read_vu32(&mut self) -> u32 {
+        let (x, _) = self.read_vu64::<Binary>();
+        x as u32
     }
 }
 
@@ -285,16 +292,20 @@ mod tests {
 
     fn test_read() {
         let mut b = ByteBlockPool::new();
-        let x: [u8; 12] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+        // let x: [u8; 12] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
         let mut pos = b.alloc_bytes(0, None);
-        pos = b.write_array(pos, &x).unwrap();
+        //pos = b.write_array(pos, &x).unwrap();
+        pos = b.write_vu32(pos, 125).unwrap();
+        pos = b.write_vu32(pos, 63).unwrap();
+        pos = b.write_vu32(pos, 163).unwrap();
         println!("{:?}", b.buffers);
         println!("pos{:?}", pos);
 
         let pool = Arc::new(RefCell::new(b));
         let mut reader = ByteBlockReader::new(Arc::downgrade(&pool), 0, pos);
-        let mut a = [0u8; 12];
-        reader.read(&mut a);
-        println!("a{:?}", a);
+        // let mut a = [0u8; 12];
+        // reader.read(&mut a);
+        // reader.r
+        // println!("a{:?}", a);
     }
 }

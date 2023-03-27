@@ -1,16 +1,17 @@
-mod analyzer;
-pub mod ann;
+mod ann;
 mod block;
 mod disk;
 mod query;
 mod schema;
 mod tokenize;
 mod util;
-
+use crate::ann::BoxedAnnIndex;
 use crate::block::{ByteBlockPool, SIZE_CLASS};
 use crate::query::Query;
-use crate::schema::{Document, Value};
+use crate::schema::{Schema, Value, Vector, VectorEntry};
+use std::marker::PhantomData;
 
+use crate::ann::{Create, Metric, HNSW};
 use jiebars::Jieba;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -20,52 +21,59 @@ use std::usize;
 
 pub struct IndexConfig {}
 
-#[derive(Clone)]
-pub struct Index {
-    field_cache: HashMap<String, FieldCache>,
+pub type Index = IndexBase<Vec<f32>>;
+
+//#[derive(Clone)]
+pub struct IndexBase<T: 'static>
+where
+    T: Metric<T> + Create,
+{
+    vector_index: BoxedAnnIndex<T>,
+    field_cache: Vec<FieldCache>,
     doc_id: usize,
-    share_bytes_block: Arc<RefCell<ByteBlockPool>>,
+    buffer: Arc<RefCell<ByteBlockPool>>,
+    schema: Schema,
     tokenizer: Jieba,
+    //  _mark: PhantomData<T>,
 }
 
 trait DocPosting {}
 
-impl Index {
-    fn new(config: IndexConfig) -> Index {
+impl<T: 'static> IndexBase<T>
+where
+    T: Metric<T> + Create,
+{
+    fn new(schema: Schema) -> IndexBase<T> {
+        let buffer_pool = Arc::new(RefCell::new(ByteBlockPool::new()));
+        let mut field_cache: Vec<FieldCache> = Vec::new();
+        for s in schema.fields.iter() {
+            field_cache.push(FieldCache::new(Arc::downgrade(&buffer_pool)));
+        }
+
         Self {
-            field_cache: HashMap::new(),
+            vector_index: Self::get_vector_index(&schema.vector),
+            field_cache: field_cache,
             doc_id: 0,
-            //   store_writer: StoreWriter {},
-            share_bytes_block: Arc::new(RefCell::new(ByteBlockPool::new())),
+            buffer: buffer_pool,
+            schema: schema,
             tokenizer: Jieba::new().unwrap(),
+            //   _mark: PhantomData,
         }
     }
 
-    // pub fn search(&mut self, name: &str, term: &str) -> DocPosting {}
+    pub fn get_vector_index(vec_type: &VectorEntry) -> BoxedAnnIndex<T> {
+        BoxedAnnIndex(Box::new(HNSW::<T>::new(32)))
+    }
 
-    // pub fn reader() ->{}
-
-    pub fn add(&mut self, doc: &Document) -> Result<(), std::io::Error> {
-        for field in doc.fields.iter() {
+    pub fn add(&mut self, vec: Vector<T>) -> Result<(), std::io::Error> {
+        for field in vec.field_values.iter() {
             let fw = self
                 .field_cache
-                .entry(field.name.clone())
-                .or_insert(FieldCache::new(Arc::downgrade(&self.share_bytes_block)));
-            match field.value() {
-                // 这里要进行分词
-                Value::Str(s) => {
-                    //初步分词
-                    self.tokenizer.cut_for_search(s).iter().try_for_each(
-                        |token| -> Result<(), std::io::Error> {
-                            //将每个词添加到倒排表中
-                            fw.add(self.doc_id, token)?;
-                            Ok(())
-                        },
-                    )?;
-                }
-                _ => {}
-            };
+                .get_mut(field.field_id().0 as usize)
+                .unwrap();
+            fw.add(self.doc_id, field.value())?;
         }
+        //添加向量
         Ok(())
     }
 
@@ -82,6 +90,7 @@ impl Index {
 // 倒排表
 struct Posting {
     last_doc_id: usize,
+    byte_addr: usize,
     doc_freq_index: usize,
     pos_index: usize,
     log_num: usize,
@@ -93,6 +102,7 @@ impl Posting {
     fn new(doc_freq_index: usize, pos_index: usize) -> Posting {
         Self {
             last_doc_id: 0,
+            byte_addr: doc_freq_index,
             doc_freq_index: doc_freq_index,
             pos_index: pos_index,
             log_num: 0,
@@ -130,25 +140,31 @@ impl FieldCache {
         Ok(())
     }
 
-    fn add(&mut self, doc_id: usize, token: &str) -> Result<(), std::io::Error> {
-        if !self.indexs.contains_key(token) {
-            let pool = self.share_bytes_block.upgrade().unwrap();
-            let pos = (*pool).borrow_mut().new_bytes(SIZE_CLASS[1] * 2);
-            self.indexs.insert(
-                token.to_string(),
-                Arc::new(RefCell::new(Posting::new(pos, pos - SIZE_CLASS[1]))),
-            );
+    //添加token 单词
+    fn add(&mut self, doc_id: usize, value: &Value) -> Result<(), std::io::Error> {
+        match value {
+            Value::Str(s) => {
+                if !self.indexs.contains_key(s) {
+                    let pool = self.share_bytes_block.upgrade().unwrap();
+                    let pos = (*pool).borrow_mut().new_bytes(SIZE_CLASS[1] * 2);
+                    self.indexs.insert(
+                        s.to_string(),
+                        Arc::new(RefCell::new(Posting::new(pos, pos + SIZE_CLASS[1]))),
+                    );
+                }
+                // 获取词典的倒排表
+                let p = self.indexs.get(s).expect("get term posting list fail");
+                // 获取bytes 池
+                let pool = self.share_bytes_block.upgrade().unwrap();
+                // 倒排表中加入文档id
+                Self::add_doc(doc_id, &mut *p.borrow_mut(), &mut *pool.borrow_mut())?;
+                if !(*p).borrow_mut().is_commit {
+                    self.commit_posting.push(p.clone());
+                }
+            }
+            _ => {}
         }
-        // 获取词典的倒排表
-        let p = self.indexs.get(token).expect("get term posting list fail");
-        // 获取bytes 池
-        let pool = self.share_bytes_block.upgrade().unwrap();
-        // 倒排表中加入文档id
-        Self::add_doc(doc_id, &mut *p.borrow_mut(), &mut *pool.borrow_mut())?;
-        let posting = (*p).borrow_mut();
-        if !posting.is_commit {
-            self.commit_posting.push(p.clone());
-        }
+
         Ok(())
     }
 
@@ -193,6 +209,8 @@ impl FieldCache {
     }
 }
 
+pub struct PostingReader {}
+
 struct IndexReader {}
 
 impl IndexReader {
@@ -210,5 +228,20 @@ mod tests {
         let words = jieba.cut_for_search("小明硕士，毕业于中国科学院计算所，后在日本京都大学深造");
 
         println!("【搜索引擎模式】:{}\n", words.join(" / "));
+    }
+
+    #[test]
+    fn test_fieldcache() {
+        let jieba = Jieba::new().unwrap();
+        //搜索引擎模式
+        let words = jieba.cut_for_search("小明硕士，毕业于中国科学院计算所，后在日本京都大学深造");
+
+        println!("【搜索引擎模式】:{}\n", words.join(" / "));
+
+        // let jieba = Jieba::new().unwrap();
+        // //搜索引擎模式
+        // let words = jieba.cut_for_search("小明硕士，毕业于中国科学院计算所，后在日本京都大学深造");
+
+        // println!("【搜索引擎模式】:{}\n", words.join(" / "));
     }
 }

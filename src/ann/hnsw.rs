@@ -1,4 +1,3 @@
-use core::cmp::Ordering;
 use rand::prelude::ThreadRng;
 use rand::Rng;
 use std::borrow::Borrow;
@@ -7,43 +6,40 @@ use std::collections::HashSet;
 use std::fs::File;
 use std::path::Path;
 
-use super::{ReadDisk, WriteDisk};
+use super::{AnnIndex, BoxedAnnIndex, Create, Metric, Neighbor};
 use crate::util::error::GyResult;
-#[derive(Default)]
-struct Node {
-    level: usize,
-    neighbors: Vec<Vec<usize>>, //layer --> vec
-    p: Vec<f32>,
+
+impl Metric<Vec<f32>> for Vec<f32> {
+    fn distance(&self, b: &Vec<f32>) -> f32 {
+        self.iter()
+            .zip(b.iter())
+            .map(|(&a1, &b1)| (a1 - b1).powi(2))
+            .sum::<f32>()
+            .sqrt()
+    }
 }
 
-impl Node {
+impl Create for Vec<f32> {
+    fn create() -> Self {
+        Vec::new()
+    }
+}
+
+#[derive(Default)]
+struct Node<T> {
+    level: usize,
+    neighbors: Vec<Vec<usize>>, //layer --> vec
+    p: T,
+}
+
+impl<T> Node<T> {
     fn get_neighbors(&self, level: usize) -> impl Iterator<Item = usize> + '_ {
         self.neighbors.get(level).unwrap().iter().cloned()
     }
 }
 
-#[derive(Default, Clone, Copy, PartialEq, Debug)]
-pub struct Neighbor {
-    id: usize,
-    d: f32, //distance
-}
-
-impl Ord for Neighbor {
-    fn cmp(&self, other: &Neighbor) -> Ordering {
-        other.d.partial_cmp(&self.d).unwrap()
-    }
-}
-
-impl PartialOrd for Neighbor {
-    fn partial_cmp(&self, other: &Neighbor) -> Option<Ordering> {
-        Some(other.cmp(self))
-    }
-}
-
-impl Eq for Neighbor {}
-
 #[warn(non_snake_case)]
-pub struct HNSW {
+pub struct HNSW<T> {
     enter_point: usize,
     max_layer: usize,
     ef_construction: usize,
@@ -52,130 +48,15 @@ pub struct HNSW {
     n_items: usize,
     rng: ThreadRng,
     level_mut: f64,
-    nodes: Vec<Node>,
+    nodes: Vec<Node<T>>,
 }
 
-impl HNSW {
-    #[warn(non_snake_case)]
-    fn load(&self, filename: &Path) -> GyResult<HNSW> {
-        let mut file = File::open(filename).unwrap();
-        let mut r = ReadDisk::new(file);
-        let M = r.read_usize()?;
-        let M0 = r.read_usize()?;
-        let ef_construction = r.read_usize()?;
-        let level_mut = r.read_f64()?;
-        let max_layer = r.read_usize()?;
-        let enter_point = r.read_usize()?;
-        let node_len = r.read_usize()?;
-        let mut nodes: Vec<Node> = Vec::with_capacity(node_len);
-        for _ in 0..node_len {
-            let p = r.read_vec_f32()?;
-            let level = r.read_usize()?;
-            let neighbor_len = r.read_usize()?;
-            let mut neighbors: Vec<Vec<usize>> = Vec::with_capacity(neighbor_len);
-            for _ in 0..neighbor_len {
-                neighbors.push(r.read_vec_usize()?);
-            }
-            nodes.push(Node {
-                level: level,
-                neighbors: neighbors,
-                p: p,
-            });
-        }
-        Ok(HNSW {
-            enter_point: enter_point,
-            max_layer: max_layer,
-            ef_construction: ef_construction,
-            M: M,
-            M0: M0,
-            n_items: 0,
-            rng: rand::thread_rng(),
-            level_mut: level_mut,
-            nodes: nodes,
-        })
-    }
-
-    fn save(&self, filename: &Path) -> GyResult<()> {
-        let mut file = File::create(filename).unwrap();
-        let mut w = WriteDisk::new(file);
-        w.write_usize(self.M)?;
-        w.write_usize(self.M0)?;
-        w.write_usize(self.ef_construction)?;
-        w.write_f64(self.level_mut)?;
-        w.write_usize(self.max_layer)?;
-        w.write_usize(self.enter_point)?;
-        w.write_usize(self.nodes.len())?;
-
-        for n in self.nodes.iter() {
-            w.write_vec_f32(&n.p)?;
-            w.write_usize(n.level)?;
-            w.write_usize(n.neighbors.len())?;
-            for x in n.neighbors.iter() {
-                w.write_vec_usize(x)?;
-            }
-        }
-        Ok(())
-    }
-
-    pub fn new(M: usize) -> HNSW {
-        Self {
-            enter_point: 0,
-            max_layer: 0,
-            ef_construction: 400,
-            rng: rand::thread_rng(),
-            level_mut: 1f64 / ((M as f64).ln()),
-            nodes: vec![Node {
-                level: 0,
-                neighbors: Vec::new(),
-                p: Vec::new(),
-            }],
-            M: M,
-            M0: M * 2,
-            n_items: 1,
-        }
-    }
-
-    fn print(&self) {
-        for x in self.nodes.iter() {
-            println!("level:{:?},{:?}", x.level, x.neighbors);
-        }
-    }
-
-    fn get_random_level(&mut self) -> usize {
-        let x: f64 = self.rng.gen();
-        ((-(x * self.level_mut).ln()).floor()) as usize
-    }
-
-    pub fn search(&self, q: &[f32], K: usize) -> Vec<Neighbor> {
-        let current_max_layer = self.max_layer;
-        let mut ep = Neighbor {
-            id: self.enter_point,
-            d: distance(self.get_node(self.enter_point).p.borrow(), &q),
-        };
-        let mut changed = true;
-        for level in (0..current_max_layer).rev() {
-            changed = true;
-            while changed {
-                changed = false;
-                for i in self.get_neighbors_nodes(ep.id, level) {
-                    let d = distance(self.get_node(self.enter_point).p.borrow(), &q);
-                    if d < ep.d {
-                        ep.id = i;
-                        ep.d = d;
-                        changed = true;
-                    }
-                }
-            }
-        }
-        let mut x = self.search_at_layer(&q, ep, 0);
-        while x.len() > K {
-            x.pop();
-        }
-        x.into_sorted_vec()
-    }
-
+impl<T> AnnIndex<T> for HNSW<T>
+where
+    T: Metric<T> + Create,
+{
     //插入
-    pub fn insert(&mut self, q: Vec<f32>) -> usize {
+    fn insert(&mut self, q: T) -> usize {
         let cur_level = self.get_random_level();
         let ep_id = self.enter_point;
         let current_max_layer = self.get_node(ep_id).level;
@@ -184,7 +65,7 @@ impl HNSW {
         //起始点
         let mut ep = Neighbor {
             id: self.enter_point,
-            d: distance(self.get_node(ep_id).p.borrow(), &q),
+            d: self.get_node(ep_id).p.borrow().distance(&q),
         };
         let mut changed = true;
         //那么从当前图的从最高层逐层往下寻找直至节点的层数+1停止，寻找到离data_point最近的节点，作为下面一层寻找的起始点
@@ -193,7 +74,7 @@ impl HNSW {
             while changed {
                 changed = false;
                 for i in self.get_neighbors_nodes(ep.id, level) {
-                    let d = distance(self.get_node(ep_id).p.borrow(), &q);
+                    let d = self.get_node(ep_id).p.borrow().distance(&q); //distance(self.get_node(ep_id).p.borrow(), &q);
                     if d < ep.d {
                         ep.id = i;
                         ep.d = d;
@@ -226,11 +107,138 @@ impl HNSW {
         new_id
     }
 
-    fn get_node(&self, x: usize) -> &Node {
+    fn search(&self, q: &T, K: usize) -> Vec<Neighbor> {
+        let current_max_layer = self.max_layer;
+        let mut ep = Neighbor {
+            id: self.enter_point,
+            d: self.get_node(self.enter_point).p.borrow().distance(&q), //distance(self.get_node(self.enter_point).p.borrow(), &q),
+        };
+        let mut changed = true;
+        for level in (0..current_max_layer).rev() {
+            changed = true;
+            while changed {
+                changed = false;
+                for i in self.get_neighbors_nodes(ep.id, level) {
+                    let d = self.get_node(self.enter_point).p.borrow().distance(&q); // distance(self.get_node(self.enter_point).p.borrow(), &q);
+                    if d < ep.d {
+                        ep.id = i;
+                        ep.d = d;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        let mut x = self.search_at_layer(&q, ep, 0);
+        while x.len() > K {
+            x.pop();
+        }
+        x.into_sorted_vec()
+    }
+}
+
+impl<T> HNSW<T>
+where
+    T: Metric<T> + Create,
+{
+    pub fn new(M: usize) -> HNSW<T> {
+        Self {
+            enter_point: 0,
+            max_layer: 0,
+            ef_construction: 400,
+            rng: rand::thread_rng(),
+            level_mut: 1f64 / ((M as f64).ln()),
+            nodes: vec![Node {
+                level: 0,
+                neighbors: Vec::new(),
+                p: T::create(),
+            }],
+            M: M,
+            M0: M * 2,
+            n_items: 1,
+        }
+    }
+
+    // #[warn(non_snake_case)]
+    // fn load(&self, filename: &Path) -> GyResult<HNSW<T>> {
+    //     let mut file = File::open(filename).unwrap();
+    //     let mut r = ReadDisk::new(file);
+    //     let M = r.read_usize()?;
+    //     let M0 = r.read_usize()?;
+    //     let ef_construction = r.read_usize()?;
+    //     let level_mut = r.read_f64()?;
+    //     let max_layer = r.read_usize()?;
+    //     let enter_point = r.read_usize()?;
+    //     let node_len = r.read_usize()?;
+    //     let mut nodes: Vec<Node<T>> = Vec::with_capacity(node_len);
+    //     for _ in 0..node_len {
+    //         let p = r.read_vec_f32()?;
+    //         let level = r.read_usize()?;
+    //         let neighbor_len = r.read_usize()?;
+    //         let mut neighbors: Vec<Vec<usize>> = Vec::with_capacity(neighbor_len);
+    //         for _ in 0..neighbor_len {
+    //             neighbors.push(r.read_vec_usize()?);
+    //         }
+    //         nodes.push(Node {
+    //             level: level,
+    //             neighbors: neighbors,
+    //             p: T::create(),
+    //         });
+    //     }
+    //     Ok(HNSW {
+    //         enter_point: enter_point,
+    //         max_layer: max_layer,
+    //         ef_construction: ef_construction,
+    //         M: M,
+    //         M0: M0,
+    //         n_items: 0,
+    //         rng: rand::thread_rng(),
+    //         level_mut: level_mut,
+    //         nodes: nodes,
+    //     })
+    // }
+
+    // fn save(&self, filename: &Path) -> GyResult<()> {
+    //     let mut file = File::create(filename).unwrap();
+    //     let mut w = WriteDisk::new(file);
+    //     w.write_usize(self.M)?;
+    //     w.write_usize(self.M0)?;
+    //     w.write_usize(self.ef_construction)?;
+    //     w.write_f64(self.level_mut)?;
+    //     w.write_usize(self.max_layer)?;
+    //     w.write_usize(self.enter_point)?;
+    //     w.write_usize(self.nodes.len())?;
+
+    //     for n in self.nodes.iter() {
+    //         w.write_vec_f32(&n.p)?;
+    //         w.write_usize(n.level)?;
+    //         w.write_usize(n.neighbors.len())?;
+    //         for x in n.neighbors.iter() {
+    //             w.write_vec_usize(x)?;
+    //         }
+    //     }
+    //     Ok(())
+    // }
+
+    fn save_to_buffer(&self, filename: &Path) -> GyResult<()> {
+        Ok(())
+    }
+
+    fn print(&self) {
+        for x in self.nodes.iter() {
+            println!("level:{:?},{:?}", x.level, x.neighbors);
+        }
+    }
+
+    fn get_random_level(&mut self) -> usize {
+        let x: f64 = self.rng.gen();
+        ((-(x * self.level_mut).ln()).floor()) as usize
+    }
+
+    fn get_node(&self, x: usize) -> &Node<T> {
         self.nodes.get(x).expect("get node fail")
     }
 
-    fn get_node_mut(&mut self, x: usize) -> &mut Node {
+    fn get_node_mut(&mut self, x: usize) -> &mut Node<T> {
         self.nodes.get_mut(x).expect("get mut node fail")
     }
 
@@ -265,7 +273,7 @@ impl HNSW {
                 self.get_neighbors_nodes(n.id, level).for_each(|x| {
                     result_set.push(Neighbor {
                         id: x,
-                        d: -distance(p, self.get_node(x).p.borrow()),
+                        d: -p.distance(self.get_node(x).p.borrow()), //distance(p, self.get_node(x).p.borrow()),
                     });
                 });
 
@@ -285,7 +293,7 @@ impl HNSW {
     }
 
     // 返回 result 从远到近
-    fn search_at_layer(&self, q: &[f32], ep: Neighbor, level: usize) -> BinaryHeap<Neighbor> {
+    fn search_at_layer(&self, q: &T, ep: Neighbor, level: usize) -> BinaryHeap<Neighbor> {
         let mut visited_set: HashSet<usize> = HashSet::new();
         let mut candidates: BinaryHeap<Neighbor> =
             BinaryHeap::with_capacity(self.ef_construction * 3);
@@ -320,7 +328,7 @@ impl HNSW {
                 }
                 //不存在则加入visitedset
                 visited_set.insert(n);
-                let dist = distance(q, self.nodes.get(n).unwrap().p.borrow());
+                let dist = q.distance(self.nodes.get(n).unwrap().p.borrow()); //   distance(q, self.nodes.get(n).unwrap().p.borrow());
                 let top_d = results.peek().unwrap();
                 //如果results未满，则把所有的e都加入candidates、results
 
@@ -354,7 +362,7 @@ impl HNSW {
             //如果e和q的距离比e和R中的其中一个元素的距离更小，就把e加入到result中
             if result
                 .iter()
-                .map(|r| distance(self.nodes[r.id].p.borrow(), &self.nodes[e.id].p))
+                .map(|r| self.nodes[r.id].p.borrow().distance(&self.nodes[e.id].p)) //distance(self.nodes[r.id].p.borrow(), &self.nodes[e.id].p)
                 .any(|x| dist < x)
             {
                 result.push(e);
@@ -404,7 +412,7 @@ impl HNSW {
             //如果e和q的距离比e和R中的其中一个元素的距离更小，就把e加入到result中
             if result
                 .iter()
-                .map(|r| distance(self.nodes[r.id].p.borrow(), &self.nodes[e.id].p))
+                .map(|r| self.nodes[r.id].p.borrow().distance(&self.nodes[e.id].p)) //distance(self.nodes[r.id].p.borrow(), &self.nodes[e.id].p)
                 .any(|x| dist < x)
             {
                 result.push(e);
@@ -428,14 +436,6 @@ impl HNSW {
     }
 }
 
-fn distance(a: &[f32], b: &[f32]) -> f32 {
-    a.iter()
-        .zip(b.iter())
-        .map(|(&a1, &b1)| (a1 - b1).powi(2))
-        .sum::<f32>()
-        .sqrt()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -455,12 +455,12 @@ mod tests {
 
     #[test]
     fn test_hnsw_rand_level() {
-        let mut hnsw = HNSW::new(32);
-        println!("{}", hnsw.level_mut);
-        for x in 0..100 {
-            let x1 = hnsw.get_random_level();
-            println!("x1 = {x1}");
-        }
+        // let mut hnsw = HNSW::new(32);
+        // println!("{}", hnsw.level_mut);
+        // for x in 0..100 {
+        //     let x1 = hnsw.get_random_level();
+        //     println!("x1 = {x1}");
+        // }
     }
 
     #[test]
@@ -477,7 +477,7 @@ mod tests {
 
     #[test]
     fn test_hnsw_search() {
-        let mut hnsw = HNSW::new(32);
+        let mut hnsw = HNSW::<Vec<f32>>::new(32);
 
         let features = [
             &[0.0, 0.0, 0.0, 1.0],
@@ -490,21 +490,21 @@ mod tests {
             &[1.0, 0.0, 0.0, 1.0],
         ];
 
-        let mut x: HashMap<usize, usize> = HashMap::new();
-        for _ in 0..=10000 {
-            let l = hnsw.get_random_level();
-            let i = x.entry(l).or_insert(0);
-            *i = *i + 1;
-        }
-        println!("{:?}", x);
-
-        // for &feature in &features {
-        //     hnsw.insert(feature.to_vec());
+        //let mut x: HashMap<usize, usize> = HashMap::new();
+        // for _ in 0..=10000 {
+        //     let l = hnsw.get_random_level();
+        //     let i = x.entry(l).or_insert(0);
+        //     *i = *i + 1;
         // }
+        // println!("{:?}", x);
 
-        // hnsw.print();
+        for &feature in &features {
+            hnsw.insert(feature.to_vec());
+        }
 
-        // let neighbors = hnsw.search(&[0.0f32, 1.0, 0.0, 0.0][..].to_vec(), 8);
-        // println!("{:?}", neighbors);
+        hnsw.print();
+
+        let neighbors = hnsw.search(&[0.0f32, 1.0, 0.0, 0.0][..].to_vec(), 8);
+        println!("{:?}", neighbors);
     }
 }
