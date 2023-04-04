@@ -14,7 +14,7 @@ num-traits = "0.2"
 sp-std = "4.0.0"
 rand_pcg = "0.3.1"
 byteorder = "1.4.3"
-varintrs = "0.1.0"
+varintrs = "0.2.0"
 jiebars = "0.1.0"
 
 

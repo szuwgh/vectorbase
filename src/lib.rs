@@ -6,7 +6,7 @@ mod schema;
 mod tokenize;
 mod util;
 use crate::ann::BoxedAnnIndex;
-use crate::block::{ByteBlockPool, SIZE_CLASS};
+use crate::block::{ByteBlockPool, ByteBlockReader, SIZE_CLASS};
 use crate::query::Query;
 use crate::schema::{Schema, Value, Vector, VectorEntry};
 use std::marker::PhantomData;
@@ -19,6 +19,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Weak};
 use std::usize;
 
+type VecID = usize;
+
 pub struct IndexConfig {}
 
 pub type Index = IndexBase<Vec<f32>>;
@@ -30,11 +32,10 @@ where
 {
     vector_index: BoxedAnnIndex<T>,
     field_cache: Vec<FieldCache>,
-    doc_id: usize,
+    vec_id: VecID,
     buffer: Arc<RefCell<ByteBlockPool>>,
     schema: Schema,
     tokenizer: Jieba,
-    //  _mark: PhantomData<T>,
 }
 
 trait DocPosting {}
@@ -53,11 +54,10 @@ where
         Self {
             vector_index: Self::get_vector_index(&schema.vector),
             field_cache: field_cache,
-            doc_id: 0,
+            vec_id: 0,
             buffer: buffer_pool,
             schema: schema,
             tokenizer: Jieba::new().unwrap(),
-            //   _mark: PhantomData,
         }
     }
 
@@ -65,15 +65,19 @@ where
         BoxedAnnIndex(Box::new(HNSW::<T>::new(32)))
     }
 
+    //add vector
     pub fn add(&mut self, vec: Vector<T>) -> Result<(), std::io::Error> {
+        //添加向量标签
         for field in vec.field_values.iter() {
             let fw = self
                 .field_cache
                 .get_mut(field.field_id().0 as usize)
                 .unwrap();
-            fw.add(self.doc_id, field.value())?;
+            fw.add(self.vec_id, field.value())?;
         }
         //添加向量
+        self.vector_index.0.insert(vec.into(), self.vec_id);
+        self.vec_id += 1;
         Ok(())
     }
 
@@ -127,6 +131,8 @@ impl FieldCache {
         }
     }
 
+    // fn search(&mut self) -> FieldCache {}
+
     fn commit(&mut self) -> Result<(), std::io::Error> {
         let pool = self.share_bytes_block.upgrade().unwrap();
         self.commit_posting
@@ -140,7 +146,7 @@ impl FieldCache {
         Ok(())
     }
 
-    //添加token 单词
+    //添加 token 单词
     fn add(&mut self, doc_id: usize, value: &Value) -> Result<(), std::io::Error> {
         match value {
             Value::Str(s) => {
@@ -209,7 +215,12 @@ impl FieldCache {
     }
 }
 
-pub struct PostingReader {}
+pub struct PostingReader {
+    id_reader: ByteBlockReader,
+    lastVecID: VecID,
+}
+
+impl PostingReader {}
 
 struct IndexReader {}
 
@@ -232,11 +243,12 @@ mod tests {
 
     #[test]
     fn test_fieldcache() {
-        let jieba = Jieba::new().unwrap();
-        //搜索引擎模式
-        let words = jieba.cut_for_search("小明硕士，毕业于中国科学院计算所，后在日本京都大学深造");
+        let mut b = ByteBlockPool::new();
+        // let jieba = Jieba::new().unwrap();
+        // //搜索引擎模式
+        // let words = jieba.cut_for_search("小明硕士，毕业于中国科学院计算所，后在日本京都大学深造");
 
-        println!("【搜索引擎模式】:{}\n", words.join(" / "));
+        // println!("【搜索引擎模式】:{}\n", words.join(" / "));
 
         // let jieba = Jieba::new().unwrap();
         // //搜索引擎模式

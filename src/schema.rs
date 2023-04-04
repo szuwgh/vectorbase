@@ -54,7 +54,9 @@ impl<V> Vector<V> {
         }
     }
 
-    pub fn into() {}
+    pub fn into(self) -> V {
+        self.v
+    }
 
     pub fn with_fields(v: V, field_values: Vec<FieldValue>) -> Vector<V> {
         Self {

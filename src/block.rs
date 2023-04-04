@@ -144,8 +144,8 @@ impl Write for ByteBlockPool {
     // 在 byteblockpool 写入 [u8]
     // 当内存块不足时将申请新得内存块
     fn write(&mut self, mut x: &[u8]) -> Result<usize, std::io::Error> {
+        let total = x.len();
         while x.len() > 0 {
-            let total = x.len();
             let mut pos_tuple = Self::get_pos(self.pos);
             let (i, cur_level) = {
                 let b = self.buffers.get_mut(pos_tuple.0).unwrap();
@@ -158,8 +158,8 @@ impl Write for ByteBlockPool {
                     true
                 });
                 if i.is_none() {
-                    self.pos += total;
-                    return Ok(self.pos);
+                    self.pos += x.len();
+                    return Ok(total);
                 }
                 let i = i.unwrap().0;
                 pos_tuple.1 += i;
@@ -170,7 +170,7 @@ impl Write for ByteBlockPool {
             self.pos = self.next_bytes(cur_level as usize, Some(pos_tuple));
             x = &x[i..];
         }
-        Ok(self.pos)
+        Ok(total)
     }
 
     fn flush(&mut self) -> Result<(), std::io::Error> {
@@ -229,6 +229,11 @@ impl ByteBlockReader {
         let (x, _) = self.read_vu64::<Binary>();
         x as u32
     }
+
+    fn read_vusize(&mut self) -> usize {
+        let (x, _) = self.read_vu64::<Binary>();
+        x as usize
+    }
 }
 
 impl Read for ByteBlockReader {
@@ -236,7 +241,7 @@ impl Read for ByteBlockReader {
         let pool = self.pool.upgrade().unwrap();
         let mut pos = self.start_pos;
         let mut i: usize = 0;
-        while pos < self.end_pos {
+        while i < x.len() {
             if pos == self.limit {
                 self.next_block(self.limit)?;
                 pos = self.start_pos;
@@ -245,6 +250,7 @@ impl Read for ByteBlockReader {
             pos += 1;
             i += 1;
         }
+        self.start_pos = pos;
         Ok(i)
     }
 }
@@ -252,6 +258,28 @@ impl Read for ByteBlockReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const uvar_test: [u32; 19] = [
+        0,
+        1,
+        2,
+        10,
+        20,
+        63,
+        64,
+        65,
+        127,
+        128,
+        129,
+        255,
+        256,
+        257,
+        517,
+        768,
+        5976,
+        59767464,
+        1 << 32 - 1,
+    ];
 
     #[test]
     fn test_level() {
@@ -283,9 +311,11 @@ mod tests {
     fn test_write() {
         let mut b = ByteBlockPool::new();
         let x: [u8; 12] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-        let pos = b.alloc_bytes(0, None);
-        b.write_array(pos, &x).unwrap();
-        println!("{:?}", b.buffers);
+        let mut pos = b.alloc_bytes(0, None);
+        pos = b.write_array(pos, &x).unwrap();
+        println!("{:?},{}", b.buffers, pos);
+        pos = b.write_array(pos, &x).unwrap();
+        println!("{:?}, {}", b.buffers, pos);
     }
 
     #[test]
@@ -295,17 +325,32 @@ mod tests {
         // let x: [u8; 12] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
         let mut pos = b.alloc_bytes(0, None);
         //pos = b.write_array(pos, &x).unwrap();
-        pos = b.write_vu32(pos, 125).unwrap();
-        pos = b.write_vu32(pos, 63).unwrap();
-        pos = b.write_vu32(pos, 163).unwrap();
-        println!("{:?}", b.buffers);
-        println!("pos{:?}", pos);
+        // pos = b.write_vu32(pos, 125).unwrap();
+        // println!("{:?},{}", b.buffers, pos);
+        // pos = b.write_vu32(pos, 63).unwrap();
+        // println!("{:?},{}", b.buffers, pos);
+        // pos = b.write_vu32(pos, 64).unwrap();
+        // println!("{:?},{}", b.buffers, pos);
+        // pos = b.write_vu32(pos, 6511223).unwrap();
+        // println!("{:?},{}", b.buffers, pos);
+        // pos = b.write_vu32(pos, 66445666).unwrap();
+        // println!("{:?},{}", b.buffers, pos);
+        // pos = b.write_vu32(pos, 11111167).unwrap();
+        // println!("{:?},{}", b.buffers, pos);
 
         let pool = Arc::new(RefCell::new(b));
         let mut reader = ByteBlockReader::new(Arc::downgrade(&pool), 0, pos);
-        // let mut a = [0u8; 12];
-        // reader.read(&mut a);
-        // reader.r
-        // println!("a{:?}", a);
+        // let mut x = reader.read_vu32();
+        // println!("x1{:?}", x);
+        // x = reader.read_vu32();
+        // println!("x2{:?}", x);
+        // x = reader.read_vu32();
+        // println!("x2{:?}", x);
+        // x = reader.read_vu32();
+        // println!("x2{:?}", x);
+        // x = reader.read_vu32();
+        // println!("x2{:?}", x);
+        // x = reader.read_vu32();
+        // println!("x2{:?}", x);
     }
 }

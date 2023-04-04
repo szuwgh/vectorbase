@@ -42,7 +42,7 @@ pub trait AnnIndex<T>
 where
     T: Metric<T> + Create,
 {
-    fn insert(&mut self, q: T) -> usize;
+    fn insert(&mut self, q: T, id: usize);
     fn search(&self, q: &T, K: usize) -> Vec<Neighbor>;
 }
 

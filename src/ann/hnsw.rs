@@ -45,10 +45,11 @@ pub struct HNSW<T> {
     ef_construction: usize,
     M: usize,
     M0: usize,
-    n_items: usize,
+    // n_items: usize,
     rng: ThreadRng,
     level_mut: f64,
     nodes: Vec<Node<T>>,
+    current_id: usize,
 }
 
 impl<T> AnnIndex<T> for HNSW<T>
@@ -56,11 +57,11 @@ where
     T: Metric<T> + Create,
 {
     //插入
-    fn insert(&mut self, q: T) -> usize {
+    fn insert(&mut self, q: T, id: usize) {
         let cur_level = self.get_random_level();
         let ep_id = self.enter_point;
         let current_max_layer = self.get_node(ep_id).level;
-        let new_id = self.n_items;
+        let new_id = id;
 
         //起始点
         let mut ep = Neighbor {
@@ -98,13 +99,13 @@ where
             self.connect_neighbor(new_id, candidates, level);
         }
 
-        self.n_items += 1;
+        // self.n_items += 1;
 
         if cur_level > self.max_layer {
             self.max_layer = cur_level;
             self.enter_point = new_id;
         }
-        new_id
+        //  new_id
     }
 
     fn search(&self, q: &T, K: usize) -> Vec<Neighbor> {
@@ -154,7 +155,8 @@ where
             }],
             M: M,
             M0: M * 2,
-            n_items: 1,
+            current_id: 0,
+            // n_items: 1,
         }
     }
 
@@ -499,7 +501,7 @@ mod tests {
         // println!("{:?}", x);
 
         for &feature in &features {
-            hnsw.insert(feature.to_vec());
+            hnsw.insert(feature.to_vec(), 1);
         }
 
         hnsw.print();
