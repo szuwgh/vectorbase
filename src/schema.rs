@@ -4,12 +4,12 @@ use crate::ann::BoxedAnnIndex;
 use std::collections::HashMap;
 
 pub struct Schema {
-    pub vector: VectorEntry,
-    pub fields: Vec<FieldEntry>,
+    pub vector: VectorType,
+    pub fields: Vec<FieldType>,
     pub fields_map: HashMap<String, FieldID>,
 }
 
-pub enum VectorEntry {
+pub enum VectorType {
     Hnsw,
     Annoy,
     IvfFlat,
@@ -18,7 +18,7 @@ pub enum VectorEntry {
     Flat,
 }
 
-pub enum FieldEntry {
+pub enum FieldType {
     Str,
     I64,
     I32,
@@ -30,12 +30,12 @@ pub enum FieldEntry {
 }
 
 impl Schema {
-    pub fn set_vector(&mut self, vector: VectorEntry) {
+    pub fn set_vector(&mut self, vector: VectorType) {
         self.vector = vector
     }
 
     //添加一个域
-    pub fn add_field(&mut self, field_entry: FieldEntry) {}
+    pub fn add_field(&mut self, field_entry: FieldType) {}
 
     //注册索引方案
     pub fn register_index() {}

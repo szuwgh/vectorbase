@@ -18,7 +18,7 @@ pub(super) trait TextIndex {
     fn insert(&mut self, k: Vec<u8>, v: u64);
 }
 
-pub(super) trait Block {}
+pub(super) trait BlockBuffer {}
 
 pub(super) struct ByteBlockPool {
     pub(super) buffers: Vec<Vec<u8>>,
@@ -81,14 +81,14 @@ impl ByteBlockPool {
             .expect("buffer u8 out of bounds")
     }
 
-    fn get_next_index(&self, limit: usize) -> usize {
+    fn get_next_addr(&self, limit: usize) -> usize {
         let pos_tuple = Self::get_pos(limit);
         let b = self.buffers.get(pos_tuple.0).unwrap();
-        let next_index = ((b[pos_tuple.1]) as usize & 0xff << 24)
+        let next_addr = ((b[pos_tuple.1]) as usize & 0xff << 24)
             + ((b[pos_tuple.1 + 1]) as usize & 0xff << 16)
             + ((b[pos_tuple.1 + 2]) as usize & 0xff << 8)
             + ((b[pos_tuple.1 + 3]) as usize & 0xff);
-        next_index
+        next_addr
     }
 
     pub(super) fn new_bytes(&mut self, size: usize) -> usize {
@@ -214,13 +214,12 @@ impl ByteBlockReader {
         if self.level < 9 {
             self.level += 1;
         }
-        let next_index = (*pool).borrow().get_next_index(limit);
-        //  println!("next_index:{}", next_index);
-        self.start_pos = next_index;
+        let next_addr = (*pool).borrow().get_next_addr(limit);
+        self.start_pos = next_addr;
         self.limit = if self.start_pos + SIZE_CLASS[self.level] - POINTER_LEN > self.end_pos {
             self.end_pos
         } else {
-            next_index + SIZE_CLASS[self.level] - POINTER_LEN
+            next_addr + SIZE_CLASS[self.level] - POINTER_LEN
         };
         Ok(())
     }
@@ -324,33 +323,15 @@ mod tests {
         let mut b = ByteBlockPool::new();
         // let x: [u8; 12] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
         let mut pos = b.alloc_bytes(0, None);
-        //pos = b.write_array(pos, &x).unwrap();
-        // pos = b.write_vu32(pos, 125).unwrap();
-        // println!("{:?},{}", b.buffers, pos);
-        // pos = b.write_vu32(pos, 63).unwrap();
-        // println!("{:?},{}", b.buffers, pos);
-        // pos = b.write_vu32(pos, 64).unwrap();
-        // println!("{:?},{}", b.buffers, pos);
-        // pos = b.write_vu32(pos, 6511223).unwrap();
-        // println!("{:?},{}", b.buffers, pos);
-        // pos = b.write_vu32(pos, 66445666).unwrap();
-        // println!("{:?},{}", b.buffers, pos);
-        // pos = b.write_vu32(pos, 11111167).unwrap();
-        // println!("{:?},{}", b.buffers, pos);
+        for v in uvar_test {
+            pos = b.write_vu32(pos, v).unwrap();
+        }
 
         let pool = Arc::new(RefCell::new(b));
         let mut reader = ByteBlockReader::new(Arc::downgrade(&pool), 0, pos);
-        // let mut x = reader.read_vu32();
-        // println!("x1{:?}", x);
-        // x = reader.read_vu32();
-        // println!("x2{:?}", x);
-        // x = reader.read_vu32();
-        // println!("x2{:?}", x);
-        // x = reader.read_vu32();
-        // println!("x2{:?}", x);
-        // x = reader.read_vu32();
-        // println!("x2{:?}", x);
-        // x = reader.read_vu32();
-        // println!("x2{:?}", x);
+        for v in uvar_test {
+            let x = reader.read_vu32();
+            println!("x{:?}", x);
+        }
     }
 }

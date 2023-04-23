@@ -20,6 +20,7 @@ use std::sync::{Arc, Weak};
 use std::usize;
 
 type VecID = usize;
+type Addr = usize;
 
 pub struct IndexConfig {}
 
@@ -93,31 +94,31 @@ where
 
 // 倒排表
 struct Posting {
-    last_doc_id: usize,
-    byte_addr: usize,
-    doc_freq_index: usize,
-    pos_index: usize,
-    log_num: usize,
-    is_commit: bool,
+    last_vec_id: VecID,
+    byte_addr: Addr,
+    vec_freq_addr: Addr,
+    pos_addr: Addr,
+    vec_num: usize,
     freq: u32,
+    add_commit: bool,
 }
 
 impl Posting {
-    fn new(doc_freq_index: usize, pos_index: usize) -> Posting {
+    fn new(vec_freq_addr: Addr, pos_addr: Addr) -> Posting {
         Self {
-            last_doc_id: 0,
-            byte_addr: doc_freq_index,
-            doc_freq_index: doc_freq_index,
-            pos_index: pos_index,
-            log_num: 0,
-            is_commit: false,
+            last_vec_id: 0,
+            byte_addr: vec_freq_addr,
+            vec_freq_addr: vec_freq_addr,
+            pos_addr: pos_addr,
+            vec_num: 0,
+            add_commit: false,
             freq: 0,
         }
     }
 }
 
 pub(crate) struct FieldCache {
-    indexs: HashMap<String, Arc<RefCell<Posting>>>, // term --> posting list 后续换成 radix-tree
+    indexs: HashMap<String, Arc<RefCell<Posting>>>,
     share_bytes_block: Weak<RefCell<ByteBlockPool>>,
     commit_posting: Vec<Arc<RefCell<Posting>>>,
 }
@@ -139,7 +140,8 @@ impl FieldCache {
             .iter()
             .try_for_each(|posting| -> Result<(), std::io::Error> {
                 let p = &mut *posting.borrow_mut();
-                Self::write_doc_freq(p.last_doc_id, p, &mut *pool.borrow_mut())?;
+                Self::write_vec_freq(p.last_vec_id, p, &mut *pool.borrow_mut())?;
+                p.add_commit = false;
                 Ok(())
             })?;
         self.commit_posting.clear();
@@ -147,7 +149,7 @@ impl FieldCache {
     }
 
     //添加 token 单词
-    fn add(&mut self, doc_id: usize, value: &Value) -> Result<(), std::io::Error> {
+    fn add(&mut self, vec_id: VecID, value: &Value) -> Result<(), std::io::Error> {
         match value {
             Value::Str(s) => {
                 if !self.indexs.contains_key(s) {
@@ -163,9 +165,10 @@ impl FieldCache {
                 // 获取bytes 池
                 let pool = self.share_bytes_block.upgrade().unwrap();
                 // 倒排表中加入文档id
-                Self::add_doc(doc_id, &mut *p.borrow_mut(), &mut *pool.borrow_mut())?;
-                if !(*p).borrow_mut().is_commit {
+                Self::add_vec(vec_id, &mut *p.borrow_mut(), &mut *pool.borrow_mut())?;
+                if !(*p).borrow_mut().add_commit {
                     self.commit_posting.push(p.clone());
+                    (*p).borrow_mut().add_commit = true;
                 }
             }
             _ => {}
@@ -174,34 +177,36 @@ impl FieldCache {
         Ok(())
     }
 
-    fn add_doc(
-        doc_id: usize,
+    // 添加vec
+    fn add_vec(
+        vec_id: VecID,
         posting: &mut Posting,
         block_pool: &mut ByteBlockPool,
     ) -> Result<(), std::io::Error> {
-        if posting.last_doc_id == doc_id {
+        if posting.last_vec_id == vec_id {
             posting.freq += 1;
         } else {
-            Self::write_doc_freq(doc_id, posting, block_pool)?;
-            posting.last_doc_id = doc_id;
+            Self::write_vec_freq(vec_id, posting, block_pool)?;
+            posting.last_vec_id = vec_id;
+            posting.vec_num += 1;
         }
         Ok(())
     }
 
-    fn write_doc_freq(
-        doc_id: usize,
+    fn write_vec_freq(
+        vec_id: VecID,
         posting: &mut Posting,
         block_pool: &mut ByteBlockPool,
     ) -> Result<(), std::io::Error> {
         if posting.freq == 1 {
-            posting.doc_freq_index = block_pool.write_vusize(
-                posting.doc_freq_index,
-                (doc_id - posting.last_doc_id) << 1 | 1,
+            posting.vec_freq_addr = block_pool.write_vusize(
+                posting.vec_freq_addr,
+                (vec_id - posting.last_vec_id) << 1 | 1,
             )?;
         } else {
-            let index = block_pool
-                .write_vusize(posting.doc_freq_index, (doc_id - posting.last_doc_id) << 1)?;
-            posting.doc_freq_index = block_pool.write_vu32(index, posting.freq)?;
+            let addr = block_pool
+                .write_vusize(posting.vec_freq_addr, (vec_id - posting.last_vec_id) << 1)?;
+            posting.vec_freq_addr = block_pool.write_vu32(addr, posting.freq)?;
         }
         Ok(())
     }
@@ -215,12 +220,31 @@ impl FieldCache {
     }
 }
 
+// 快照读写
+pub struct SnapshotReader {
+    start_addr: Addr,
+    end_addr: Addr,
+    reader: ByteBlockReader,
+}
+
+impl SnapshotReader {
+    fn new(start_addr: Addr, end_addr: Addr, reader: ByteBlockReader) -> SnapshotReader {
+        Self {
+            start_addr: start_addr,
+            end_addr: end_addr,
+            reader: reader,
+        }
+    }
+}
+
+//倒排索引读写
 pub struct PostingReader {
-    id_reader: ByteBlockReader,
     lastVecID: VecID,
 }
 
-impl PostingReader {}
+impl PostingReader {
+    fn new() {}
+}
 
 struct IndexReader {}
 
@@ -230,6 +254,7 @@ impl IndexReader {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     #[test]
@@ -243,7 +268,20 @@ mod tests {
 
     #[test]
     fn test_fieldcache() {
-        let mut b = ByteBlockPool::new();
+        let buffer_pool = Arc::new(RefCell::new(ByteBlockPool::new()));
+        let mut field = FieldCache::new(Arc::downgrade(&buffer_pool));
+        let vec_id: VecID = 0;
+        let value1 = Value::Str("aa".to_string());
+        let value2 = Value::Str("bb".to_string());
+        let value3 = Value::Str("cc".to_string());
+        let value4 = Value::Str("dd".to_string());
+        field.add(vec_id, &value1).unwrap();
+        field.add(vec_id, &value2).unwrap();
+        field.add(vec_id, &value3).unwrap();
+        field.add(vec_id, &value4).unwrap();
+
+        field.commit().unwrap();
+
         // let jieba = Jieba::new().unwrap();
         // //搜索引擎模式
         // let words = jieba.cut_for_search("小明硕士，毕业于中国科学院计算所，后在日本京都大学深造");
