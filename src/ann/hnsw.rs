@@ -49,7 +49,7 @@ pub struct HNSW<T> {
     rng: ThreadRng,
     level_mut: f64,
     nodes: Vec<Node<T>>,
-    current_id: usize,
+    // current_id: usize,
 }
 
 impl<T> AnnIndex<T> for HNSW<T>
@@ -155,7 +155,7 @@ where
             }],
             M: M,
             M0: M * 2,
-            current_id: 0,
+            //   current_id: 0,
             // n_items: 1,
         }
     }

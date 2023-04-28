@@ -1,18 +1,19 @@
 mod ann;
-mod block;
+mod cache;
 mod disk;
 mod query;
 mod schema;
 mod tokenize;
 mod util;
+use util::error::GyResult;
+
 use crate::ann::BoxedAnnIndex;
-use crate::block::{ByteBlockPool, ByteBlockReader, SIZE_CLASS};
+use crate::cache::{ByteBlockPool, ByteBlockReader, SIZE_CLASS};
 use crate::query::Query;
-use crate::schema::{Schema, Value, Vector, VectorEntry};
-use std::marker::PhantomData;
+use crate::schema::{Schema, Value, Vector, VectorType};
 
 use crate::ann::{Create, Metric, HNSW};
-use jiebars::Jieba;
+//use jiebars::Jieba;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -36,10 +37,8 @@ where
     vec_id: VecID,
     buffer: Arc<RefCell<ByteBlockPool>>,
     schema: Schema,
-    tokenizer: Jieba,
+    // tokenizer: Jieba,
 }
-
-trait DocPosting {}
 
 impl<T: 'static> IndexBase<T>
 where
@@ -58,16 +57,20 @@ where
             vec_id: 0,
             buffer: buffer_pool,
             schema: schema,
-            tokenizer: Jieba::new().unwrap(),
+            // tokenizer: Jieba::new().unwrap(),
         }
     }
 
-    pub fn get_vector_index(vec_type: &VectorEntry) -> BoxedAnnIndex<T> {
+    pub fn get_vector_index(vec_type: &VectorType) -> BoxedAnnIndex<T> {
         BoxedAnnIndex(Box::new(HNSW::<T>::new(32)))
     }
 
+    pub fn reader() -> GyResult<IndexReader> {
+        todo!();
+    }
+
     //add vector
-    pub fn add(&mut self, vec: Vector<T>) -> Result<(), std::io::Error> {
+    pub fn add(&mut self, vec: Vector<T>) -> GyResult<()> {
         //添加向量标签
         for field in vec.field_values.iter() {
             let fw = self
@@ -88,7 +91,7 @@ where
     // 自动flush到磁盘中
     fn set_auto_flush(&mut self, path: PathBuf) {}
 
-    // flush到磁盘中
+    // 手动flush到磁盘中
     fn flush(&mut self, path: PathBuf) {}
 }
 
@@ -149,7 +152,7 @@ impl FieldCache {
     }
 
     //添加 token 单词
-    fn add(&mut self, vec_id: VecID, value: &Value) -> Result<(), std::io::Error> {
+    fn add(&mut self, vec_id: VecID, value: &Value) -> GyResult<()> {
         match value {
             Value::Str(s) => {
                 if !self.indexs.contains_key(s) {
@@ -173,7 +176,6 @@ impl FieldCache {
             }
             _ => {}
         }
-
         Ok(())
     }
 
@@ -242,11 +244,12 @@ pub struct PostingReader {
     lastVecID: VecID,
 }
 
+//读倒排索引
 impl PostingReader {
     fn new() {}
 }
 
-struct IndexReader {}
+pub struct IndexReader {}
 
 impl IndexReader {
     fn search(query: &Query) {}
@@ -258,14 +261,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_tokenizer() {
-        let jieba = Jieba::new().unwrap();
-        //搜索引擎模式
-        let words = jieba.cut_for_search("小明硕士，毕业于中国科学院计算所，后在日本京都大学深造");
+    // fn test_tokenizer() {
+    //     let jieba = Jieba::new().unwrap();
+    //     //搜索引擎模式
+    //     let words = jieba.cut_for_search("小明硕士，毕业于中国科学院计算所，后在日本京都大学深造");
 
-        println!("【搜索引擎模式】:{}\n", words.join(" / "));
-    }
-
+    //     println!("【搜索引擎模式】:{}\n", words.join(" / "));
+    // }
     #[test]
     fn test_fieldcache() {
         let buffer_pool = Arc::new(RefCell::new(ByteBlockPool::new()));
@@ -281,17 +283,5 @@ mod tests {
         field.add(vec_id, &value4).unwrap();
 
         field.commit().unwrap();
-
-        // let jieba = Jieba::new().unwrap();
-        // //搜索引擎模式
-        // let words = jieba.cut_for_search("小明硕士，毕业于中国科学院计算所，后在日本京都大学深造");
-
-        // println!("【搜索引擎模式】:{}\n", words.join(" / "));
-
-        // let jieba = Jieba::new().unwrap();
-        // //搜索引擎模式
-        // let words = jieba.cut_for_search("小明硕士，毕业于中国科学院计算所，后在日本京都大学深造");
-
-        // println!("【搜索引擎模式】:{}\n", words.join(" / "));
     }
 }
