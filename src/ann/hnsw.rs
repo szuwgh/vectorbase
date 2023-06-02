@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use std::fs::File;
 use std::path::Path;
 
-use super::{AnnIndex, BoxedAnnIndex, Create, Metric, Neighbor};
+use super::{AnnIndex, Create, Metric, Neighbor};
 use crate::util::error::GyResult;
 
 impl Metric<Vec<f32>> for Vec<f32> {
@@ -26,20 +26,20 @@ impl Create for Vec<f32> {
 }
 
 #[derive(Default)]
-struct Node<T> {
+struct Node<V> {
     level: usize,
     neighbors: Vec<Vec<usize>>, //layer --> vec
-    p: T,
+    p: V,
 }
 
-impl<T> Node<T> {
+impl<V> Node<V> {
     fn get_neighbors(&self, level: usize) -> impl Iterator<Item = usize> + '_ {
         self.neighbors.get(level).unwrap().iter().cloned()
     }
 }
 
 #[warn(non_snake_case)]
-pub struct HNSW<T> {
+pub struct HNSW<V> {
     enter_point: usize,
     max_layer: usize,
     ef_construction: usize,
@@ -48,16 +48,16 @@ pub struct HNSW<T> {
     // n_items: usize,
     rng: ThreadRng,
     level_mut: f64,
-    nodes: Vec<Node<T>>,
+    nodes: Vec<Node<V>>,
     // current_id: usize,
 }
 
-impl<T> AnnIndex<T> for HNSW<T>
+impl<V> AnnIndex<V> for HNSW<V>
 where
-    T: Metric<T> + Create,
+    V: Metric<V> + Create,
 {
     //插入
-    fn insert(&mut self, q: T, id: usize) {
+    fn insert(&mut self, q: V, id: usize) {
         let cur_level = self.get_random_level();
         let ep_id = self.enter_point;
         let current_max_layer = self.get_node(ep_id).level;
@@ -108,7 +108,7 @@ where
         //  new_id
     }
 
-    fn search(&self, q: &T, K: usize) -> Vec<Neighbor> {
+    fn search(&self, q: &V, K: usize) -> Vec<Neighbor> {
         let current_max_layer = self.max_layer;
         let mut ep = Neighbor {
             id: self.enter_point,
@@ -137,11 +137,11 @@ where
     }
 }
 
-impl<T> HNSW<T>
+impl<V> HNSW<V>
 where
-    T: Metric<T> + Create,
+    V: Metric<V> + Create,
 {
-    pub fn new(M: usize) -> HNSW<T> {
+    pub fn new(M: usize) -> HNSW<V> {
         Self {
             enter_point: 0,
             max_layer: 0,
@@ -151,7 +151,7 @@ where
             nodes: vec![Node {
                 level: 0,
                 neighbors: Vec::new(),
-                p: T::create(),
+                p: V::create(),
             }],
             M: M,
             M0: M * 2,
@@ -161,7 +161,7 @@ where
     }
 
     // #[warn(non_snake_case)]
-    // fn load(&self, filename: &Path) -> GyResult<HNSW<T>> {
+    // fn load(&self, filename: &Path) -> GyResult<HNSW<V>> {
     //     let mut file = File::open(filename).unwrap();
     //     let mut r = ReadDisk::new(file);
     //     let M = r.read_usize()?;
@@ -171,7 +171,7 @@ where
     //     let max_layer = r.read_usize()?;
     //     let enter_point = r.read_usize()?;
     //     let node_len = r.read_usize()?;
-    //     let mut nodes: Vec<Node<T>> = Vec::with_capacity(node_len);
+    //     let mut nodes: Vec<Node<V>> = Vec::with_capacity(node_len);
     //     for _ in 0..node_len {
     //         let p = r.read_vec_f32()?;
     //         let level = r.read_usize()?;
@@ -183,7 +183,7 @@ where
     //         nodes.push(Node {
     //             level: level,
     //             neighbors: neighbors,
-    //             p: T::create(),
+    //             p: V::create(),
     //         });
     //     }
     //     Ok(HNSW {
@@ -236,11 +236,11 @@ where
         ((-(x * self.level_mut).ln()).floor()) as usize
     }
 
-    fn get_node(&self, x: usize) -> &Node<T> {
+    fn get_node(&self, x: usize) -> &Node<V> {
         self.nodes.get(x).expect("get node fail")
     }
 
-    fn get_node_mut(&mut self, x: usize) -> &mut Node<T> {
+    fn get_node_mut(&mut self, x: usize) -> &mut Node<V> {
         self.nodes.get_mut(x).expect("get mut node fail")
     }
 
@@ -295,7 +295,7 @@ where
     }
 
     // 返回 result 从远到近
-    fn search_at_layer(&self, q: &T, ep: Neighbor, level: usize) -> BinaryHeap<Neighbor> {
+    fn search_at_layer(&self, q: &V, ep: Neighbor, level: usize) -> BinaryHeap<Neighbor> {
         let mut visited_set: HashSet<usize> = HashSet::new();
         let mut candidates: BinaryHeap<Neighbor> =
             BinaryHeap::with_capacity(self.ef_construction * 3);

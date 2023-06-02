@@ -36,14 +36,15 @@ impl PartialOrd for Neighbor {
 
 impl Eq for Neighbor {}
 
-pub struct BoxedAnnIndex<T>(pub Box<dyn AnnIndex<T>>);
+pub struct BoxedAnnIndex<V>(pub Box<dyn AnnIndex<V>>);
 
-pub trait AnnIndex<T>
+pub trait AnnIndex<V>
 where
-    T: Metric<T> + Create,
+    V: Metric<V> + Create,
 {
-    fn insert(&mut self, q: T, id: usize);
-    fn search(&self, q: &T, K: usize) -> Vec<Neighbor>;
+    fn insert(&mut self, q: V, id: usize);
+    fn search(&self, q: &V, K: usize) -> Vec<Neighbor>;
+    // fn write_to();
 }
 
 struct ReadDisk<R: Read> {
@@ -89,12 +90,12 @@ impl<R: Read> ReadDisk<R> {
     }
 }
 
-struct WriteDisk<T: Write> {
-    w: T,
+struct WriteDisk<V: Write> {
+    w: V,
 }
 
-impl<T: Write> WriteDisk<T> {
-    fn new(w: T) -> WriteDisk<T> {
+impl<V: Write> WriteDisk<V> {
+    fn new(w: V) -> WriteDisk<V> {
         Self { w: w }
     }
 

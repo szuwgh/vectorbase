@@ -2,20 +2,32 @@
 use crate::ann::BoxedAnnIndex;
 
 use std::collections::HashMap;
+use std::sync::atomic::AtomicU64;
+
+pub type VecID = u64;
 
 pub struct Schema {
-    pub vector: VectorType,
     pub fields: Vec<FieldType>,
     pub fields_map: HashMap<String, FieldID>,
 }
 
 pub enum VectorType {
-    Hnsw,
-    Annoy,
-    IvfFlat,
-    LSH,
-    PQ,
     Flat,
+    BinFlat,
+    IvfFlat,
+    BinIvfFlat,
+    IvfPQ,
+    IvfSQ8,
+    IvfSQ8H,
+    NSG,
+    HNSW,
+    RHNSWFlat,
+    RHNSWPQ,
+    RHNSWSQ,
+    IvfHNSW,
+    ANNOY,
+    NGTPANNG,
+    NGTONNG,
 }
 
 pub enum FieldType {
@@ -30,9 +42,9 @@ pub enum FieldType {
 }
 
 impl Schema {
-    pub fn set_vector(&mut self, vector: VectorType) {
-        self.vector = vector
-    }
+    // pub fn set_vector(&mut self, vector: VectorType) {
+    //     self.vector = vector
+    // }
 
     //添加一个域
     pub fn add_field(&mut self, field_entry: FieldType) {}
