@@ -83,11 +83,11 @@ impl ByteBlockPool {
         Ok(self.pos)
     }
 
-    pub(super) fn write_vec_id(&mut self, pos: Addr, v: VecID) -> Result<Addr, std::io::Error> {
-        self.pos = pos;
-        self.write_vu64::<Binary>(v as u64)?;
-        Ok(self.pos)
-    }
+    // pub(super) fn write_vec_id(&mut self, pos: Addr, v: VecID) -> Result<Addr, std::io::Error> {
+    //     self.pos = pos;
+    //     self.write_vu64::<Binary>(v as u64)?;
+    //     Ok(self.pos)
+    // }
 
     pub(super) fn write_u64(&mut self, pos: Addr, v: u64) -> Result<Addr, std::io::Error> {
         self.pos = pos;
@@ -99,16 +99,6 @@ impl ByteBlockPool {
         let next_level = LEVEL_CLASS[cur_level];
         self.alloc_bytes(next_level, last)
     }
-
-    // fn get_u8(&self, pos: usize) -> u8 {
-    //     let pos_tuple = Self::get_pos(pos);
-    //     *self
-    //         .buffers
-    //         .get(pos_tuple.0)
-    //         .expect("buffer block out of bounds")
-    //         .get(pos_tuple.1)
-    //         .expect("buffer u8 out of bounds")
-    // }
 
     fn get_bytes(&self, start_addr: Addr, limit: Addr) -> &[u8] {
         let pos_tuple = Self::get_pos(start_addr);

@@ -9,22 +9,22 @@ use util::error::GyResult;
 mod wal;
 
 use crate::ann::BoxedAnnIndex;
-use crate::cache::{Addr, ByteBlockPool, RingBuffer, RingBufferReader, BLOCK_SIZE_CLASS};
+use crate::cache::{Addr, ByteBlockPool, RingBuffer, BLOCK_SIZE_CLASS};
 use crate::query::Query;
 use crate::schema::{FieldValue, Schema, Value, VecID, Vector, VectorType};
 
 use crate::ann::{Create, Metric, HNSW};
 //use jiebars::Jieba;
+use lock_api::RawMutex;
+use parking_lot::Mutex;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, RwLock, Weak};
 use std::usize;
-
 pub struct IndexConfig {}
 
+// 实现基础搜索能力
 pub struct Index(Arc<IndexBase>);
 
 impl Index {
@@ -42,12 +42,22 @@ impl Index {
     }
 }
 
+//时序搜索
+pub struct Series {}
+
+impl Series {}
+
+unsafe impl<V: 'static> Send for Collection<V> where V: Metric<V> + Create {}
+unsafe impl<V: 'static> Sync for Collection<V> where V: Metric<V> + Create {}
+
+//向量搜索
 pub struct Collection<V: 'static>
 where
     V: Metric<V> + Create,
 {
     vector_field: RwLock<BoxedAnnIndex<V>>,
     index: Index,
+    rw_lock: Mutex<()>,
 }
 
 impl<V: 'static> Collection<V>
@@ -56,22 +66,30 @@ where
 {
     fn new(index: Index, vec_type: &VectorType) -> Collection<V> {
         Collection {
-            vector_field: RwLock::new(Self::get_vector_index(&vec_type)),
+            vector_field: RwLock::new(Self::get_vector_index(&vec_type).unwrap()),
             index: index,
+            rw_lock: Mutex::new(()),
         }
     }
 
-    pub fn get_vector_index(vec_type: &VectorType) -> BoxedAnnIndex<V> {
-        BoxedAnnIndex(Box::new(HNSW::<V>::new(32)))
+    pub fn get_vector_index(vec_type: &VectorType) -> Option<BoxedAnnIndex<V>> {
+        match vec_type {
+            VectorType::HNSW => Some(BoxedAnnIndex(Box::new(HNSW::<V>::new(32)))),
+            _ => None,
+        }
     }
 
     pub fn add(&mut self, vec: Vector<V>) -> GyResult<()> {
-        self.index.0.add(&vec.field_values)?;
+        unsafe {
+            self.rw_lock.raw().lock();
+        }
+        self.index.0._add(&vec.field_values)?;
         self.vector_field
             .write()
             .unwrap()
             .0
             .insert(vec.into(), *self.index.0.vec_id.read().unwrap() as usize);
+        *self.index.0.vec_id.write().unwrap() += 1;
         Ok(())
     }
 }
@@ -85,6 +103,7 @@ pub struct IndexBase {
     vec_id: RwLock<VecID>,
     buffer: Arc<RingBuffer>,
     schema: Schema,
+    rw_lock: Mutex<()>,
     // tokenizer: Jieba,
 }
 
@@ -101,16 +120,24 @@ impl IndexBase {
             vec_id: RwLock::new(0),
             buffer: buffer_pool,
             schema: schema,
+            rw_lock: Mutex::new(()),
         }
     }
 
-    //add vector
-    pub fn add(&self, field_values: &[FieldValue]) -> GyResult<()> {
-        //添加向量标签
+    fn _add(&self, field_values: &[FieldValue]) -> GyResult<()> {
         for field in field_values.iter() {
             let fw = self.fields.get(field.field_id().0 as usize).unwrap();
             fw.add(*self.vec_id.read().unwrap(), field.value())?;
         }
+        Ok(())
+    }
+
+    //add vector
+    pub fn add(&self, field_values: &[FieldValue]) -> GyResult<()> {
+        unsafe {
+            self.rw_lock.raw().lock();
+        }
+        self._add(field_values)?;
         //添加向量
         *self.vec_id.write().unwrap() += 1;
         Ok(())
@@ -241,13 +268,13 @@ impl FieldCache {
         block_pool: &mut ByteBlockPool,
     ) -> Result<(), std::io::Error> {
         if posting.freq == 1 {
-            posting.vec_freq_addr = block_pool.write_vec_id(
+            posting.vec_freq_addr = block_pool.write_u64(
                 posting.vec_freq_addr,
                 (vec_id - posting.last_vec_id) << 1 | 1,
             )?;
         } else {
-            let addr = block_pool
-                .write_vec_id(posting.vec_freq_addr, (vec_id - posting.last_vec_id) << 1)?;
+            let addr =
+                block_pool.write_u64(posting.vec_freq_addr, (vec_id - posting.last_vec_id) << 1)?;
             posting.vec_freq_addr = block_pool.write_vu32(addr, posting.freq)?;
         }
         Ok(())
