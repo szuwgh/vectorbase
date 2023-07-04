@@ -9,11 +9,14 @@ use util::error::GyResult;
 mod wal;
 
 use crate::ann::BoxedAnnIndex;
-use crate::cache::{Addr, ByteBlockPool, RingBuffer, BLOCK_SIZE_CLASS};
-use crate::query::Query;
-use crate::schema::{FieldValue, Schema, Value, VecID, Vector, VectorType};
-
 use crate::ann::{Create, Metric, HNSW};
+use crate::cache::{
+    Addr, ByteBlockPool, RingBuffer, RingBufferReader, SnapshotReader, SnapshotReaderIter,
+    BLOCK_SIZE_CLASS,
+};
+use crate::query::Query;
+use crate::schema::{DocID, Document, FieldValue, Schema, Value, Vector, VectorType};
+use varintrs::{Binary, ReadBytesVarExt};
 //use jiebars::Jieba;
 use lock_api::RawMutex;
 use parking_lot::Mutex;
@@ -83,7 +86,7 @@ where
         unsafe {
             self.rw_lock.raw().lock();
         }
-        self.index.0._add(&vec.field_values)?;
+        self.index.0._add(&vec.d)?;
         self.vector_field
             .write()
             .unwrap()
@@ -100,7 +103,7 @@ unsafe impl Sync for IndexBase {}
 //#[derive(Clone)]
 pub struct IndexBase {
     fields: Vec<FieldCache>,
-    vec_id: RwLock<VecID>,
+    vec_id: RwLock<DocID>,
     buffer: Arc<RingBuffer>,
     schema: Schema,
     rw_lock: Mutex<()>,
@@ -124,8 +127,8 @@ impl IndexBase {
         }
     }
 
-    fn _add(&self, field_values: &[FieldValue]) -> GyResult<()> {
-        for field in field_values.iter() {
+    fn _add(&self, doc: &Document) -> GyResult<()> {
+        for field in doc.field_values.iter() {
             let fw = self.fields.get(field.field_id().0 as usize).unwrap();
             fw.add(*self.vec_id.read().unwrap(), field.value())?;
         }
@@ -133,21 +136,21 @@ impl IndexBase {
     }
 
     //add vector
-    pub fn add(&self, field_values: &[FieldValue]) -> GyResult<()> {
+    pub fn add(&self, doc: &Document) -> GyResult<()> {
         unsafe {
             self.rw_lock.raw().lock();
         }
-        self._add(field_values)?;
+        self._add(doc)?;
         //添加向量
         *self.vec_id.write().unwrap() += 1;
         Ok(())
     }
 
-    // fn search(&self, v: V) -> GyResult<impl Iterator<Item = GyResult<Vector<V>>>> {
-    //     // self.vector_index.0.search(&v, 10);
-    //     todo!();
-    //     //  Ok(())
-    // }
+    fn search(&self, query: Query) {
+        // self.vector_index.0.search(&v, 10);
+        todo!();
+        //  Ok(())
+    }
 
     // commit 之后文档能搜索得到
     fn commit(&mut self) {}
@@ -158,10 +161,10 @@ impl IndexBase {
 
 // 倒排表
 struct Posting {
-    last_vec_id: VecID,
+    last_vec_id: DocID,
     byte_addr: Addr,
     vec_freq_addr: Addr,
-    pos_addr: Addr,
+    //  pos_addr: Addr,
     vec_num: usize,
     freq: u32,
     add_commit: bool,
@@ -173,7 +176,7 @@ impl Posting {
             last_vec_id: 0,
             byte_addr: vec_freq_addr,
             vec_freq_addr: vec_freq_addr,
-            pos_addr: pos_addr,
+            //  pos_addr: pos_addr,
             vec_num: 0,
             add_commit: false,
             freq: 0,
@@ -196,7 +199,25 @@ impl FieldCache {
         }
     }
 
-    // fn search(&mut self) -> FieldCache {}
+    fn search(&self, term: &Value) -> GyResult<PostingReader> {
+        let (start_addr, end_addr) = {
+            let index = self.indexs.read().unwrap();
+            let posting = index.get(&term.to_string()).unwrap();
+            let (start_addr, end_addr) = (
+                (*posting).borrow().byte_addr.clone(),
+                (*posting).borrow().vec_freq_addr.clone(),
+            );
+            (start_addr, end_addr)
+        };
+
+        let reader = RingBufferReader::new(
+            self.share_bytes_block.upgrade().unwrap(),
+            start_addr,
+            end_addr,
+        );
+        let r = SnapshotReader::new(reader);
+        Ok(PostingReader::new(r))
+    }
 
     fn commit(&mut self) -> Result<(), std::io::Error> {
         let pool = self.share_bytes_block.upgrade().unwrap();
@@ -213,7 +234,7 @@ impl FieldCache {
     }
 
     //添加 token 单词
-    pub fn add(&self, vec_id: VecID, value: &Value) -> GyResult<()> {
+    pub fn add(&self, vec_id: DocID, value: &Value) -> GyResult<()> {
         match value {
             Value::Str(s) => {
                 if !self.indexs.read().unwrap().contains_key(s) {
@@ -248,7 +269,7 @@ impl FieldCache {
 
     // 添加vec
     fn add_vec(
-        vec_id: VecID,
+        vec_id: DocID,
         posting: &mut Posting,
         block_pool: &mut ByteBlockPool,
     ) -> Result<(), std::io::Error> {
@@ -263,7 +284,7 @@ impl FieldCache {
     }
 
     fn write_vec_freq(
-        vec_id: VecID,
+        vec_id: DocID,
         posting: &mut Posting,
         block_pool: &mut ByteBlockPool,
     ) -> Result<(), std::io::Error> {
@@ -291,21 +312,33 @@ impl FieldCache {
 
 pub struct VectorIter {}
 
-// pub struct PostingIter<'a> {
-//     reader: ByteBlockReader,
-//     snap: SnapshotReader<'a>,
-// }
+pub struct PostingReader {
+    snap: SnapshotReader,
+}
 
-// impl<'a> PostingIter<'a> {
-//     fn new() {}
-// }
+impl PostingReader {
+    fn new(snap: SnapshotReader) -> PostingReader {
+        PostingReader { snap: snap }
+    }
 
-// impl<'b, 'a> Iterator for PostingIter<'_, 'a> {
-//     type Item = VecID;
-//     fn next(&mut self) -> Option<Self::Item> {
-//         todo!();
-//     }
-// }
+    pub fn iter<'a>(&'a self) -> PostingReaderIter<'a> {
+        PostingReaderIter {
+            snap_iter: self.snap.iter(),
+        }
+    }
+}
+
+pub struct PostingReaderIter<'a> {
+    snap_iter: SnapshotReaderIter<'a>,
+}
+
+impl<'b, 'a> Iterator for PostingReaderIter<'a> {
+    type Item = DocID;
+    fn next(&mut self) -> Option<Self::Item> {
+        let (i, _) = self.snap_iter.read_vu64::<Binary>();
+        Some(i as DocID)
+    }
+}
 
 pub struct IndexReader {
     reader: Arc<IndexBase>,
@@ -332,6 +365,12 @@ impl Searcher {
         }
     }
 
+    fn and(&mut self, reader: IndexReader) -> Searcher {
+        Searcher {
+            readers: vec![reader],
+        }
+    }
+
     pub fn search(query: &Query) {}
 }
 
@@ -352,7 +391,7 @@ mod tests {
     fn test_fieldcache() {
         let buffer_pool = Arc::new(RingBuffer::new());
         let mut field = FieldCache::new(Arc::downgrade(&buffer_pool));
-        let vec_id: VecID = 0;
+        let vec_id: DocID = 0;
         let value1 = Value::Str("aa".to_string());
         let value2 = Value::Str("bb".to_string());
         let value3 = Value::Str("cc".to_string());
@@ -362,6 +401,15 @@ mod tests {
         field.add(vec_id, &value3).unwrap();
         field.add(vec_id, &value4).unwrap();
 
+        let vec_id: DocID = 1;
+        let value1 = Value::Str("aa".to_string());
+        let value2 = Value::Str("bb".to_string());
+        let value3 = Value::Str("cc".to_string());
+        let value4 = Value::Str("dd".to_string());
+        field.add(vec_id, &value1).unwrap();
+        field.add(vec_id, &value2).unwrap();
+        field.add(vec_id, &value3).unwrap();
+        field.add(vec_id, &value4).unwrap();
         field.commit().unwrap();
     }
 }

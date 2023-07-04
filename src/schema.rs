@@ -4,7 +4,8 @@ use crate::ann::BoxedAnnIndex;
 use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
 
-pub type VecID = u64;
+//pub type VecID = u64;
+pub type DocID = u64;
 
 pub struct Schema {
     pub fields: Vec<FieldType>,
@@ -55,14 +56,14 @@ impl Schema {
 
 pub struct Vector<V> {
     pub v: V,
-    pub field_values: Vec<FieldValue>,
+    pub d: Document,
 }
 
 impl<V> Vector<V> {
     pub fn with(v: V) -> Vector<V> {
         Self {
             v: v,
-            field_values: Vec::new(),
+            d: Document::new(),
         }
     }
 
@@ -73,6 +74,27 @@ impl<V> Vector<V> {
     pub fn with_fields(v: V, field_values: Vec<FieldValue>) -> Vector<V> {
         Self {
             v: v,
+            d: Document::with(field_values),
+        }
+    }
+}
+
+pub struct Document {
+    docID: DocID,
+    pub field_values: Vec<FieldValue>,
+}
+
+impl Document {
+    fn new() -> Document {
+        Self {
+            docID: 0,
+            field_values: Vec::new(),
+        }
+    }
+
+    fn with(field_values: Vec<FieldValue>) -> Document {
+        Self {
+            docID: 0,
             field_values: field_values,
         }
     }
@@ -93,7 +115,7 @@ pub struct FieldID(pub u32);
 
 //域定义
 pub struct FieldValue {
-    pub(crate) field_id: FieldID,
+    field_id: FieldID,
     pub(crate) name: String,
     pub(crate) value: Value,
 }
@@ -137,6 +159,21 @@ pub enum Value {
     F64(f64),
     F32(f32),
     Bytes(Vec<u8>),
+}
+
+impl Value {
+    pub fn to_string(&self) -> String {
+        match self {
+            Value::Str(s) => s.to_string(),
+            Value::I64(i) => i.to_string(),
+            Value::I32(i) => i.to_string(),
+            Value::U64(i) => i.to_string(),
+            Value::U32(i) => i.to_string(),
+            Value::F64(i) => i.to_string(),
+            Value::F32(i) => i.to_string(),
+            _ => "".to_string(),
+        }
+    }
 }
 
 pub enum Column {
