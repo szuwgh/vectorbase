@@ -174,6 +174,19 @@ impl Value {
             _ => "".to_string(),
         }
     }
+
+    pub fn to_vec(&self) -> Vec<u8> {
+        match self {
+            Value::Str(s) => Vec::new(),
+            Value::I64(i) => Vec::new(),
+            Value::I32(i) => Vec::new(),
+            Value::U64(i) => Vec::new(),
+            Value::U32(i) => Vec::new(),
+            Value::F64(i) => Vec::new(),
+            Value::F32(i) => Vec::new(),
+            _ => Vec::new(),
+        }
+    }
 }
 
 pub enum Column {
