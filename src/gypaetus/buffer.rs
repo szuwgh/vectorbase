@@ -2,7 +2,7 @@ use std::borrow::BorrowMut;
 use std::io::{Read, Write};
 use std::sync::RwLock;
 
-use crate::util::error::GyResult;
+use super::util::error::GyResult;
 use std::cell::RefCell;
 use std::cell::UnsafeCell;
 use std::sync::Arc;
@@ -25,23 +25,23 @@ unsafe impl Send for RingBuffer {}
 unsafe impl Sync for RingBuffer {}
 
 // 一写多读
-pub(super) struct RingBuffer(UnsafeCell<ByteBlockPool>);
+pub(crate) struct RingBuffer(UnsafeCell<ByteBlockPool>);
 
 impl RingBuffer {
-    pub(super) fn new() -> RingBuffer {
+    pub(crate) fn new() -> RingBuffer {
         RingBuffer(UnsafeCell::from(ByteBlockPool::new()))
     }
 
-    pub(super) fn borrow(&self) -> &ByteBlockPool {
+    pub(crate)fn borrow(&self) -> &ByteBlockPool {
         unsafe { &*self.0.get() }
     }
-    pub(super) fn borrow_mut(&self) -> &mut ByteBlockPool {
+    pub(crate) fn borrow_mut(&self) -> &mut ByteBlockPool {
         unsafe { &mut *self.0.get() }
     }
-    pub(super) fn iter() {}
+    pub(crate) fn iter() {}
 }
 
-pub(super) struct ByteBlockPool {
+pub(crate) struct ByteBlockPool {
     pub(super) buffers: Vec<Box<[u8]>>,
     pos: Addr,
     used_pos: Addr,
@@ -49,7 +49,7 @@ pub(super) struct ByteBlockPool {
 }
 
 impl ByteBlockPool {
-    pub(super) fn new() -> ByteBlockPool {
+    pub(crate) fn new() -> ByteBlockPool {
         Self {
             buffers: Vec::with_capacity(128),
             pos: 0,
@@ -213,7 +213,7 @@ impl Write for ByteBlockPool {
     }
 }
 
-pub struct RingBufferReader {
+pub(crate) struct RingBufferReader {
     pool: Arc<RingBuffer>,
     start_addr: Addr,
     end_addr: Addr,
@@ -234,7 +234,7 @@ impl RingBufferReader {
     }
 }
 
-pub(super) struct RingBufferReaderIter<'a> {
+pub(crate) struct RingBufferReaderIter<'a> {
     pool: &'a RingBuffer,
     start_addr: Addr,
     end_addr: Addr,
@@ -310,7 +310,7 @@ impl<'a> RingBufferReaderIter<'a> {
     }
 }
 
-pub struct SnapshotReader {
+pub(crate) struct SnapshotReader {
     reader: RingBufferReader,
 }
 
@@ -325,7 +325,7 @@ impl SnapshotReader {
 }
 
 // 快照读写
-pub struct SnapshotReaderIter<'a> {
+pub(crate) struct SnapshotReaderIter<'a> {
     offset: Addr,
     reader_iter: RingBufferReaderIter<'a>,
     cur_block: &'a [u8],

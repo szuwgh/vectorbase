@@ -13,6 +13,12 @@ impl Query for TermQuery {
 
 pub(crate) struct Term(pub(crate) Vec<u8>);
 
+impl Term {
+    pub fn from_str(s: &str) -> Term {
+        todo!();
+    }
+}
+
 pub trait Query {
     fn query(&self, searcher: &Searcher) -> PostingReader;
 }

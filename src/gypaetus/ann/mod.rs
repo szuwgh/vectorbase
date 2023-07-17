@@ -1,7 +1,7 @@
 pub mod annoy;
 pub mod hnsw;
 pub use self::hnsw::HNSW;
-use crate::util::error::GyResult;
+use super::util::error::GyResult;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use core::cmp::Ordering;
 use std::io::{Read, Write};

@@ -1,5 +1,5 @@
 // 每一行数据
-use crate::ann::BoxedAnnIndex;
+use super::ann::BoxedAnnIndex;
 
 use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;

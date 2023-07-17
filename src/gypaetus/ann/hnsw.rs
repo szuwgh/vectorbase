@@ -7,7 +7,7 @@ use std::fs::File;
 use std::path::Path;
 
 use super::{AnnIndex, Create, Metric, Neighbor};
-use crate::util::error::GyResult;
+use super::super::util::error::GyResult;
 
 impl Metric<Vec<f32>> for Vec<f32> {
     fn distance(&self, b: &Vec<f32>) -> f32 {

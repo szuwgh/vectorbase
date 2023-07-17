@@ -1,4 +1,4 @@
-use crate::PostingReader;
+use super::PostingReader;
 
 use super::query::{Query, Term};
 use super::schema::Document;
