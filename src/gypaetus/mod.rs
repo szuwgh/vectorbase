@@ -30,7 +30,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock, Weak};
 use std::usize;
-use wal::Wal;
+use wal::{MmapWal, Wal};
 
 pub struct IndexConfig {}
 
@@ -108,13 +108,12 @@ unsafe impl Send for IndexBase {}
 unsafe impl Sync for IndexBase {}
 
 pub struct IndexBase {
-    fields: Vec<FieldCache>, 
+    fields: Vec<FieldCache>,
     doc_id: RwLock<DocID>,
     buffer: Arc<RingBuffer>,
     schema: Schema,
     rw_lock: Mutex<()>,
-    wal: Wal,
-    // tokenizer: Jieba,
+    wal: Arc<dyn Wal>, // tokenizer: Jieba,
 }
 
 impl IndexBase {
@@ -133,7 +132,7 @@ impl IndexBase {
             buffer: buffer_pool,
             schema: schema,
             rw_lock: Mutex::new(()),
-            wal: Wal::new(),
+            wal: Arc::new(MmapWal::new()),
         }
     }
 

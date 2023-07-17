@@ -1,7 +1,11 @@
-pub(crate) struct Wal {}
+pub(crate) trait Wal {}
 
-impl Wal {
-    pub(crate) fn new() -> Wal {
+pub(crate) struct MmapWal {}
+
+impl MmapWal {
+    pub(crate) fn new() -> MmapWal {
         Self {}
     }
 }
+
+impl Wal for MmapWal {}
