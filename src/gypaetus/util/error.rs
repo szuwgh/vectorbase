@@ -1,5 +1,6 @@
 use std::io;
 use std::io::Error as IOError;
+use std::sync::PoisonError;
 use thiserror::Error;
 
 pub type GyResult<T> = Result<T, GyError>;
@@ -20,6 +21,8 @@ pub enum GyError {
     ErrChecksum,
     #[error("incompatible value")]
     ErrIncompatibleValue,
+    #[error("invalid lock")]
+    ErrInvalidLock,
 }
 
 impl From<&str> for GyError {
@@ -49,5 +52,11 @@ impl From<IOError> for GyError {
 impl From<GyError> for String {
     fn from(e: GyError) -> Self {
         format!("{}", e)
+    }
+}
+
+impl<T> From<PoisonError<T>> for GyError {
+    fn from(e: PoisonError<T>) -> Self {
+        GyError::ErrInvalidLock
     }
 }

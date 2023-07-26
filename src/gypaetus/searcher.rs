@@ -21,5 +21,7 @@ impl Searcher {
         todo!();
     }
 
-    pub fn search(&self, query: &dyn Query) {}
+    pub fn search(&self, query: &dyn Query) {
+        query.query(&self);
+    }
 }

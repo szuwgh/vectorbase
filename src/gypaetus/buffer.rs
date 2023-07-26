@@ -32,7 +32,7 @@ impl RingBuffer {
         RingBuffer(UnsafeCell::from(ByteBlockPool::new()))
     }
 
-    pub(crate)fn borrow(&self) -> &ByteBlockPool {
+    pub(crate) fn borrow(&self) -> &ByteBlockPool {
         unsafe { &*self.0.get() }
     }
     pub(crate) fn borrow_mut(&self) -> &mut ByteBlockPool {
@@ -81,12 +81,6 @@ impl ByteBlockPool {
         self.write_vu64::<Binary>(v as u64)?;
         Ok(self.pos)
     }
-
-    // pub(super) fn write_vec_id(&mut self, pos: Addr, v: VecID) -> Result<Addr, std::io::Error> {
-    //     self.pos = pos;
-    //     self.write_vu64::<Binary>(v as u64)?;
-    //     Ok(self.pos)
-    // }
 
     pub(super) fn write_u64(&mut self, pos: Addr, v: u64) -> Result<Addr, std::io::Error> {
         self.pos = pos;

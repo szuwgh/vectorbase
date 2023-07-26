@@ -1,9 +1,11 @@
-pub(crate) struct StoreWriter {}
+pub(crate) struct DiskIndexWriter {}
 
-impl StoreWriter {
-    fn new() -> StoreWriter {
+impl DiskIndexWriter {
+    fn new() -> DiskIndexWriter {
         Self {}
     }
 
     fn add() {}
 }
+
+struct DiskIndexReader {}

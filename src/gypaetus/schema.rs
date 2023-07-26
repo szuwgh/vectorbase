@@ -1,8 +1,22 @@
 // 每一行数据
 use super::ann::BoxedAnnIndex;
 
+use super::util::error::GyResult;
+use serde::{Deserialize, Serialize};
+use serde_bytes::ByteBuf;
 use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
+
+use std::fmt;
+use std::io::Read;
+use std::io::Write;
+
+pub trait BinarySerialize: fmt::Debug + Sized {
+    /// Serialize
+    fn serialize<W: Write>(&self, writer: &mut W) -> GyResult<()>;
+    /// Deserialize
+    fn deserialize<R: Read>(reader: &mut R) -> GyResult<Self>;
+}
 
 //pub type VecID = u64;
 pub type DocID = u64;
@@ -80,21 +94,21 @@ impl<V> Vector<V> {
 }
 
 pub struct Document {
-    docID: DocID,
+    doc_id: DocID,
     pub field_values: Vec<FieldValue>,
 }
 
 impl Document {
     fn new() -> Document {
         Self {
-            docID: 0,
+            doc_id: 0,
             field_values: Vec::new(),
         }
     }
 
     fn with(field_values: Vec<FieldValue>) -> Document {
         Self {
-            docID: 0,
+            doc_id: 0,
             field_values: field_values,
         }
     }
@@ -102,6 +116,11 @@ impl Document {
     pub fn add_field_value(mut self, field: FieldValue) -> Self {
         self.field_values.push(field);
         self
+    }
+
+    pub fn sort_fieldvalues(&mut self) {
+        self.field_values
+            .sort_by_key(|field_value| field_value.field_id.0);
     }
 
     pub fn get_sort_fieldvalues(&mut self, field_id: &HashMap<String, FieldID>) -> &[FieldValue] {
@@ -163,29 +182,20 @@ pub enum Value {
 
 impl Value {
     pub fn to_string(&self) -> String {
-        match self {
-            Value::Str(s) => s.to_string(),
-            Value::I64(i) => i.to_string(),
-            Value::I32(i) => i.to_string(),
-            Value::U64(i) => i.to_string(),
-            Value::U32(i) => i.to_string(),
-            Value::F64(i) => i.to_string(),
-            Value::F32(i) => i.to_string(),
-            _ => "".to_string(),
-        }
+        todo!()
     }
 
     pub fn to_vec(&self) -> Vec<u8> {
-        match self {
-            Value::Str(s) => Vec::new(),
-            Value::I64(i) => Vec::new(),
-            Value::I32(i) => Vec::new(),
-            Value::U64(i) => Vec::new(),
-            Value::U32(i) => Vec::new(),
-            Value::F64(i) => Vec::new(),
-            Value::F32(i) => Vec::new(),
-            _ => Vec::new(),
-        }
+        todo!()
+    }
+}
+
+impl Serialize for Value {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        todo!()
     }
 }
 

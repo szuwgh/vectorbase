@@ -1,36 +1,12 @@
 use art_tree::Art;
-use art_tree::ByteString;
+use std::borrow::Borrow;
 use std::collections::HashMap;
+use std::hash::Hash;
 use std::sync::RwLock;
 pub trait CacheIndex<K, V> {
     fn contains_key(&self, k: &K) -> bool;
     fn insert(&mut self, k: K, v: V) -> Option<V>;
     fn get(&self, k: &K) -> Option<&V>;
-}
-
-pub(crate) struct DefaultCache<K, V> {
-    cache: HashMap<K, V>,
-}
-
-impl<K, V> DefaultCache<K, V> {
-    pub(crate) fn new() -> DefaultCache<K, V> {
-        Self {
-            cache: HashMap::new(),
-        }
-    }
-}
-
-impl<K, V> CacheIndex<K, V> for DefaultCache<K, V> {
-    fn contains_key(&self, k: &K) -> bool {
-        false
-    }
-    fn insert(&mut self, k: K, v: V) -> Option<V> {
-        None
-    }
-
-    fn get(&self, k: &K) -> Option<&V> {
-        None
-    }
 }
 
 ///```
@@ -55,7 +31,7 @@ impl<K, V> CacheIndex<K, V> for DefaultCache<K, V> {
 ///```
 
 pub(crate) struct ART<K, V> {
-    cache: RwLock<Art<K, V>>,
+    cache: Art<K, V>,
 }
 
 impl<K, V> CacheIndex<K, V> for ART<K, V> {
