@@ -2,8 +2,7 @@ use std::borrow::BorrowMut;
 use std::io::{Read, Write};
 use std::sync::RwLock;
 
-use crate::schema::VecID;
-use crate::util::error::GyResult;
+use super::util::error::GyResult;
 use std::cell::RefCell;
 use std::cell::UnsafeCell;
 use std::sync::Arc;
@@ -26,23 +25,23 @@ unsafe impl Send for RingBuffer {}
 unsafe impl Sync for RingBuffer {}
 
 // 一写多读
-pub(super) struct RingBuffer(UnsafeCell<ByteBlockPool>);
+pub(crate) struct RingBuffer(UnsafeCell<ByteBlockPool>);
 
 impl RingBuffer {
-    pub(super) fn new() -> RingBuffer {
+    pub(crate) fn new() -> RingBuffer {
         RingBuffer(UnsafeCell::from(ByteBlockPool::new()))
     }
 
-    pub(super) fn borrow(&self) -> &ByteBlockPool {
+    pub(crate) fn borrow(&self) -> &ByteBlockPool {
         unsafe { &*self.0.get() }
     }
-    pub(super) fn borrow_mut(&self) -> &mut ByteBlockPool {
+    pub(crate) fn borrow_mut(&self) -> &mut ByteBlockPool {
         unsafe { &mut *self.0.get() }
     }
-    pub(super) fn iter() {}
+    pub(crate) fn iter() {}
 }
 
-pub(super) struct ByteBlockPool {
+pub(crate) struct ByteBlockPool {
     pub(super) buffers: Vec<Box<[u8]>>,
     pos: Addr,
     used_pos: Addr,
@@ -50,7 +49,7 @@ pub(super) struct ByteBlockPool {
 }
 
 impl ByteBlockPool {
-    pub(super) fn new() -> ByteBlockPool {
+    pub(crate) fn new() -> ByteBlockPool {
         Self {
             buffers: Vec::with_capacity(128),
             pos: 0,
@@ -83,12 +82,6 @@ impl ByteBlockPool {
         Ok(self.pos)
     }
 
-    pub(super) fn write_vec_id(&mut self, pos: Addr, v: VecID) -> Result<Addr, std::io::Error> {
-        self.pos = pos;
-        self.write_vu64::<Binary>(v as u64)?;
-        Ok(self.pos)
-    }
-
     pub(super) fn write_u64(&mut self, pos: Addr, v: u64) -> Result<Addr, std::io::Error> {
         self.pos = pos;
         self.write_vu64::<Binary>(v)?;
@@ -99,16 +92,6 @@ impl ByteBlockPool {
         let next_level = LEVEL_CLASS[cur_level];
         self.alloc_bytes(next_level, last)
     }
-
-    // fn get_u8(&self, pos: usize) -> u8 {
-    //     let pos_tuple = Self::get_pos(pos);
-    //     *self
-    //         .buffers
-    //         .get(pos_tuple.0)
-    //         .expect("buffer block out of bounds")
-    //         .get(pos_tuple.1)
-    //         .expect("buffer u8 out of bounds")
-    // }
 
     fn get_bytes(&self, start_addr: Addr, limit: Addr) -> &[u8] {
         let pos_tuple = Self::get_pos(start_addr);
@@ -148,7 +131,7 @@ impl ByteBlockPool {
         buffer_pos + self.used_pos
     }
 
-    fn alloc_bytes(&mut self, next_level: usize, last: Option<PosTuple>) -> Addr {
+    pub(super) fn alloc_bytes(&mut self, next_level: usize, last: Option<PosTuple>) -> Addr {
         //申请新的内存块
         let new_size = BLOCK_SIZE_CLASS[next_level];
         let pos = self.new_bytes(new_size);
@@ -184,7 +167,7 @@ impl ByteBlockPool {
     }
 }
 
-struct PosTuple(usize, usize);
+pub(super) struct PosTuple(usize, usize);
 
 impl Write for ByteBlockPool {
     // 在 byteblockpool 写入 [u8]
@@ -224,7 +207,28 @@ impl Write for ByteBlockPool {
     }
 }
 
-pub(super) struct RingBufferReader<'a> {
+pub(crate) struct RingBufferReader {
+    pool: Arc<RingBuffer>,
+    start_addr: Addr,
+    end_addr: Addr,
+}
+
+impl RingBufferReader {
+    pub(crate) fn new(pool: Arc<RingBuffer>, start_addr: Addr, end_addr: Addr) -> RingBufferReader {
+        let reader = Self {
+            pool: pool,
+            start_addr: start_addr,
+            end_addr: end_addr,
+        };
+        reader
+    }
+
+    pub(crate) fn iter<'a>(&'a self) -> RingBufferReaderIter<'a> {
+        RingBufferReaderIter::new(&self.pool, self.start_addr, self.end_addr)
+    }
+}
+
+pub(crate) struct RingBufferReaderIter<'a> {
     pool: &'a RingBuffer,
     start_addr: Addr,
     end_addr: Addr,
@@ -234,24 +238,25 @@ pub(super) struct RingBufferReader<'a> {
     first: bool,
 }
 
-impl<'a> Iterator for RingBufferReader<'a> {
-    type Item = BlockData<'a>;
+impl<'a> Iterator for RingBufferReaderIter<'a> {
+    type Item = &'a [u8];
     fn next(&mut self) -> Option<Self::Item> {
         if self.eof {
             return None;
         }
         match self.next_block() {
-            Ok(m) => Some(BlockData {
-                data: m,
-                limit: self.limit,
-            }),
+            Ok(m) => Some(m),
             Err(_) => None,
         }
     }
 }
 
-impl<'a> RingBufferReader<'a> {
-    fn new(pool: &'a RingBuffer, start_addr: Addr, end_addr: Addr) -> RingBufferReader<'a> {
+impl<'a> RingBufferReaderIter<'a> {
+    pub(crate) fn new(
+        pool: &'a RingBuffer,
+        start_addr: Addr,
+        end_addr: Addr,
+    ) -> RingBufferReaderIter<'a> {
         let reader = Self {
             pool: pool,
             start_addr: start_addr,
@@ -260,16 +265,10 @@ impl<'a> RingBufferReader<'a> {
             level: 0,
             eof: false,
             first: true,
+            //_marker: PhantomData,
         };
         reader
     }
-
-    // pub(crate) fn get_first_block(&self) -> Result<BlockData<'a>,std::io::Error>{
-
-    //     let b = self.pool.borrow().get_bytes(self.start_addr, self.limit);
-    //     let block = Block{};
-    //     Ok()
-    // }
 
     pub(crate) fn next_block(&mut self) -> Result<&'a [u8], std::io::Error> {
         if self.eof {
@@ -297,7 +296,7 @@ impl<'a> RingBufferReader<'a> {
                     BLOCK_SIZE_CLASS[self.level] - POINTER_LEN
                 };
         }
-        let b = self.pool.borrow().get_bytes(self.start_addr, self.limit);
+        let b: &[u8] = self.pool.borrow().get_bytes(self.start_addr, self.limit);
         if self.start_addr + self.limit >= self.end_addr {
             self.eof = true;
         }
@@ -305,69 +304,67 @@ impl<'a> RingBufferReader<'a> {
     }
 }
 
-// 快照读写
-pub struct SnapshotReader<'a> {
-    offset: Addr,
-    reader: RingBufferReader<'a>,
-    cur_block: BlockData<'a>,
+pub(crate) struct SnapshotReader {
+    reader: RingBufferReader,
 }
 
-impl<'a> SnapshotReader<'a> {
-    fn new(mut reader: RingBufferReader<'a>) -> GyResult<SnapshotReader<'a>> {
-        let block = reader
+impl SnapshotReader {
+    pub fn new(reader: RingBufferReader) -> SnapshotReader {
+        Self { reader: reader }
+    }
+
+    pub fn iter<'a>(&'a self) -> SnapshotReaderIter<'a> {
+        SnapshotReaderIter::new(self.reader.iter()).unwrap()
+    }
+}
+
+// 快照读写
+pub(crate) struct SnapshotReaderIter<'a> {
+    offset: Addr,
+    reader_iter: RingBufferReaderIter<'a>,
+    cur_block: &'a [u8],
+}
+
+impl<'a> SnapshotReaderIter<'a> {
+    pub(crate) fn new(mut iter: RingBufferReaderIter<'a>) -> GyResult<SnapshotReaderIter<'a>> {
+        let block = iter
             .next()
             .ok_or(std::io::Error::from(std::io::ErrorKind::UnexpectedEof))?;
         Ok(Self {
-            // start_addr: start_addr,-
             offset: 0,
-            reader: reader,
+            reader_iter: iter,
             cur_block: block,
         })
     }
 }
 
-impl<'a> Read for SnapshotReader<'a> {
+impl<'a> Iterator for SnapshotReaderIter<'a> {
+    type Item = u64;
+    fn next(&mut self) -> Option<Self::Item> {
+        let (i, x) = self.read_vu64::<Binary>();
+        if x == 0 {
+            return None;
+        }
+        Some(i)
+    }
+}
+
+impl<'a> Read for SnapshotReaderIter<'a> {
     fn read(&mut self, x: &mut [u8]) -> Result<usize, std::io::Error> {
         for i in 0..x.len() {
-            if self.offset == self.cur_block.limit {
+            if self.offset == self.cur_block.len() {
                 self.cur_block = self
-                    .reader
+                    .reader_iter
                     .next()
                     .ok_or(std::io::Error::from(std::io::ErrorKind::UnexpectedEof))?;
                 self.offset = 0;
             }
-            x[i] = self.cur_block.data[self.offset];
+            x[i] = self.cur_block[self.offset];
             self.offset += 1;
         }
         Ok(x.len())
     }
 }
-
-pub struct BlockData<'a> {
-    data: &'a [u8],
-    limit: usize,
-}
-
-// impl Read for ByteBlockReader<'_> {
-//     fn read(&mut self, x: &mut [u8]) -> Result<usize, std::io::Error> {
-//         // let pool = self.pool.upgrade().unwrap();
-//         let mut pos = self.start_pos;
-//         let limit = self.limit;
-//         let mut i: usize = 0;
-//         while i < x.len() {
-//             if pos == limit {
-//                 self.next_block(limit)?;
-//                 limit = self.limit;
-//                 pos = self.start_pos;
-//             }
-//             x[i] = self.pool.get_u8(pos);
-//             pos += 1;
-//             i += 1;
-//         }
-//         self.start_pos = pos;
-//         Ok(i)
-//     }
-// }
 
 #[cfg(test)]
 mod tests {
@@ -437,28 +434,59 @@ mod tests {
     }
 
     #[test]
-    fn test_write() {
+    fn test_write2() {
         let mut b = RingBuffer::new();
-        let x: [u8; 12] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+        // let x: [u8; 5] = [1, 2, 3, 4, 5];
         let start = b.borrow_mut().alloc_bytes(0, None);
-        let mut end = b.borrow_mut().write_array(start, &x).unwrap();
-        end = b.borrow_mut().write_array(end, &x).unwrap();
-        end = b.borrow_mut().write_array(end, &x).unwrap();
-        end = b.borrow_mut().write_array(end, &x).unwrap();
-        end = b.borrow_mut().write_array(end, &x).unwrap();
-        end = b.borrow_mut().write_array(end, &x).unwrap();
-        end = b.borrow_mut().write_array(end, &x).unwrap();
-        end = b.borrow_mut().write_array(end, &x).unwrap();
-        end = b.borrow_mut().write_array(end, &x).unwrap();
-        end = b.borrow_mut().write_array(end, &x).unwrap();
-        end = b.borrow_mut().write_array(end, &x).unwrap();
+        let mut end = b.borrow_mut().write_u64(start, 1).unwrap();
+        end = b.borrow_mut().write_u64(end, 3).unwrap();
+        end = b.borrow_mut().write_u64(end, 3).unwrap();
+        end = b.borrow_mut().write_u64(end, 3).unwrap();
+        end = b.borrow_mut().write_u64(end, 3).unwrap();
+        end = b.borrow_mut().write_u64(end, 3).unwrap();
+        // end = b.borrow_mut().write_array(end, &x).unwrap();
+        // end = b.borrow_mut().write_array(end, &x).unwrap();
+        // end = b.borrow_mut().write_array(end, &x).unwrap();
+        // end = b.borrow_mut().write_array(end, &x).unwrap();
+        // end = b.borrow_mut().write_array(end, &x).unwrap();
+        // end = b.borrow_mut().write_array(end, &x).unwrap();
+        // end = b.borrow_mut().write_array(end, &x).unwrap();
+        // end = b.borrow_mut().write_array(end, &x).unwrap();
+        // end = b.borrow_mut().write_array(end, &x).unwrap();
+        // end = b.borrow_mut().write_array(end, &x).unwrap();
 
         println!("b:{:?}", b.borrow().buffers);
         println!("start:{},end:{}", start, end);
+        let pool = Arc::new(b);
+        let reader = RingBufferReader::new(pool, start, end);
+        for v in reader.iter() {
+            println!("b:{:?},len:{:?}", v, v.len());
+        }
+    }
 
-        let reader = RingBufferReader::new(&b, start, end);
-        for v in reader {
-            println!("b:{:?},len:{:?}", v.data, v.data.len());
+    #[test]
+    fn test_write() {
+        let mut b = RingBuffer::new();
+        let x: [u8; 5] = [1, 2, 3, 4, 5];
+        let start = b.borrow_mut().alloc_bytes(0, None);
+        let mut end = b.borrow_mut().write_array(start, &x).unwrap();
+        // end = b.borrow_mut().write_array(end, &x).unwrap();
+        // end = b.borrow_mut().write_array(end, &x).unwrap();
+        // end = b.borrow_mut().write_array(end, &x).unwrap();
+        // end = b.borrow_mut().write_array(end, &x).unwrap();
+        // end = b.borrow_mut().write_array(end, &x).unwrap();
+        // end = b.borrow_mut().write_array(end, &x).unwrap();
+        // end = b.borrow_mut().write_array(end, &x).unwrap();
+        // end = b.borrow_mut().write_array(end, &x).unwrap();
+        // end = b.borrow_mut().write_array(end, &x).unwrap();
+        // end = b.borrow_mut().write_array(end, &x).unwrap();
+
+        println!("b:{:?}", b.borrow().buffers);
+        println!("start:{},end:{}", start, end);
+        let pool = Arc::new(b);
+        let reader = RingBufferReader::new(pool, start, end);
+        for v in reader.iter() {
+            println!("b:{:?},len:{:?}", v, v.len());
         }
     }
 
@@ -496,13 +524,25 @@ mod tests {
         for i in u64var_test {
             end = b.borrow_mut().write_u64(end, i).unwrap();
         }
+        let a = Arc::new(b);
+        let reader = RingBufferReader::new(a, start, end);
 
-        let reader = RingBufferReader::new(&b, start, end);
-        let mut r = SnapshotReader::new(reader).unwrap();
-        for _ in 0..u64var_test.len() + 1 {
-            let (i, _) = r.read_vu64::<Binary>();
-            println!("i:{}", i);
+        for v in reader.iter() {
+            println!("b:{:?},len:{:?}", v, v.len());
         }
+
+        let mut r = SnapshotReader::new(reader);
+        let mut t = r.iter();
+
+        for i in t {
+            // let c = t.next().unwrap();
+            println!("c:{}", i);
+        }
+
+        // for _ in 0..u64var_test.len() + 1 {
+        //     let (i, _) = r.read_vu64::<Binary>();
+        //     println!("i:{}", i);
+        // }
     }
 
     use std::thread;
@@ -517,19 +557,17 @@ mod tests {
         // }
 
         let pool = Arc::new(b);
-        let pool1 = Arc::clone(&pool);
+        let a = Arc::clone(&pool);
         let t1 = thread::spawn(move || loop {
-            let c = &pool1;
-            let mut reader = RingBufferReader::new(c, 0, 0);
+            let mut reader = RingBufferReader::new(a.clone(), 0, 0);
             for v in uvar_test {
                 // let x = reader.read_vu32();
                 //println!("x{:?}", x);
             }
         });
-        let pool2 = Arc::clone(&pool);
+        let b = Arc::clone(&pool);
         let t2 = thread::spawn(move || loop {
-            let c = &pool2;
-            let mut reader = RingBufferReader::new(c, 0, 0);
+            let mut reader = RingBufferReader::new(b.clone(), 0, 0);
             for v in uvar_test {
                 // let x = reader.read_vu32();
                 //println!("x{:?}", x);
