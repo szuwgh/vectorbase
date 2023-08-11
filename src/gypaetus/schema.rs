@@ -10,15 +10,15 @@ use std::sync::atomic::AtomicU64;
 use std::fmt;
 use std::io::Read;
 use std::io::Write;
-use varintrs::{vint_size, Binary, ReadBytesVarExt, WriteBytesVarExt};
 
-pub trait BinarySerialize: Sized {
+pub trait BinarySerialize: fmt::Debug + Sized {
     /// Serialize
-    fn serialize<W: Write>(&self, writer: &mut W) -> GyResult<usize>;
+    fn serialize<W: Write>(&self, writer: &mut W) -> GyResult<()>;
     /// Deserialize
     fn deserialize<R: Read>(reader: &mut R) -> GyResult<Self>;
 }
 
+//pub type VecID = u64;
 pub type DocID = u64;
 
 pub struct Schema {
@@ -118,47 +118,15 @@ impl Document {
         self
     }
 
-    pub fn get_field_values(&self) -> &[FieldValue] {
-        &self.field_values
-    }
-
     pub fn sort_fieldvalues(&mut self) {
         self.field_values
             .sort_by_key(|field_value| field_value.field_id.0);
     }
 
-    //pub fn
-    // pub fn get_sort_fieldvalues(&mut self, field_id: &HashMap<String, FieldID>) -> &[FieldValue] {
-    //     self.field_values
-    //         .sort_by_key(|field_value| field_id.get(field_value.field()).unwrap().0);
-    //     &self.field_values
-    // }
-}
-
-impl BinarySerialize for Document {
-    /// Serialize
-    fn serialize<W: Write>(&self, writer: &mut W) -> GyResult<usize> {
-        // let
-        Ok(0)
-    }
-    /// Deserialize
-    fn deserialize<R: Read>(reader: &mut R) -> GyResult<Self> {
-        todo!()
-    }
-}
-
-pub struct VInt(pub u64);
-
-impl BinarySerialize for VInt {
-    /// Serialize
-    fn serialize<W: Write>(&self, writer: &mut W) -> GyResult<usize> {
-        let i = writer.write_leb128_u64::<Binary>(self.0)?;
-        Ok(i)
-    }
-    /// Deserialize
-    fn deserialize<R: Read>(reader: &mut R) -> GyResult<Self> {
-        let v = reader.read_led128_u64::<Binary>()?;
-        Ok(VInt(v))
+    pub fn get_sort_fieldvalues(&mut self, field_id: &HashMap<String, FieldID>) -> &[FieldValue] {
+        self.field_values
+            .sort_by_key(|field_value| field_id.get(field_value.field()).unwrap().0);
+        &self.field_values
     }
 }
 
@@ -167,12 +135,14 @@ pub struct FieldID(pub u32);
 //域定义
 pub struct FieldValue {
     field_id: FieldID,
+    pub(crate) name: String,
     pub(crate) value: Value,
 }
 
 impl FieldValue {
     fn text(name: &str, text: &str) -> Self {
         Self {
+            name: name.to_string(),
             field_id: FieldID(0),
             value: Value::Str(text.to_string()),
         }
@@ -180,6 +150,7 @@ impl FieldValue {
 
     fn new(name: &str, value: Value) -> Self {
         Self {
+            name: name.to_string(),
             field_id: FieldID(0),
             value: value,
         }
@@ -187,6 +158,9 @@ impl FieldValue {
 
     pub fn field_id(&self) -> &FieldID {
         &self.field_id
+    }
+    pub fn field(&self) -> &str {
+        &self.name
     }
 
     pub fn value(&self) -> &Value {

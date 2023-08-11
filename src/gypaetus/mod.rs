@@ -193,7 +193,7 @@ impl IndexBase {
         }
         let b = {
             self.share_buf.get_mut().clear();
-            doc.serialize(&mut self.share_buf)?;
+            //doc.serialize(&mut self.share_buf)?;
             self.share_buf.get_ref().as_ref()
         };
         let doc_offset = self.write_wal(b)?;
