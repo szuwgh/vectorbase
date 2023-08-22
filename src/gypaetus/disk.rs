@@ -1,9 +1,14 @@
-pub(crate) struct DiskIndexWriter {}
+use std::path::PathBuf;
+
+pub(crate) struct DiskStoreWriter {}
+
+//合并索引
+pub fn merge_index() {}
 
 struct DiskIndexReader {}
 
-impl DiskIndexWriter {
-    fn new() -> DiskIndexWriter {
+impl DiskStoreWriter {
+    fn new(name: PathBuf) -> DiskStoreWriter {
         Self {}
     }
 

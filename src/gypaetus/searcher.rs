@@ -17,11 +17,11 @@ impl Searcher {
         Searcher { readers: reader }
     }
 
-    fn doc() -> Document {
+    fn doc(&self) -> Document {
         todo!();
     }
 
     pub fn search(&self, query: &dyn Query) {
-        query.query(&self);
+        query.query(&self.readers);
     }
 }

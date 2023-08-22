@@ -6,9 +6,9 @@ mod schema;
 mod searcher;
 mod tokenize;
 mod util;
+use art_tree::{Art, ByteString};
 use query::Term;
 use util::error::{GyError, GyResult};
-
 pub mod wal;
 
 use ann::BoxedAnnIndex;
@@ -18,7 +18,6 @@ use buffer::{
     BLOCK_SIZE_CLASS,
 };
 
-use query::Query;
 use schema::{DocID, Document, Schema, Value, VectorType};
 
 //use jiebars::Jieba;
@@ -26,20 +25,32 @@ use bytes::buf::Writer;
 use bytes::{BufMut, BytesMut};
 use lock_api::RawMutex;
 use parking_lot::Mutex;
-use schema::BinarySerialize;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock, Weak};
 use std::usize;
-use wal::{IOType, Wal};
+use wal::{IOType, Wal, DEFAULT_WAL_FILE_SIZE};
 pub struct IndexConfig {
     io_type: IOType,
     disk_path: PathBuf,
     fsize: usize,
 }
 
+impl Default for IndexConfig {
+    fn default() -> IndexConfig {
+        IndexConfig {
+            io_type: IOType::MMAP,
+            disk_path: PathBuf::from("./"),
+            fsize: DEFAULT_WAL_FILE_SIZE,
+        }
+    }
+}
+
+unsafe impl Send for Index {}
+unsafe impl Sync for Index {}
+
+#[derive(Clone)]
 // 实现基础搜索能力
 pub struct Index(Arc<IndexBase>);
 
@@ -52,6 +63,10 @@ impl Index {
         Ok(IndexReader::new(self.0.clone()))
     }
 
+    pub fn writer(&self) -> GyResult<IndexWriter> {
+        Ok(IndexWriter::new(self.0.clone()))
+    }
+
     pub fn create_vector_collection<V>(self, vector: VectorType) -> Collection<V>
     where
         V: Metric<V> + Create,
@@ -61,9 +76,11 @@ impl Index {
 }
 
 //时序搜索
-pub struct Series {}
+// pub struct Series {
+//     series: HashMap<SeriesID>,
+// }
 
-impl Series {}
+//impl Series {}
 
 unsafe impl<V: 'static> Send for Collection<V> where V: Metric<V> + Create {}
 unsafe impl<V: 'static> Sync for Collection<V> where V: Metric<V> + Create {}
@@ -125,7 +142,7 @@ unsafe impl Sync for IndexBase {}
 pub struct IndexBase {
     schema: Schema,
     fields: Vec<FieldCache>,
-    doc_id: DocID,
+    doc_id: RefCell<DocID>,
     buffer: Arc<RingBuffer>,
     wal: Arc<RwLock<Wal>>,
     doc_offset: Vec<usize>,
@@ -134,8 +151,6 @@ pub struct IndexBase {
 }
 
 impl IndexBase {
-    //fn with_wal() -> IndexBase {}
-
     fn new(schema: Schema, config: IndexConfig) -> GyResult<IndexBase> {
         let buffer_pool = Arc::new(RingBuffer::new());
         let mut field_cache: Vec<FieldCache> = Vec::new();
@@ -145,12 +160,12 @@ impl IndexBase {
 
         Ok(Self {
             fields: field_cache,
-            doc_id: 0,
+            doc_id: RefCell::new(0),
             buffer: buffer_pool,
             schema: schema,
             rw_lock: Mutex::new(()),
             wal: Arc::new(RwLock::new(Wal::new(
-                &config.disk_path,
+                &config.disk_path.join("000.wal"),
                 config.fsize,
                 config.io_type,
             )?)),
@@ -161,8 +176,9 @@ impl IndexBase {
 
     fn inner_add(&self, doc: &Document) -> GyResult<()> {
         for field in doc.field_values.iter() {
+            println!("field.field_id().0){}", field.field_id().0);
             let fw = self.fields.get(field.field_id().0 as usize).unwrap();
-            fw.add(self.doc_id, field.value())?;
+            fw.add(*self.doc_id.borrow(), field.value())?;
         }
         Ok(())
     }
@@ -179,46 +195,64 @@ impl IndexBase {
         self.write_wal(content)?;
         //self.inner_add(doc)?;
         //添加向量
-        self.doc_id += 1;
+        *self.doc_id.borrow_mut() += 1;
         Ok(())
     }
 
     //add vector
-    pub fn add(&mut self, doc: &Document) -> GyResult<()> {
+    pub fn add(&self, doc: &Document) -> GyResult<()> {
         unsafe {
             self.rw_lock.raw().lock();
         }
-        if self.doc_id as usize >= self.doc_offset.capacity() {
-            return Err(GyError::ErrDocumentOverflow);
-        }
-        let b = {
-            self.share_buf.get_mut().clear();
-            //doc.serialize(&mut self.share_buf)?;
-            self.share_buf.get_ref().as_ref()
-        };
-        let doc_offset = self.write_wal(b)?;
-        self.inner_add(doc)?;
-        //添加向量
-        self.doc_id += 1;
-        self.doc_offset.push(doc_offset);
+        // if self.doc_id as usize >= self.doc_offset.capacity() {
+        //     return Err(GyError::ErrDocumentOverflow);
+        // }
 
+        // let b = {
+        //     self.share_buf.get_mut().clear();
+        //     doc.serialize(&mut self.share_buf)?;
+        //     self.share_buf.get_ref().as_ref()
+        // };
+        // let doc_offset = self.write_wal(b)?;
+        self.inner_add(doc)?;
+        *self.doc_id.borrow_mut() += 1;
+        self.commit()?;
+        unsafe {
+            self.rw_lock.raw().unlock();
+        }
+        //   self.doc_offset.push(doc_offset);
         Ok(())
     }
 
     pub fn doc(&self, doc_id: DocID) -> GyResult<Document> {
-        let offset = self.doc_offset.get(doc_id as usize);
+        let offset = self
+            .doc_offset
+            .get(doc_id as usize)
+            .ok_or("document not found")?;
+        //   let sz = self.wal.
         todo!()
         // Document {}
     }
 
-    fn search(&self, query: &[u8]) {
-        // self.vector_index.0.search(&v, 10);
-        todo!();
-        //  Ok(())
+    fn field_reader(&self, field_id: u32) -> GyResult<FieldReader> {
+        Ok(FieldReader::new(
+            self.fields[field_id as usize].indexs.clone(),
+            self.fields[field_id as usize].share_bytes_block.clone(),
+        ))
     }
 
     // commit 之后文档能搜索得到
-    fn commit(&mut self) {}
+    fn commit(&self) -> GyResult<()> {
+        self.fields
+            .iter()
+            .try_for_each(|field| -> Result<(), std::io::Error> {
+                field
+                    .commit()
+                    .map_err(|e| std::io::Error::from(std::io::ErrorKind::InvalidData))?;
+                Ok(())
+            })?;
+        Ok(())
+    }
 
     // 手动flush到磁盘中
     fn flush(&mut self, path: PathBuf) {}
@@ -255,6 +289,35 @@ pub trait CacheIndex {
     fn get(&self, k: &[u8]) -> Option<&Arc<RefCell<Posting>>>;
 }
 
+pub(crate) struct ArtCache {
+    cache: Art<ByteString, Arc<RefCell<Posting>>>,
+}
+
+impl ArtCache {
+    pub(crate) fn new() -> ArtCache {
+        Self { cache: Art::new() }
+    }
+}
+
+impl CacheIndex for ArtCache {
+    fn contains_key(&self, k: &[u8]) -> bool {
+        match self.cache.get(&ByteString::new(&k)) {
+            Some(_) => true,
+            None => false,
+        }
+    }
+
+    fn insert(&mut self, k: Vec<u8>, v: Arc<RefCell<Posting>>) -> Option<Arc<RefCell<Posting>>> {
+        self.cache.upsert(ByteString::new(&k), v.clone());
+        Some(v)
+        // self.map.insert(k, v)
+    }
+
+    fn get(&self, k: &[u8]) -> Option<&Arc<RefCell<Posting>>> {
+        self.cache.get(&ByteString::new(&k))
+    }
+}
+
 pub(crate) struct DefaultCache {
     map: HashMap<Vec<u8>, Arc<RefCell<Posting>>>,
 }
@@ -282,56 +345,40 @@ impl CacheIndex for DefaultCache {
 }
 
 pub(crate) struct FieldCache {
-    indexs: Box<RwLock<dyn CacheIndex>>,
+    indexs: Arc<RwLock<dyn CacheIndex>>,
     share_bytes_block: Weak<RingBuffer>,
-    commit_posting: RwLock<Vec<Arc<RefCell<Posting>>>>,
+    commit_posting: RefCell<Vec<Arc<RefCell<Posting>>>>,
 }
 
 impl FieldCache {
     fn new(pool: Weak<RingBuffer>) -> FieldCache {
         Self {
-            indexs: Box::new(RwLock::new(DefaultCache::new())),
+            indexs: Arc::new(RwLock::new(DefaultCache::new())),
             share_bytes_block: pool,
-            commit_posting: RwLock::new(Vec::new()),
+            commit_posting: RefCell::new(Vec::new()),
         }
     }
 
-    fn get(&self, term: &Term) -> GyResult<PostingReader> {
-        let (start_addr, end_addr) = {
-            let index = self.indexs.read()?;
-            let posting = index.get(&term.0).unwrap();
-            let (start_addr, end_addr) = (
-                (*posting).borrow().byte_addr.clone(),
-                (*posting).borrow().doc_freq_addr.clone(),
-            );
-            (start_addr, end_addr)
-        };
-        let reader = RingBufferReader::new(
-            self.share_bytes_block.upgrade().unwrap(),
-            start_addr,
-            end_addr,
-        );
-        let r = SnapshotReader::new(reader);
-        Ok(PostingReader::new(r))
-    }
-
-    fn commit(&mut self) -> GyResult<()> {
+    fn commit(&self) -> GyResult<()> {
         let pool = self.share_bytes_block.upgrade().unwrap();
-        self.commit_posting.write()?.iter().try_for_each(
+        self.commit_posting.borrow_mut().iter().try_for_each(
             |posting| -> Result<(), std::io::Error> {
                 let p = &mut *posting.borrow_mut();
                 Self::write_vec_freq(p.doc_delta, p, &mut *pool.borrow_mut())?;
                 p.add_commit = false;
+                p.freq = 0;
+                // p.last_doc_id = 0;
                 Ok(())
             },
         )?;
-        self.commit_posting.write()?.clear();
+        self.commit_posting.borrow_mut().clear();
         Ok(())
     }
 
     //添加 token 单词
     pub fn add(&self, doc_id: DocID, value: &Value) -> GyResult<()> {
-        let v = value.to_vec();
+        let v = value.to_vec()?;
+        println!("add token{:?}", v);
         if !self.indexs.read()?.contains_key(&v) {
             let pool = self.share_bytes_block.upgrade().unwrap();
             let pos = (*pool).borrow_mut().alloc_bytes(0, None);
@@ -345,7 +392,7 @@ impl FieldCache {
             );
         }
         // 获取词典的倒排表
-        let p = self
+        let p: Arc<RefCell<Posting>> = self
             .indexs
             .read()?
             .get(&v)
@@ -356,7 +403,7 @@ impl FieldCache {
         // 倒排表中加入文档id
         Self::add_vec(doc_id, &mut *p.borrow_mut(), &mut *pool.borrow_mut())?;
         if !(*p).borrow().add_commit {
-            self.commit_posting.write()?.push(p.clone());
+            self.commit_posting.borrow_mut().push(p.clone());
             (*p).borrow_mut().add_commit = true;
         }
 
@@ -369,7 +416,11 @@ impl FieldCache {
         posting: &mut Posting,
         block_pool: &mut ByteBlockPool,
     ) -> Result<(), std::io::Error> {
-        if posting.last_doc_id == doc_id {
+        if !posting.add_commit {
+            posting.doc_num += 1;
+            posting.doc_delta = doc_id - posting.last_doc_id;
+            posting.freq += 1;
+        } else if posting.last_doc_id == doc_id {
             posting.freq += 1;
         } else {
             Self::write_vec_freq(posting.doc_delta, posting, block_pool)?;
@@ -402,6 +453,43 @@ impl FieldCache {
         pool: Arc<RefCell<ByteBlockPool>>,
     ) -> Result<(), std::io::Error> {
         Ok(())
+    }
+}
+
+pub struct FieldReader {
+    indexs: Arc<RwLock<dyn CacheIndex>>,
+    share_bytes_block: Weak<RingBuffer>,
+}
+
+impl FieldReader {
+    fn new(
+        indexs: Arc<RwLock<dyn CacheIndex>>,
+        share_bytes_block: Weak<RingBuffer>,
+    ) -> FieldReader {
+        Self {
+            indexs: indexs,
+            share_bytes_block: share_bytes_block,
+        }
+    }
+
+    fn get(&self, term: &[u8]) -> GyResult<PostingReader> {
+        println!("search token{:?}", term);
+        let (start_addr, end_addr) = {
+            let index = self.indexs.read()?;
+            let posting = index.get(term).unwrap();
+            let (start_addr, end_addr) = (
+                (*posting).borrow().byte_addr.clone(),
+                (*posting).borrow().doc_freq_addr.clone(),
+            );
+            (start_addr, end_addr)
+        };
+        let reader = RingBufferReader::new(
+            self.share_bytes_block.upgrade().unwrap(),
+            start_addr,
+            end_addr,
+        );
+        let r = SnapshotReader::new(reader);
+        Ok(PostingReader::new(r))
     }
 }
 
@@ -443,6 +531,24 @@ impl<'b, 'a> Iterator for PostingReaderIter<'a> {
     }
 }
 
+pub struct IndexWriter {
+    writer: Arc<IndexBase>,
+}
+
+impl IndexWriter {
+    fn new(writer: Arc<IndexBase>) -> IndexWriter {
+        IndexWriter { writer: writer }
+    }
+
+    pub fn add(&mut self, doc: &Document) -> GyResult<()> {
+        self.writer.add(doc)
+    }
+
+    pub fn commit(&mut self) -> GyResult<()> {
+        self.writer.commit()
+    }
+}
+
 pub struct IndexReader {
     reader: Arc<IndexBase>,
 }
@@ -452,7 +558,12 @@ impl IndexReader {
         IndexReader { reader: reader }
     }
 
-    fn search(&self, term: &[u8]) {}
+    fn search(&self, term: Term) -> GyResult<PostingReader> {
+        let field_id = term.field_id().0;
+        println!("field_id:{}", field_id);
+        let field_reader = self.reader.field_reader(field_id)?;
+        field_reader.get(term.bytes_value())
+    }
 
     fn doc(&self, doc_id: DocID) -> Document {
         todo!()
@@ -462,7 +573,45 @@ impl IndexReader {
 #[cfg(test)]
 mod tests {
 
-    use super::*;
+    use super::{schema::FieldEntry, *};
+    use schema::BinarySerialize;
+    use std::thread;
+    #[test]
+    fn test_search() {
+        let mut schema = Schema::new();
+        schema.add_field(FieldEntry::str("body"));
+        schema.add_field(FieldEntry::i32("title"));
+        let field_id_title = schema.get_field("title").unwrap();
+        println!("field_id_title:{:?}", field_id_title.clone());
+        let mut index = Index::new(schema, IndexConfig::default()).unwrap();
+        let mut writer1 = index.writer().unwrap();
+        let t1 = thread::spawn(move || loop {
+            let mut d = Document::new(0);
+            d.add_i32(field_id_title.clone(), 2);
+            writer1.add(&d).unwrap();
+            break;
+        });
+        let mut writer2 = index.writer().unwrap();
+        let t2 = thread::spawn(move || loop {
+            let mut d = Document::new(1);
+            d.add_i32(field_id_title.clone(), 2);
+            writer2.add(&d).unwrap();
+            break;
+        });
+
+        t1.join();
+        t2.join();
+        // let mut writer3 = index.writer().unwrap();
+        // writer3.commit();
+        let reader = index.reader().unwrap();
+        let p = reader
+            .search(Term::from_field_i32(field_id_title, 2))
+            .unwrap();
+
+        for x in p.iter() {
+            println!("{:?}", x);
+        }
+    }
 
     #[test]
     fn test_fieldcache() {
@@ -473,10 +622,13 @@ mod tests {
         let valueb = Value::Str("bb".to_string());
         let valuec = Value::Str("cc".to_string());
         let valued = Value::Str("dd".to_string());
+        let value1 = Value::I32(1);
+        let value2 = Value::I32(2);
         field.add(doc_id, &valuea).unwrap(); // aa
         field.add(doc_id, &valueb).unwrap(); //
-                                             // field.add(doc_id, &value3).unwrap();
-                                             // field.add(doc_id, &value4).unwrap();
+        field.add(doc_id, &value1).unwrap();
+        // field.add(doc_id, &value3).unwrap();
+        // field.add(doc_id, &value4).unwrap();
 
         doc_id = 1;
         field.add(doc_id, &valuea).unwrap();
@@ -487,6 +639,8 @@ mod tests {
         field.add(doc_id, &valueb).unwrap();
         field.add(doc_id, &valuec).unwrap();
         field.add(doc_id, &valued).unwrap();
+        field.add(doc_id, &value1).unwrap();
+        field.add(doc_id, &value2).unwrap();
 
         doc_id = 3;
         field.add(doc_id, &valuea).unwrap();
@@ -496,32 +650,45 @@ mod tests {
         doc_id = 4;
         field.add(doc_id, &valuea).unwrap();
         field.add(doc_id, &valued).unwrap();
+        field.add(doc_id, &value1).unwrap();
+        field.add(doc_id, &value2).unwrap();
 
         doc_id = 5;
         field.add(doc_id, &valuec).unwrap();
         field.add(doc_id, &valued).unwrap();
         field.commit().unwrap();
 
+        let field_reader = FieldReader::new(field.indexs.clone(), field.share_bytes_block.clone());
+
         println!("search aa");
-        let mut p = field.get(&Term::from_str("aa")).unwrap();
+        let mut p = field_reader.get("aa".as_bytes()).unwrap();
         for x in p.iter() {
             println!("{:?}", x);
         }
 
         println!("search bb");
-        p = field.get(&Term::from_str("bb")).unwrap();
+        p = field_reader.get("bb".as_bytes()).unwrap();
         for x in p.iter() {
             println!("{:?}", x);
         }
 
         println!("search cc");
-        p = field.get(&Term::from_str("cc")).unwrap();
+        p = field_reader.get("cc".as_bytes()).unwrap();
         for x in p.iter() {
             println!("{:?}", x);
         }
 
         println!("search dd");
-        p = field.get(&Term::from_str("dd")).unwrap();
+        p = field_reader.get("dd".as_bytes()).unwrap();
+        for x in p.iter() {
+            println!("{:?}", x);
+        }
+
+        let mut v = vec![0u8; 0];
+
+        1.serialize(&mut v);
+        println!("search 1");
+        p = field_reader.get(&v).unwrap();
         for x in p.iter() {
             println!("{:?}", x);
         }

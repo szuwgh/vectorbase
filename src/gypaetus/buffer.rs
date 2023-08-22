@@ -564,6 +564,7 @@ mod tests {
                 // let x = reader.read_vu32();
                 //println!("x{:?}", x);
             }
+            break;
         });
         let b = Arc::clone(&pool);
         let t2 = thread::spawn(move || loop {
@@ -572,6 +573,7 @@ mod tests {
                 // let x = reader.read_vu32();
                 //println!("x{:?}", x);
             }
+            break;
         });
         t1.join();
         t2.join();

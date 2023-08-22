@@ -9,7 +9,7 @@ use std::{
     fs::OpenOptions,
     io::{Seek, SeekFrom, Write},
 };
-const DEFAULT_WAL_FILE_SIZE: usize = 512 << 20; //
+pub(crate) const DEFAULT_WAL_FILE_SIZE: usize = 512 << 20; //
 
 #[macro_export]
 macro_rules! copy {
@@ -126,7 +126,6 @@ impl Write for Wal {
             .sync()
             .map_err(|e| std::io::Error::from(std::io::ErrorKind::InvalidData))?;
         self.i += self.buf[..self.j].len();
-        //  if self.i >=
         self.j = 0;
         Ok(())
     }
