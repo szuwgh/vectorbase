@@ -265,7 +265,6 @@ impl<'a> RingBufferReaderIter<'a> {
             level: 0,
             eof: false,
             first: true,
-            //_marker: PhantomData,
         };
         reader
     }

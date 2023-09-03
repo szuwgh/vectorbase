@@ -1,4 +1,5 @@
 use super::util::error::{GyError, GyResult};
+use core::arch::x86_64::*;
 use fs2::FileExt;
 use memmap2::{self, Mmap, MmapMut};
 use std::fs::{self, File};
@@ -9,6 +10,7 @@ use std::{
     fs::OpenOptions,
     io::{Seek, SeekFrom, Write},
 };
+
 pub(crate) const DEFAULT_WAL_FILE_SIZE: usize = 512 << 20; //
 
 #[macro_export]
@@ -87,10 +89,13 @@ impl Wal {
         Ok(())
     }
 
-    pub(crate) fn write_bytes(&mut self, content: &[u8]) -> GyResult<usize> {
-        let sz = self.write(content)?;
-        self.i += sz;
-        Ok(self.i)
+    pub(crate) fn write_bytes(&mut self, content: &[u8]) -> GyResult<()> {
+        self.write(content)?;
+        Ok(())
+    }
+
+    pub(crate) fn offset(&self) -> usize {
+        self.i
     }
 }
 

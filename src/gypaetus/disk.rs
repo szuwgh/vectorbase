@@ -8,9 +8,13 @@ pub fn merge_index() {}
 struct DiskIndexReader {}
 
 impl DiskStoreWriter {
-    fn new(name: PathBuf) -> DiskStoreWriter {
+    fn from(name: PathBuf, offset: usize) -> DiskStoreWriter {
         Self {}
     }
 
-    fn add() {}
+    fn new(name: PathBuf) {}
+
+    fn write() {}
+
+    fn flush() {}
 }

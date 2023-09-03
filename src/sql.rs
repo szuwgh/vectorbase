@@ -1,7 +1,7 @@
 struct SQL {}
 
-pub struct DB {}
+pub struct SE {}
 
-impl DB {
+impl SE {
     pub fn open() {}
 }

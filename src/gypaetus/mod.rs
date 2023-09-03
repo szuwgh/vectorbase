@@ -18,7 +18,7 @@ use buffer::{
     BLOCK_SIZE_CLASS,
 };
 
-use schema::{DocID, Document, Schema, Value, VectorType};
+use schema::{BinarySerialize, DocID, Document, Schema, Value, VectorType};
 
 //use jiebars::Jieba;
 use bytes::buf::Writer;
@@ -27,6 +27,7 @@ use lock_api::RawMutex;
 use parking_lot::Mutex;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::io::{Cursor, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock, Weak};
 use std::usize;
@@ -63,7 +64,7 @@ impl Index {
         Ok(IndexReader::new(self.0.clone()))
     }
 
-    pub fn writer(&self) -> GyResult<IndexWriter> {
+    pub fn writer(&mut self) -> GyResult<IndexWriter> {
         Ok(IndexWriter::new(self.0.clone()))
     }
 
@@ -145,7 +146,7 @@ pub struct IndexBase {
     doc_id: RefCell<DocID>,
     buffer: Arc<RingBuffer>,
     wal: Arc<RwLock<Wal>>,
-    doc_offset: Vec<usize>,
+    doc_offset: RwLock<Vec<usize>>,
     share_buf: Writer<BytesMut>,
     rw_lock: Mutex<()>,
 }
@@ -169,8 +170,8 @@ impl IndexBase {
                 config.fsize,
                 config.io_type,
             )?)),
-            doc_offset: Vec::with_capacity(10000),
-            share_buf: BytesMut::with_capacity(100).writer(),
+            doc_offset: RwLock::new(Vec::with_capacity(10000)),
+            share_buf: BytesMut::with_capacity(5 * 1024 * 1024).writer(), //5MB
         })
     }
 
@@ -185,17 +186,45 @@ impl IndexBase {
 
     pub fn write_wal(&self, content: &[u8]) -> GyResult<usize> {
         self.wal.read()?.check_rotate(content.len())?;
-        Ok(self.wal.write()?.write_bytes(content)?)
+        let mut w = self.wal.write()?;
+        w.write_bytes(content)?;
+        w.flush()?;
+        Ok(w.offset())
+    }
+
+    pub fn write_doc_to_wal(&self, doc: &Document) -> GyResult<usize> {
+        {
+            self.wal.read()?.check_rotate(doc.size())?;
+        }
+        let offset = {
+            let mut w = self.wal.write()?;
+            doc.serialize(&mut *w)?;
+            w.flush()?;
+            let offset = w.offset();
+            drop(w);
+            offset
+        };
+        Ok(offset)
     }
 
     pub fn add_with_raw(&mut self, content: &[u8]) -> GyResult<()> {
         unsafe {
             self.rw_lock.raw().lock();
         }
-        self.write_wal(content)?;
-        //self.inner_add(doc)?;
+        let doc_offset = self.write_wal(content)?;
+        {
+            self.doc_offset.write()?.push(doc_offset);
+        }
+        let mut cursor = Cursor::new(content);
+        let doc = Document::deserialize(&mut cursor)?;
+        self.inner_add(&doc)?;
         //添加向量
         *self.doc_id.borrow_mut() += 1;
+        self.commit()?;
+
+        unsafe {
+            self.rw_lock.raw().unlock();
+        }
         Ok(())
     }
 
@@ -204,29 +233,23 @@ impl IndexBase {
         unsafe {
             self.rw_lock.raw().lock();
         }
-        // if self.doc_id as usize >= self.doc_offset.capacity() {
-        //     return Err(GyError::ErrDocumentOverflow);
-        // }
-
-        // let b = {
-        //     self.share_buf.get_mut().clear();
-        //     doc.serialize(&mut self.share_buf)?;
-        //     self.share_buf.get_ref().as_ref()
-        // };
-        // let doc_offset = self.write_wal(b)?;
+        let doc_offset = self.write_doc_to_wal(doc)?;
+        {
+            self.doc_offset.write()?.push(doc_offset);
+        }
         self.inner_add(doc)?;
         *self.doc_id.borrow_mut() += 1;
         self.commit()?;
         unsafe {
             self.rw_lock.raw().unlock();
         }
-        //   self.doc_offset.push(doc_offset);
         Ok(())
     }
 
     pub fn doc(&self, doc_id: DocID) -> GyResult<Document> {
         let offset = self
             .doc_offset
+            .read()?
             .get(doc_id as usize)
             .ok_or("document not found")?;
         //   let sz = self.wal.
@@ -289,6 +312,10 @@ pub trait CacheIndex {
     fn get(&self, k: &[u8]) -> Option<&Arc<RefCell<Posting>>>;
 }
 
+// 用于数值索引
+pub(crate) struct TrieIntCache {}
+
+//用于字符串索引
 pub(crate) struct ArtCache {
     cache: Art<ByteString, Arc<RefCell<Posting>>>,
 }
@@ -367,7 +394,6 @@ impl FieldCache {
                 Self::write_vec_freq(p.doc_delta, p, &mut *pool.borrow_mut())?;
                 p.add_commit = false;
                 p.freq = 0;
-                // p.last_doc_id = 0;
                 Ok(())
             },
         )?;
