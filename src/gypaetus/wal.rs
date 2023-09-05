@@ -54,9 +54,18 @@ const BLOCK_SIZE: usize = 1 << 15;
 unsafe impl Send for Wal {}
 unsafe impl Sync for Wal {}
 
-pub(crate) struct WalReader {
-    wal: Arc<Wal>,
+pub(crate) struct WalReader<'a> {
+    wal: &'a Wal,
     offset: usize,
+}
+
+impl<'a> WalReader<'a> {
+    pub(crate) fn from(wal: &'a Wal, offset: usize) -> WalReader<'a> {
+        WalReader {
+            wal: wal,
+            offset: offset,
+        }
+    }
 }
 
 pub(crate) struct Wal {
@@ -99,7 +108,7 @@ impl Wal {
     }
 }
 
-impl Read for WalReader {
+impl<'a> Read for WalReader<'a> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let i = self
             .wal

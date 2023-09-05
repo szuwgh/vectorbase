@@ -1,6 +1,6 @@
 use std::io;
 use std::io::Error as IOError;
-use std::sync::PoisonError;
+use std::sync::{PoisonError, TryLockError};
 use thiserror::Error;
 
 pub type GyResult<T> = Result<T, GyError>;
@@ -27,6 +27,10 @@ pub enum GyError {
     ErrWalOverflow,
     #[error("document overflow")]
     ErrDocumentOverflow,
+    #[error("document not found")]
+    ErrDocumentNotFound,
+    #[error("invalid value type")]
+    ErrInvalidValueType,
 }
 
 impl From<&str> for GyError {
@@ -61,6 +65,12 @@ impl From<GyError> for String {
 
 impl<T> From<PoisonError<T>> for GyError {
     fn from(e: PoisonError<T>) -> Self {
+        GyError::ErrInvalidLock
+    }
+}
+
+impl<T> From<TryLockError<T>> for GyError {
+    fn from(e: TryLockError<T>) -> Self {
         GyError::ErrInvalidLock
     }
 }

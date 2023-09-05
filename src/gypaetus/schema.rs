@@ -1,14 +1,11 @@
 // 每一行数据
-use super::ann::BoxedAnnIndex;
 
-use super::util::common;
-use super::util::error::GyResult;
+use super::util::error::{GyError, GyResult};
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
-use serde_bytes::ByteBuf;
 use std::collections::HashMap;
-use std::sync::atomic::AtomicU64;
 use varintrs::{Binary, ReadBytesVarExt, WriteBytesVarExt};
 
+use chrono::{Local, TimeZone, Utc};
 use std::fmt;
 use std::io::Read;
 use std::io::Write;
@@ -133,7 +130,7 @@ impl<V> Vector<V> {
     pub fn with(v: V) -> Vector<V> {
         Self {
             v: v,
-            d: Document::new(0),
+            d: Document::new(),
         }
     }
 
@@ -149,9 +146,8 @@ impl<V> Vector<V> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Document {
-    doc_id: DocID,
     pub field_values: Vec<FieldValue>,
 }
 
@@ -174,9 +170,8 @@ impl BinarySerialize for Document {
 }
 
 impl Document {
-    pub fn new(doc_id: DocID) -> Document {
+    pub fn new() -> Document {
         Self {
-            doc_id: doc_id,
             field_values: Vec::new(),
         }
     }
@@ -199,12 +194,11 @@ impl Document {
     }
 
     pub fn add_str(&mut self, field: FieldID, value: &str) {
-        self.add_field_value(FieldValue::new(field, Value::Str(value.to_string())));
+        self.add_field_value(FieldValue::new(field, Value::String(value.to_string())));
     }
 
     fn from(field_values: Vec<FieldValue>) -> Document {
         Self {
-            doc_id: 0,
             field_values: field_values,
         }
     }
@@ -219,7 +213,7 @@ impl Document {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FieldID(pub u32);
 
 impl FieldID {
@@ -244,7 +238,7 @@ impl BinarySerialize for FieldID {
 }
 
 //域定义
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct FieldValue {
     field_id: FieldID,
     pub(crate) value: Value,
@@ -256,28 +250,25 @@ impl BinarySerialize for FieldValue {
         self.value.serialize(writer)
     }
     fn deserialize<R: Read>(reader: &mut R) -> GyResult<FieldValue> {
-        // let field_id =
-        todo!()
+        let field_id = FieldID::deserialize(reader)?;
+        let value = Value::deserialize(reader)?;
+        Ok(FieldValue {
+            field_id: field_id,
+            value: value,
+        })
     }
 }
 
 impl FieldValue {
-    fn text(text: &str) -> Self {
-        Self {
-            field_id: FieldID(0),
-            value: Value::Str(text.to_string()),
-        }
-    }
-
-    fn size(&self) -> usize {
-        self.field_id.size() + self.value.size()
-    }
-
     fn new(field_id: FieldID, value: Value) -> Self {
         Self {
             field_id: field_id,
             value: value,
         }
+    }
+
+    fn size(&self) -> usize {
+        self.field_id.size() + self.value.size()
     }
 
     pub fn field_id(&self) -> &FieldID {
@@ -299,10 +290,11 @@ const F64_ENCODE: u8 = 6;
 const DATE_ENCODE: u8 = 7;
 const BYTES_ENCODE: u8 = 8;
 
-#[derive(Debug)]
+#[derive(PartialEq, Debug)]
 //域 值类型
 pub enum Value {
-    Str(String),
+    Str(&'static str),
+    String(String),
     I64(i64),
     U64(u64),
     I32(i32),
@@ -317,6 +309,10 @@ impl BinarySerialize for Value {
     fn serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
         match &self {
             Value::Str(s) => {
+                STR_ENCODE.serialize(writer)?;
+                (*s).to_string().serialize(writer)?;
+            }
+            Value::String(s) => {
                 STR_ENCODE.serialize(writer)?;
                 s.serialize(writer)?;
             }
@@ -346,7 +342,7 @@ impl BinarySerialize for Value {
             }
             Value::Date(d) => {
                 DATE_ENCODE.serialize(writer)?;
-                d.timestamp().serialize(writer)?;
+                d.timestamp_nanos().serialize(writer)?;
             }
             Value::Bytes(b) => {
                 BYTES_ENCODE.serialize(writer)?;
@@ -357,19 +353,18 @@ impl BinarySerialize for Value {
     }
 
     fn deserialize<R: Read>(reader: &mut R) -> GyResult<Self> {
-        todo!();
-        // let type_code = u8::deserialize(reader)?;
-        // match type_code {
-        //     STR_ENCODE => {}
-        //     I64_ENCODE => {}
-        //     U64_ENCODE => {}
-        //     I32_ENCODE => {}
-        //     U32_ENCODE => {}
-        //     F64_ENCODE => {}
-        //     F32_ENCODE => {}
-        //     DATE_ENCODE => {}
-        // }
-        //  Ok(v)
+        match u8::deserialize(reader)? {
+            STR_ENCODE => Ok(Value::String(String::deserialize(reader)?)),
+            I64_ENCODE => Ok(Value::I64(i64::deserialize(reader)?)),
+            U64_ENCODE => Ok(Value::U64(u64::deserialize(reader)?)),
+            I32_ENCODE => Ok(Value::I32(i32::deserialize(reader)?)),
+            U32_ENCODE => Ok(Value::U32(u32::deserialize(reader)?)),
+            F64_ENCODE => Ok(Value::F64(f64::deserialize(reader)?)),
+            F32_ENCODE => Ok(Value::F32(f32::deserialize(reader)?)),
+            DATE_ENCODE => Ok(Value::Date(Utc.timestamp_nanos(i64::deserialize(reader)?))),
+            BYTES_ENCODE => Ok(Value::Bytes(Vec::<u8>::deserialize(reader)?)),
+            _ => Err(GyError::ErrInvalidValueType),
+        }
     }
 }
 
@@ -380,13 +375,17 @@ impl Value {
                 let str_length = varintrs::vint_size!(s.as_bytes().len()) as usize;
                 1 + str_length + s.as_bytes().len()
             }
-            Value::I64(i) => 9,
-            Value::U64(u) => 9,
-            Value::I32(i) => 5,
-            Value::U32(u) => 5,
-            Value::F64(f) => 9,
-            Value::F32(f) => 5,
-            Value::Date(d) => 9,
+            Value::String(s) => {
+                let str_length = varintrs::vint_size!(s.as_bytes().len()) as usize;
+                1 + str_length + s.as_bytes().len()
+            }
+            Value::I64(_) => 9,
+            Value::U64(_) => 9,
+            Value::I32(_) => 5,
+            Value::U32(_) => 5,
+            Value::F64(_) => 9,
+            Value::F32(_) => 5,
+            Value::Date(_) => 9,
             Value::Bytes(b) => {
                 let str_length = varintrs::vint_size!(b.len()) as usize;
                 1 + str_length + b.len()
@@ -442,7 +441,7 @@ impl BinarySerialize for String {
     }
 
     fn deserialize<R: Read>(reader: &mut R) -> GyResult<String> {
-        let str_len = VInt::deserialize(reader)?.val() as usize;
+        let str_len = VUInt::deserialize(reader)?.val() as usize;
         let mut result = String::with_capacity(str_len);
         reader.take(str_len as u64).read_to_string(&mut result)?;
         Ok(result)
@@ -480,7 +479,7 @@ impl BinarySerialize for u32 {
     }
 
     fn deserialize<R: Read>(reader: &mut R) -> GyResult<Self> {
-        let v = reader.read_u64::<BigEndian>()?;
+        let v = reader.read_u32::<BigEndian>()?;
         Ok(v as u32)
     }
 }
@@ -572,5 +571,144 @@ impl BinarySerialize for VInt {
 impl VInt {
     fn val(&self) -> i64 {
         self.0
+    }
+}
+
+mod tests {
+    use std::io::Cursor;
+
+    use super::*;
+
+    #[test]
+    fn test_time() {
+        let u = Utc::now();
+        let t = u.timestamp();
+        println!("t:{}", t);
+    }
+
+    #[test]
+    fn test_value() {
+        let mut bytes: Vec<u8> = Vec::with_capacity(1024);
+        let mut cursor = Cursor::new(&mut bytes);
+        let value_1 = Value::String("aa".to_string());
+        let value_2 = Value::I64(123);
+        let value_3 = Value::U64(123456);
+        let value_4 = Value::I32(963);
+        let value_5 = Value::U32(123789);
+        let value_6 = Value::F64(123.456);
+        let value_7 = Value::F32(963.852);
+        let value_8 = Value::Date(Utc::now());
+        let value_9 = Value::Bytes(vec![0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+
+        value_1.serialize(&mut cursor).unwrap();
+        value_2.serialize(&mut cursor).unwrap();
+        value_3.serialize(&mut cursor).unwrap();
+        value_4.serialize(&mut cursor).unwrap();
+        value_5.serialize(&mut cursor).unwrap();
+        value_6.serialize(&mut cursor).unwrap();
+        value_7.serialize(&mut cursor).unwrap();
+        value_8.serialize(&mut cursor).unwrap();
+        value_9.serialize(&mut cursor).unwrap();
+
+        let mut cursor = Cursor::new(&bytes);
+        let d_value_1 = Value::deserialize(&mut cursor).unwrap();
+        let d_value_2 = Value::deserialize(&mut cursor).unwrap();
+        let d_value_3 = Value::deserialize(&mut cursor).unwrap();
+        let d_value_4 = Value::deserialize(&mut cursor).unwrap();
+        let d_value_5 = Value::deserialize(&mut cursor).unwrap();
+        let d_value_6 = Value::deserialize(&mut cursor).unwrap();
+        let d_value_7 = Value::deserialize(&mut cursor).unwrap();
+        let d_value_8 = Value::deserialize(&mut cursor).unwrap();
+        let d_value_9 = Value::deserialize(&mut cursor).unwrap();
+        assert_eq!(value_1, d_value_1);
+        assert_eq!(value_2, d_value_2);
+        assert_eq!(value_3, d_value_3);
+        assert_eq!(value_4, d_value_4);
+        assert_eq!(value_5, d_value_5);
+        assert_eq!(value_6, d_value_6);
+        assert_eq!(value_7, d_value_7);
+        assert_eq!(value_8, d_value_8);
+        assert_eq!(value_9, d_value_9);
+    }
+
+    #[test]
+    fn test_field() {
+        let mut bytes: Vec<u8> = Vec::with_capacity(1024);
+        let mut cursor = Cursor::new(&mut bytes);
+        let field_1 = FieldValue::new(FieldID::from_field_id(1), Value::String("aa".to_string()));
+        let field_2 = FieldValue::new(FieldID::from_field_id(2), Value::I64(123));
+        let field_3 = FieldValue::new(FieldID::from_field_id(3), Value::U64(123456));
+        let field_4 = FieldValue::new(FieldID::from_field_id(4), Value::I32(963));
+        let field_5 = FieldValue::new(FieldID::from_field_id(5), Value::U32(123789));
+        let field_6 = FieldValue::new(FieldID::from_field_id(6), Value::F64(123.456));
+        let field_7 = FieldValue::new(FieldID::from_field_id(7), Value::F32(963.852));
+        let field_8 = FieldValue::new(FieldID::from_field_id(8), Value::Date(Utc::now()));
+        let field_9 = FieldValue::new(
+            FieldID::from_field_id(9),
+            Value::Bytes(vec![0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
+        );
+
+        field_1.serialize(&mut cursor).unwrap();
+        field_2.serialize(&mut cursor).unwrap();
+        field_3.serialize(&mut cursor).unwrap();
+        field_4.serialize(&mut cursor).unwrap();
+        field_5.serialize(&mut cursor).unwrap();
+        field_6.serialize(&mut cursor).unwrap();
+        field_7.serialize(&mut cursor).unwrap();
+        field_8.serialize(&mut cursor).unwrap();
+        field_9.serialize(&mut cursor).unwrap();
+
+        let mut cursor = Cursor::new(&bytes);
+        let d_field_1 = FieldValue::deserialize(&mut cursor).unwrap();
+        let d_field_2 = FieldValue::deserialize(&mut cursor).unwrap();
+        let d_field_3 = FieldValue::deserialize(&mut cursor).unwrap();
+        let d_field_4 = FieldValue::deserialize(&mut cursor).unwrap();
+        let d_field_5 = FieldValue::deserialize(&mut cursor).unwrap();
+        let d_field_6 = FieldValue::deserialize(&mut cursor).unwrap();
+        let d_field_7 = FieldValue::deserialize(&mut cursor).unwrap();
+        let d_field_8 = FieldValue::deserialize(&mut cursor).unwrap();
+        let d_field_9 = FieldValue::deserialize(&mut cursor).unwrap();
+        assert_eq!(field_1, d_field_1);
+        assert_eq!(field_2, d_field_2);
+        assert_eq!(field_3, d_field_3);
+        assert_eq!(field_4, d_field_4);
+        assert_eq!(field_5, d_field_5);
+        assert_eq!(field_6, d_field_6);
+        assert_eq!(field_7, d_field_7);
+        assert_eq!(field_8, d_field_8);
+        assert_eq!(field_9, d_field_9);
+        // value_str1.serialize(&mut cursor).unwrap();
+    }
+
+    #[test]
+    fn test_document() {
+        let mut bytes: Vec<u8> = Vec::with_capacity(1024);
+
+        let mut cursor = Cursor::new(&mut bytes);
+        let field_1 = FieldValue::new(FieldID::from_field_id(1), Value::String("aa".to_string()));
+        let field_2 = FieldValue::new(FieldID::from_field_id(2), Value::I64(123));
+        let field_3 = FieldValue::new(FieldID::from_field_id(3), Value::U64(123456));
+        let field_4 = FieldValue::new(FieldID::from_field_id(4), Value::I32(963));
+        let field_5 = FieldValue::new(FieldID::from_field_id(5), Value::U32(123789));
+        let field_6 = FieldValue::new(FieldID::from_field_id(6), Value::F64(123.456));
+        let field_7 = FieldValue::new(FieldID::from_field_id(7), Value::F32(963.852));
+        let field_8 = FieldValue::new(FieldID::from_field_id(8), Value::Date(Utc::now()));
+        let field_9 = FieldValue::new(
+            FieldID::from_field_id(9),
+            Value::Bytes(vec![0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
+        );
+        let field_10 = FieldValue::new(FieldID::from_field_id(7), Value::F32(963.852));
+        let field_values = vec![
+            field_1, field_2, field_3, field_4, field_5, field_6, field_7, field_8, field_9,
+            field_10,
+        ];
+        let doc1 = Document::from(field_values);
+        doc1.serialize(&mut cursor).unwrap();
+        println!("pos:{}", cursor.position());
+        drop(cursor);
+        let mut cursor1 = Cursor::new(&bytes);
+        let d_doc1 = Document::deserialize(&mut cursor1).unwrap();
+        assert_eq!(doc1, d_doc1);
+        println!("doc size:{}", doc1.size());
     }
 }
