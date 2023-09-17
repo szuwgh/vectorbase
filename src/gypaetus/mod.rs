@@ -35,7 +35,7 @@ use wal::{IOType, Wal, DEFAULT_WAL_FILE_SIZE};
 use crate::gypaetus::wal::WalReader;
 pub struct IndexConfig {
     io_type: IOType,
-    disk_path: PathBuf,
+    wal_path: PathBuf,
     fsize: usize,
 }
 
@@ -43,7 +43,7 @@ impl Default for IndexConfig {
     fn default() -> IndexConfig {
         IndexConfig {
             io_type: IOType::MMAP,
-            disk_path: PathBuf::from("./data"),
+            wal_path: PathBuf::from("./000000000000000.wal"),
             fsize: DEFAULT_WAL_FILE_SIZE,
         }
     }
@@ -153,14 +153,11 @@ pub struct IndexBase {
 
 impl IndexBase {
     fn new(schema: Schema, config: IndexConfig) -> GyResult<IndexBase> {
-        fs::mkdir(&config.disk_path)?;
-        let wal_name = fs::next_sequence_ext_file(&config.disk_path, "wal")?;
         let buffer_pool = Arc::new(RingBuffer::new());
         let mut field_cache: Vec<FieldCache> = Vec::new();
-        for s in schema.fields.iter() {
+        for _ in 0..schema.fields.len() {
             field_cache.push(FieldCache::new(Arc::downgrade(&buffer_pool)));
         }
-
         Ok(Self {
             fields: field_cache,
             doc_id: RefCell::new(0),
@@ -168,12 +165,16 @@ impl IndexBase {
             schema: schema,
             rw_lock: Mutex::new(()),
             wal: Arc::new(RwLock::new(Wal::new(
-                &config.disk_path.join(wal_name),
+                &config.wal_path,
                 config.fsize,
                 config.io_type,
             )?)),
             doc_offset: RwLock::new(Vec::with_capacity(1024)), // Max memory doc
         })
+    }
+
+    fn reload() -> GyResult<()> {
+        Ok(())
     }
 
     fn inner_add(&self, doc: &Document) -> GyResult<()> {
@@ -199,9 +200,9 @@ impl IndexBase {
         }
         let offset = {
             let mut w = self.wal.write()?;
+            let offset = w.offset();
             doc.serialize(&mut *w)?;
             w.flush()?;
-            let offset = w.offset();
             drop(w);
             offset
         };
@@ -247,7 +248,7 @@ impl IndexBase {
         Ok(())
     }
 
-    fn field_reader(&self, field_id: u32) -> GyResult<FieldReader> {
+    pub fn field_reader(&self, field_id: u32) -> GyResult<FieldReader> {
         Ok(FieldReader::new(
             self.fields[field_id as usize].indexs.clone(),
             self.fields[field_id as usize].share_bytes_block.clone(),
@@ -598,7 +599,7 @@ impl IndexReader {
         field_reader.get(term.bytes_value())
     }
 
-    fn doc(&self, doc_id: DocID) -> GyResult<Document> {
+    pub(crate) fn doc(&self, doc_id: DocID) -> GyResult<Document> {
         let doc_offset = self.reader.doc_offset(doc_id)?;
         let doc: Document = {
             let mut wal = self.wal.read()?;
@@ -615,6 +616,37 @@ mod tests {
     use super::{schema::FieldEntry, *};
     use schema::BinarySerialize;
     use std::thread;
+
+    #[test]
+    fn test_add_doc() {
+        let mut schema = Schema::new();
+        schema.add_field(FieldEntry::str("body"));
+        schema.add_field(FieldEntry::i32("title"));
+        let field_id_title = schema.get_field("title").unwrap();
+        println!("field_id_title:{:?}", field_id_title.clone());
+        let mut index = Index::new(schema, IndexConfig::default()).unwrap();
+        let mut writer1 = index.writer().unwrap();
+
+        let mut d = Document::new();
+        d.add_text(field_id_title.clone(), "aa");
+        writer1.add(&d).unwrap();
+
+        let mut d1 = Document::new();
+        d1.add_text(field_id_title.clone(), "aa");
+        writer1.add(&d1).unwrap();
+
+        // let mut writer3 = index.writer().unwrap();
+        // writer3.commit();
+        let reader = index.reader().unwrap();
+        let p = reader
+            .search(Term::from_field_text(field_id_title, "aa"))
+            .unwrap();
+
+        for x in p.iter() {
+            println!("{:?}", x);
+        }
+    }
+
     #[test]
     fn test_search() {
         let mut schema = Schema::new();

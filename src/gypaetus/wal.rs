@@ -73,7 +73,7 @@ pub(crate) struct Wal {
     i: usize,
     j: usize,
     fsize: usize,
-    buf: [u8; BLOCK_SIZE],
+    buffer: [u8; BLOCK_SIZE],
 }
 
 impl Wal {
@@ -87,7 +87,7 @@ impl Wal {
             i: 0,
             j: 0,
             fsize: fsize,
-            buf: [0u8; BLOCK_SIZE],
+            buffer: [0u8; BLOCK_SIZE],
         })
     }
 
@@ -115,31 +115,33 @@ impl<'a> Read for WalReader<'a> {
             .io_selector
             .read(buf, self.offset)
             .map_err(|e| std::io::Error::from(std::io::ErrorKind::UnexpectedEof))?;
+        self.offset += i;
         Ok(i)
     }
 }
 
 impl Write for Wal {
     fn write(&mut self, mut buf: &[u8]) -> std::io::Result<usize> {
+        let total = buf.len();
         while buf.len() > 0 {
-            if self.j == BLOCK_SIZE {
+            if self.j >= BLOCK_SIZE {
                 self.flush()?;
             }
-            let n = copy!(&mut self.buf[self.j..], buf);
+            let n = copy!(&mut self.buffer[self.j..], buf);
             self.j += n;
             buf = &buf[n..];
         }
-        Ok(buf.len())
+        Ok(total)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
         self.io_selector
-            .write(&self.buf[..self.j], self.i)
+            .write(&self.buffer[..self.j], self.i)
             .map_err(|e| std::io::Error::from(std::io::ErrorKind::InvalidData))?;
         self.io_selector
             .sync()
             .map_err(|e| std::io::Error::from(std::io::ErrorKind::InvalidData))?;
-        self.i += self.buf[..self.j].len();
+        self.i += self.j;
         self.j = 0;
         Ok(())
     }
@@ -185,7 +187,6 @@ impl IoSelector for MmapSelector {
 
     fn sync(&mut self) -> GyResult<()> {
         self.mmap.flush()?;
-        // self.file.flush()?;
         Ok(())
     }
 
@@ -258,12 +259,53 @@ mod tests {
     fn test_wal() {
         let mut wal = Wal::new(
             &PathBuf::from("/opt/rsproject/gptgrep/searchlite/00.wal"),
-            128 * 1024 * 1024, //512MB
+            1 * 1024 * 1024, //512MB
             IOType::MMAP,
         )
         .unwrap();
         let buf = "abcdeee";
         wal.write(buf.as_bytes()).unwrap();
         wal.flush().unwrap();
+    }
+
+    use super::super::schema::{BinarySerialize, Document, FieldID, FieldValue, Value};
+    use chrono::{TimeZone, Utc};
+    #[test]
+    fn test_document() {
+        let mut wal = Wal::new(
+            &PathBuf::from("/opt/rsproject/gptgrep/searchlite/00.wal"),
+            1 * 1024 * 1024, //512MB
+            IOType::MMAP,
+        )
+        .unwrap();
+
+        let field_1 = FieldValue::new(FieldID::from_field_id(1), Value::String("aa".to_string()));
+        let field_2 = FieldValue::new(FieldID::from_field_id(2), Value::I64(123));
+        let field_3 = FieldValue::new(FieldID::from_field_id(3), Value::U64(123456));
+        let field_4 = FieldValue::new(FieldID::from_field_id(4), Value::I32(963));
+        let field_5 = FieldValue::new(FieldID::from_field_id(5), Value::U32(123789));
+        let field_6 = FieldValue::new(FieldID::from_field_id(6), Value::F64(123.456));
+        let field_7 = FieldValue::new(FieldID::from_field_id(7), Value::F32(963.852));
+        let field_8 = FieldValue::new(FieldID::from_field_id(8), Value::Date(Utc::now()));
+        let field_9 = FieldValue::new(
+            FieldID::from_field_id(9),
+            Value::Bytes(vec![0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
+        );
+        let field_10 = FieldValue::new(FieldID::from_field_id(7), Value::F32(963.852));
+        let field_values = vec![
+            field_1, field_2, field_3, field_4, field_5, field_6, field_7, field_8, field_9,
+            field_10,
+        ];
+
+        let offset = wal.offset();
+
+        let doc1 = Document::from(field_values);
+        doc1.serialize(&mut wal).unwrap();
+        wal.flush().unwrap();
+
+        let mut wal_read = WalReader::from(&mut wal, offset);
+        let doc2 = Document::deserialize(&mut wal_read).unwrap();
+        println!("doc2:{:?}", doc2);
+        assert_eq!(doc1, doc2);
     }
 }

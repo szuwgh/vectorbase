@@ -5,7 +5,7 @@ use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use std::collections::HashMap;
 use varintrs::{Binary, ReadBytesVarExt, WriteBytesVarExt};
 
-use chrono::{Local, TimeZone, Utc};
+use chrono::{TimeZone, Utc};
 use std::fmt;
 use std::io::Read;
 use std::io::Write;
@@ -193,11 +193,11 @@ impl Document {
         self.add_field_value(FieldValue::new(field, Value::I64(value)));
     }
 
-    pub fn add_str(&mut self, field: FieldID, value: &str) {
+    pub fn add_text(&mut self, field: FieldID, value: &str) {
         self.add_field_value(FieldValue::new(field, Value::String(value.to_string())));
     }
 
-    fn from(field_values: Vec<FieldValue>) -> Document {
+    pub fn from(field_values: Vec<FieldValue>) -> Document {
         Self {
             field_values: field_values,
         }
@@ -260,7 +260,7 @@ impl BinarySerialize for FieldValue {
 }
 
 impl FieldValue {
-    fn new(field_id: FieldID, value: Value) -> Self {
+    pub fn new(field_id: FieldID, value: Value) -> Self {
         Self {
             field_id: field_id,
             value: value,
