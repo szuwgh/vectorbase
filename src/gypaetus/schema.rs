@@ -19,7 +19,6 @@ pub trait BinarySerialize: fmt::Debug + Sized {
     fn deserialize<R: Read>(reader: &mut R) -> GyResult<Self>;
 }
 
-//pub type VecID = u64;
 pub type DocID = u64;
 
 #[derive(Default)]
@@ -396,18 +395,45 @@ impl Value {
 
     pub fn to_vec(&self) -> GyResult<Vec<u8>> {
         match &self {
-            Value::Str(s) => Ok(s.as_bytes().to_vec()),
-            Value::I64(i64) => {
-                let mut v1 = vec![0u8; 8];
-                i64.serialize(&mut v1)?;
-                Ok(v1)
-            }
-            Value::I32(i32) => {
-                let mut v2 = vec![0u8; 0];
-                i32.serialize(&mut v2)?;
-                Ok(v2)
+            Value::Str(s) => Ok((*s).as_bytes().to_vec()),
+            Value::String(s) => Ok(s.as_bytes().to_vec()),
+            Value::I64(i) => {
+                let mut v = vec![0u8; 8];
+                i.serialize(&mut v)?;
+                Ok(v)
             }
 
+            Value::U64(i) => {
+                let mut v = vec![0u8; 8];
+                i.serialize(&mut v)?;
+                Ok(v)
+            }
+            Value::I32(i) => {
+                let mut v = vec![0u8; 4];
+                i.serialize(&mut v)?;
+                Ok(v)
+            }
+            Value::U32(u) => {
+                let mut v = vec![0u8; 4];
+                u.serialize(&mut v)?;
+                Ok(v)
+            }
+            Value::F64(f) => {
+                let mut v = vec![0u8; 8];
+                f.serialize(&mut v)?;
+                Ok(v)
+            }
+            Value::F32(f) => {
+                let mut v = vec![0u8; 4];
+                f.serialize(&mut v)?;
+                Ok(v)
+            }
+            Value::Date(f) => {
+                let mut v = vec![0u8; 4];
+                f.timestamp_nanos().serialize(&mut v)?;
+                Ok(v)
+            }
+            Value::Bytes(v) => Ok(v.clone()),
             _ => Ok(Vec::new()),
         }
     }

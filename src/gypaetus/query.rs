@@ -41,6 +41,9 @@ impl Term {
     }
 
     pub fn set_field(&mut self, field: FieldID) {
+        if self.0.len() < 4 {
+            self.0.resize(4, 0u8);
+        }
         BigEndian::write_u32(&mut self.0[0..4], field.0);
     }
 
@@ -49,6 +52,7 @@ impl Term {
     }
 
     pub fn set_bytes(&mut self, bytes: &[u8]) {
+        self.0.resize(4, 0u8);
         self.0.extend(bytes);
     }
 

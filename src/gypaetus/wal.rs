@@ -32,6 +32,7 @@ fn copy_slice<T: Copy>(des: &mut [T], src: &[T]) -> usize {
     l
 }
 
+#[derive(Copy, Clone)]
 pub enum IOType {
     FILEIO,
     MMAP,

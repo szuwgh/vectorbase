@@ -1,3 +1,8 @@
 pub mod gypaetus;
 pub mod sql;
-pub use sql::SE;
+
+pub struct SearchLite {}
+
+impl SearchLite {
+    pub fn open() {}
+}
