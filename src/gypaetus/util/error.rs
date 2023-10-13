@@ -1,3 +1,4 @@
+use furze::error::FstError;
 use std::io;
 use std::io::Error as IOError;
 use std::sync::{PoisonError, TryLockError};
@@ -31,6 +32,8 @@ pub enum GyError {
     ErrDocumentNotFound,
     #[error("invalid value type")]
     ErrInvalidValueType,
+    #[error("invalid fst: {0}")]
+    ErrInvalidFst(FstError),
 }
 
 impl From<&str> for GyError {
@@ -48,6 +51,12 @@ impl From<(&str, io::Error)> for GyError {
 impl From<String> for GyError {
     fn from(e: String) -> Self {
         GyError::Unexpected(e)
+    }
+}
+
+impl From<FstError> for GyError {
+    fn from(e: FstError) -> Self {
+        GyError::ErrInvalidFst(e)
     }
 }
 

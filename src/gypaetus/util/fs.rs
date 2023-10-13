@@ -1,6 +1,15 @@
 use super::error::GyResult;
 use std::fs;
+use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
+pub(crate) fn open_file(fname: PathBuf, read: bool, write: bool) -> GyResult<File> {
+    let file = OpenOptions::new()
+        .create(true)
+        .read(read)
+        .write(write)
+        .open(fname)?;
+    Ok(file)
+}
 
 pub(crate) fn mkdir(path: &Path) -> GyResult<()> {
     fs::create_dir_all(path)?;
