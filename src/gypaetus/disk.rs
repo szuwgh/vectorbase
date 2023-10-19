@@ -58,8 +58,6 @@ pub fn merge(reader: IndexReader, fname: PathBuf, offset: usize) -> GyResult<Dis
         }
         writer.finish()?;
     }
-    //写入词典
-    todo!()
 }
 
 pub struct DiskStoreReader {}
