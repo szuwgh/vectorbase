@@ -200,7 +200,7 @@ impl IndexBase {
         let offset = {
             let mut w = self.wal.write()?;
             let offset = w.offset();
-            doc.serialize(&mut *w)?;
+            doc.bin_serialize(&mut *w)?;
             w.flush()?;
             drop(w);
             offset
@@ -217,7 +217,7 @@ impl IndexBase {
             self.doc_offset.write()?.push(doc_offset);
         }
         let mut cursor = Cursor::new(content);
-        let doc = Document::deserialize(&mut cursor)?;
+        let doc = Document::debin_serialize(&mut cursor)?;
         self.inner_add(&doc)?;
         //添加向量
         *self.doc_id.borrow_mut() += 1;
@@ -281,8 +281,10 @@ impl IndexBase {
     fn flush(&mut self, path: PathBuf) {}
 }
 
+type Posting = Arc<RwLock<_Posting>>;
+
 // 倒排表
-pub struct Posting {
+pub struct _Posting {
     last_doc_id: DocID,
     doc_delta: DocID,
     byte_addr: Addr,
@@ -292,8 +294,8 @@ pub struct Posting {
     add_commit: bool,
 }
 
-impl Posting {
-    fn new(doc_freq_addr: Addr, pos_addr: Addr) -> Posting {
+impl _Posting {
+    fn new(doc_freq_addr: Addr, pos_addr: Addr) -> _Posting {
         Self {
             last_doc_id: 0,
             doc_delta: 0,
@@ -311,7 +313,7 @@ pub(crate) struct TrieIntCache {}
 
 //用于字符串索引
 pub(crate) struct ArtCache {
-    cache: Art<ByteString, Arc<RefCell<Posting>>>,
+    cache: Art<ByteString, Posting>,
 }
 
 impl ArtCache {
@@ -329,16 +331,16 @@ impl ArtCache {
         }
     }
 
-    fn insert(&mut self, k: Vec<u8>, v: Arc<RefCell<Posting>>) -> Option<Arc<RefCell<Posting>>> {
+    fn insert(&mut self, k: Vec<u8>, v: Posting) -> Option<Posting> {
         self.cache.upsert(ByteString::new(&k), v.clone());
         Some(v)
     }
 
-    fn get(&self, k: &[u8]) -> Option<&Arc<RefCell<Posting>>> {
+    fn get(&self, k: &[u8]) -> Option<&Posting> {
         self.cache.get(&ByteString::new(&k))
     }
 
-    fn iter(&self) -> impl DoubleEndedIterator<Item = (&ByteString, &Arc<RefCell<Posting>>)> {
+    fn iter(&self) -> impl DoubleEndedIterator<Item = (&ByteString, &Posting)> {
         self.cache.iter()
     }
 }
@@ -346,7 +348,7 @@ impl ArtCache {
 pub(crate) struct FieldCache {
     indexs: Arc<RwLock<ArtCache>>,
     share_bytes_block: Weak<RingBuffer>,
-    commit_posting: RefCell<Vec<Arc<RefCell<Posting>>>>,
+    commit_posting: RefCell<Vec<Posting>>,
 }
 
 impl FieldCache {
@@ -366,7 +368,7 @@ impl FieldCache {
         let pool = self.share_bytes_block.upgrade().unwrap();
         self.commit_posting.borrow_mut().iter().try_for_each(
             |posting| -> Result<(), std::io::Error> {
-                let p = &mut *posting.borrow_mut();
+                let p = &mut posting.write().unwrap();
                 Self::write_doc_freq(p.doc_delta, p, &mut *pool.borrow_mut())?;
                 p.add_commit = false;
                 p.freq = 0;
@@ -385,11 +387,11 @@ impl FieldCache {
             let pos = (*pool).borrow_mut().alloc_bytes(0, None);
             self.indexs.write()?.insert(
                 v.clone(),
-                Arc::new(RefCell::new(Posting::new(pos, pos + BLOCK_SIZE_CLASS[1]))),
+                Arc::new(RwLock::new(_Posting::new(pos, pos + BLOCK_SIZE_CLASS[1]))),
             );
         }
         // 获取词典的倒排表
-        let p: Arc<RefCell<Posting>> = self
+        let p: Posting = self
             .indexs
             .read()?
             .get(&v)
@@ -398,10 +400,10 @@ impl FieldCache {
         // 获取bytes 池
         let pool = self.share_bytes_block.upgrade().unwrap();
         // 倒排表中加入文档id
-        Self::add_doc(doc_id, &mut *p.borrow_mut(), &mut *pool.borrow_mut())?;
-        if !(*p).borrow().add_commit {
+        Self::add_doc(doc_id, &mut *p.write()?, &mut *pool.borrow_mut())?;
+        if !(*p).read()?.add_commit {
             self.commit_posting.borrow_mut().push(p.clone());
-            (*p).borrow_mut().add_commit = true;
+            (*p).write()?.add_commit = true;
         }
 
         Ok(())
@@ -410,7 +412,7 @@ impl FieldCache {
     // 添加vec
     fn add_doc(
         doc_id: DocID,
-        posting: &mut Posting,
+        posting: &mut _Posting,
         block_pool: &mut ByteBlockPool,
     ) -> Result<(), std::io::Error> {
         if !posting.add_commit {
@@ -432,7 +434,7 @@ impl FieldCache {
 
     fn write_doc_freq(
         doc_delta: DocID,
-        posting: &mut Posting,
+        posting: &mut _Posting,
         block_pool: &mut ByteBlockPool,
     ) -> Result<(), std::io::Error> {
         if posting.freq == 1 {
@@ -491,8 +493,8 @@ impl FieldReader {
             let index = self.indexs.read()?;
             let posting = index.get(term).unwrap();
             let (start_addr, end_addr) = (
-                (*posting).borrow().byte_addr.clone(),
-                (*posting).borrow().doc_freq_addr.clone(),
+                (*posting).read()?.byte_addr.clone(),
+                (*posting).read()?.doc_freq_addr.clone(),
             );
             (start_addr, end_addr)
         };
@@ -591,9 +593,13 @@ impl IndexReader {
         let doc: Document = {
             let mut wal = self.wal.read()?;
             let mut wal_read = WalReader::from(&mut wal, doc_offset);
-            Document::deserialize(&mut wal_read)?
+            Document::debin_serialize(&mut wal_read)?
         };
         Ok(doc)
+    }
+
+    pub(crate) fn get_doc_offset(&self) -> &RwLock<Vec<usize>> {
+        &self.reader.doc_offset
     }
 }
 
@@ -818,7 +824,7 @@ mod tests {
 
         let mut v = vec![0u8; 0];
 
-        1.serialize(&mut v);
+        1.bin_serialize(&mut v);
         println!("search 1");
         p = field_reader.get(&v).unwrap();
         for x in p.iter() {

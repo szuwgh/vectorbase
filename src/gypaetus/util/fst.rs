@@ -21,6 +21,10 @@ impl FstBuilder {
     pub(crate) fn get_ref(&self) -> &[u8] {
         self.fst.get()
     }
+
+    pub(crate) fn reset(&mut self) {
+        self.fst.reset()
+    }
 }
 
 pub(crate) struct FstReader<'a> {

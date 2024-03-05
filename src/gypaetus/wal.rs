@@ -301,11 +301,11 @@ mod tests {
         let offset = wal.offset();
 
         let doc1 = Document::from(field_values);
-        doc1.serialize(&mut wal).unwrap();
+        doc1.bin_serialize(&mut wal).unwrap();
         wal.flush().unwrap();
 
         let mut wal_read = WalReader::from(&mut wal, offset);
-        let doc2 = Document::deserialize(&mut wal_read).unwrap();
+        let doc2 = Document::debin_serialize(&mut wal_read).unwrap();
         println!("doc2:{:?}", doc2);
         assert_eq!(doc1, doc2);
     }
