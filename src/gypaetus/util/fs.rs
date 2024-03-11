@@ -1,7 +1,12 @@
 use super::error::GyResult;
+
+use crate::iocopy;
+use fs2::FileExt;
+use memmap2::{self, MmapMut};
 use std::fs;
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
+
 pub(crate) fn open_file(fname: PathBuf, read: bool, write: bool) -> GyResult<File> {
     let file = OpenOptions::new()
         .create(true)
@@ -14,6 +19,104 @@ pub(crate) fn open_file(fname: PathBuf, read: bool, write: bool) -> GyResult<Fil
 pub(crate) fn mkdir(path: &Path) -> GyResult<()> {
     fs::create_dir_all(path)?;
     Ok(())
+}
+
+pub(crate) trait IoSelector {
+    fn write(&mut self, data: &[u8], offset: usize) -> GyResult<usize>;
+
+    fn read(&self, data: &mut [u8], offset: usize) -> GyResult<usize>;
+
+    fn sync(&mut self) -> GyResult<()>;
+
+    fn close(&mut self) -> GyResult<()>;
+
+    fn delete(&self) -> GyResult<()>;
+}
+
+pub(crate) struct MmapSelector {
+    file: File,
+    mmap: MmapMut,
+}
+
+impl MmapSelector {
+    pub(crate) fn new(fname: &Path, fsize: usize) -> GyResult<MmapSelector> {
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(fname)?;
+        file.allocate(fsize as u64)?;
+        let nmmap = unsafe {
+            memmap2::MmapOptions::new()
+                .offset(0)
+                .len(fsize)
+                .map_mut(&file)
+                .map_err(|e| format!("mmap failed: {}", e))?
+        };
+        Ok(Self {
+            file: file,
+            mmap: nmmap,
+        })
+    }
+}
+
+impl IoSelector for MmapSelector {
+    fn write(&mut self, data: &[u8], offset: usize) -> GyResult<usize> {
+        let i = iocopy!(&mut self.mmap[offset..], data);
+        Ok(i)
+    }
+
+    fn read(&self, data: &mut [u8], offset: usize) -> GyResult<usize> {
+        let i = iocopy!(data, &self.mmap[offset..]);
+        Ok(i)
+    }
+
+    fn sync(&mut self) -> GyResult<()> {
+        self.mmap.flush()?;
+        Ok(())
+    }
+
+    fn close(&mut self) -> GyResult<()> {
+        self.sync()?;
+        Ok(())
+    }
+
+    fn delete(&self) -> GyResult<()> {
+        todo!()
+    }
+}
+
+pub(crate) struct FileIOSelector {
+    file: File,
+    mmap: MmapMut,
+}
+
+impl FileIOSelector {
+    pub(crate) fn new(fname: &Path, fsize: usize) -> GyResult<FileIOSelector> {
+        todo!()
+    }
+}
+
+impl IoSelector for FileIOSelector {
+    fn write(&mut self, data: &[u8], offset: usize) -> GyResult<usize> {
+        todo!()
+    }
+
+    fn read(&self, data: &mut [u8], offset: usize) -> GyResult<usize> {
+        todo!()
+    }
+
+    fn sync(&mut self) -> GyResult<()> {
+        todo!()
+    }
+
+    fn close(&mut self) -> GyResult<()> {
+        todo!()
+    }
+
+    fn delete(&self) -> GyResult<()> {
+        todo!()
+    }
 }
 
 pub(crate) fn next_sequence_ext_file(path: &Path, ext: &str) -> GyResult<PathBuf> {

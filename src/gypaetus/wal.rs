@@ -1,53 +1,20 @@
 use super::util::error::{GyError, GyResult};
+use super::util::fs::{FileIOSelector, IoSelector, MmapSelector};
+use crate::iocopy;
 use core::arch::x86_64::*;
-use fs2::FileExt;
 use memmap2::{self, Mmap, MmapMut};
 use std::fs::{self, File};
 use std::io::Read;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock, Weak};
-use std::{
-    fs::OpenOptions,
-    io::{Seek, SeekFrom, Write},
-};
 
 pub(crate) const DEFAULT_WAL_FILE_SIZE: usize = 512 << 20; //
-
-#[macro_export]
-macro_rules! copy {
-    ($des:expr, $src:expr) => {
-        copy_slice($des, $src)
-    };
-}
-
-fn copy_slice<T: Copy>(des: &mut [T], src: &[T]) -> usize {
-    let l = if des.len() < src.len() {
-        des.len()
-    } else {
-        src.len()
-    };
-    unsafe {
-        std::ptr::copy_nonoverlapping(src.as_ptr(), des.as_mut_ptr(), l);
-    }
-    l
-}
 
 #[derive(Copy, Clone)]
 pub enum IOType {
     FILEIO,
     MMAP,
-}
-
-pub(crate) trait IoSelector {
-    fn write(&mut self, data: &[u8], offset: usize) -> GyResult<usize>;
-
-    fn read(&self, data: &mut [u8], offset: usize) -> GyResult<usize>;
-
-    fn sync(&mut self) -> GyResult<()>;
-
-    fn close(&mut self) -> GyResult<()>;
-
-    fn delete(&self) -> GyResult<()>;
 }
 
 const BLOCK_SIZE: usize = 1 << 15;
@@ -128,7 +95,7 @@ impl Write for Wal {
             if self.j >= BLOCK_SIZE {
                 self.flush()?;
             }
-            let n = copy!(&mut self.buffer[self.j..], buf);
+            let n = iocopy!(&mut self.buffer[self.j..], buf);
             self.j += n;
             buf = &buf[n..];
         }
@@ -145,92 +112,6 @@ impl Write for Wal {
         self.i += self.j;
         self.j = 0;
         Ok(())
-    }
-}
-
-pub(crate) struct MmapSelector {
-    file: File,
-    mmap: MmapMut,
-}
-
-impl MmapSelector {
-    fn new(fname: &Path, fsize: usize) -> GyResult<MmapSelector> {
-        let file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .open(fname)?;
-        file.allocate(fsize as u64)?;
-        let nmmap = unsafe {
-            memmap2::MmapOptions::new()
-                .offset(0)
-                .len(fsize)
-                .map_mut(&file)
-                .map_err(|e| format!("mmap failed: {}", e))?
-        };
-        Ok(Self {
-            file: file,
-            mmap: nmmap,
-        })
-    }
-}
-
-impl IoSelector for MmapSelector {
-    fn write(&mut self, data: &[u8], offset: usize) -> GyResult<usize> {
-        let i = copy!(&mut self.mmap[offset..], data);
-        Ok(i)
-    }
-
-    fn read(&self, data: &mut [u8], offset: usize) -> GyResult<usize> {
-        let i = copy!(data, &self.mmap[offset..]);
-        Ok(i)
-    }
-
-    fn sync(&mut self) -> GyResult<()> {
-        self.mmap.flush()?;
-        Ok(())
-    }
-
-    fn close(&mut self) -> GyResult<()> {
-        self.sync()?;
-        Ok(())
-    }
-
-    fn delete(&self) -> GyResult<()> {
-        todo!()
-    }
-}
-
-pub(crate) struct FileIOSelector {
-    file: File,
-    mmap: MmapMut,
-}
-
-impl FileIOSelector {
-    fn new(fname: &Path, fsize: usize) -> GyResult<FileIOSelector> {
-        todo!()
-    }
-}
-
-impl IoSelector for FileIOSelector {
-    fn write(&mut self, data: &[u8], offset: usize) -> GyResult<usize> {
-        todo!()
-    }
-
-    fn read(&self, data: &mut [u8], offset: usize) -> GyResult<usize> {
-        todo!()
-    }
-
-    fn sync(&mut self) -> GyResult<()> {
-        todo!()
-    }
-
-    fn close(&mut self) -> GyResult<()> {
-        todo!()
-    }
-
-    fn delete(&self) -> GyResult<()> {
-        todo!()
     }
 }
 
@@ -252,7 +133,7 @@ mod tests {
     fn test_copy() {
         let mut a = [0; 9];
         let b = [1, 2, 3, 4, 5];
-        let i = copy!(&mut a, &b);
+        let i = iocopy!(&mut a, &b);
         println!("{:?},{}", a, i);
     }
 
@@ -301,11 +182,11 @@ mod tests {
         let offset = wal.offset();
 
         let doc1 = Document::from(field_values);
-        doc1.bin_serialize(&mut wal).unwrap();
+        doc1.serialize(&mut wal).unwrap();
         wal.flush().unwrap();
 
         let mut wal_read = WalReader::from(&mut wal, offset);
-        let doc2 = Document::debin_serialize(&mut wal_read).unwrap();
+        let doc2 = Document::deserialize(&mut wal_read).unwrap();
         println!("doc2:{:?}", doc2);
         assert_eq!(doc1, doc2);
     }

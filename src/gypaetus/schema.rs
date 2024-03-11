@@ -14,12 +14,44 @@ pub type DateTime = chrono::DateTime<chrono::Utc>;
 
 pub trait BinarySerialize: Sized {
     /// Serialize
-    fn bin_serialize<W: Write>(&self, writer: &mut W) -> GyResult<()>;
-    /// Debin_serialize
-    fn debin_serialize<R: Read>(reader: &mut R) -> GyResult<Self>;
+    fn serialize<W: Write>(&self, writer: &mut W) -> GyResult<()>;
+    /// Deserialize
+    fn deserialize<R: Read>(reader: &mut R) -> GyResult<Self>;
 }
 
 pub type DocID = u64;
+
+pub(crate) struct DocFreq(pub(crate) DocID, pub(crate) u32);
+
+impl DocFreq {
+    fn doc(&self) -> DocID {
+        self.0
+    }
+
+    fn freq(&self) -> u32 {
+        self.1
+    }
+}
+
+impl BinarySerialize for DocFreq {
+    fn serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
+        if self.freq() == 1 {
+            let doc_code = self.doc() << 1 | 1;
+            VUInt(doc_code).serialize(writer)?;
+            //let addr = block_pool.write_var_u64(posting.doc_freq_addr, doc_code)?;
+            //posting.doc_freq_addr = addr;
+        } else {
+            VUInt(self.doc() << 1).serialize(writer)?;
+            // let addr = block_pool.write_var_u64(posting.doc_freq_addr, doc_delta << 1)?;
+            VUInt(self.freq() as u64).serialize(writer)?;
+            //posting.doc_freq_addr = block_pool.write_vu32(addr, posting.freq)?;
+        }
+        Ok(())
+    }
+    fn deserialize<R: Read>(reader: &mut R) -> GyResult<Self> {
+        todo!()
+    }
+}
 
 #[derive(Default)]
 pub struct Schema {
@@ -151,18 +183,18 @@ pub struct Document {
 }
 
 impl BinarySerialize for Document {
-    fn bin_serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
-        VUInt(self.field_values.len() as u64).bin_serialize(writer)?;
+    fn serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
+        VUInt(self.field_values.len() as u64).serialize(writer)?;
         for field_value in &self.field_values {
-            field_value.bin_serialize(writer)?;
+            field_value.serialize(writer)?;
         }
         Ok(())
     }
 
-    fn debin_serialize<R: Read>(reader: &mut R) -> GyResult<Self> {
-        let num_field_values = VUInt::debin_serialize(reader)?.val() as usize;
+    fn deserialize<R: Read>(reader: &mut R) -> GyResult<Self> {
+        let num_field_values = VUInt::deserialize(reader)?.val() as usize;
         let field_values = (0..num_field_values)
-            .map(|_| FieldValue::debin_serialize(reader))
+            .map(|_| FieldValue::deserialize(reader))
             .collect::<GyResult<Vec<FieldValue>>>()?;
         Ok(Document::from(field_values))
     }
@@ -227,12 +259,12 @@ impl FieldID {
 }
 
 impl BinarySerialize for FieldID {
-    fn bin_serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
-        self.0.bin_serialize(writer)
+    fn serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
+        self.0.serialize(writer)
     }
 
-    fn debin_serialize<R: Read>(reader: &mut R) -> GyResult<FieldID> {
-        u32::debin_serialize(reader).map(FieldID)
+    fn deserialize<R: Read>(reader: &mut R) -> GyResult<FieldID> {
+        u32::deserialize(reader).map(FieldID)
     }
 }
 
@@ -244,13 +276,13 @@ pub struct FieldValue {
 }
 
 impl BinarySerialize for FieldValue {
-    fn bin_serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
-        self.field_id.bin_serialize(writer)?;
-        self.value.bin_serialize(writer)
+    fn serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
+        self.field_id.serialize(writer)?;
+        self.value.serialize(writer)
     }
-    fn debin_serialize<R: Read>(reader: &mut R) -> GyResult<FieldValue> {
-        let field_id = FieldID::debin_serialize(reader)?;
-        let value = Value::debin_serialize(reader)?;
+    fn deserialize<R: Read>(reader: &mut R) -> GyResult<FieldValue> {
+        let field_id = FieldID::deserialize(reader)?;
+        let value = Value::deserialize(reader)?;
         Ok(FieldValue {
             field_id: field_id,
             value: value,
@@ -305,65 +337,63 @@ pub enum Value {
 }
 
 impl BinarySerialize for Value {
-    fn bin_serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
+    fn serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
         match &self {
             Value::Str(s) => {
-                STR_ENCODE.bin_serialize(writer)?;
-                (*s).to_string().bin_serialize(writer)?;
+                STR_ENCODE.serialize(writer)?;
+                (*s).to_string().serialize(writer)?;
             }
             Value::String(s) => {
-                STR_ENCODE.bin_serialize(writer)?;
-                s.bin_serialize(writer)?;
+                STR_ENCODE.serialize(writer)?;
+                s.serialize(writer)?;
             }
             Value::I64(i) => {
-                I64_ENCODE.bin_serialize(writer)?;
-                i.bin_serialize(writer)?;
+                I64_ENCODE.serialize(writer)?;
+                i.serialize(writer)?;
             }
             Value::U64(u) => {
-                U64_ENCODE.bin_serialize(writer)?;
-                u.bin_serialize(writer)?;
+                U64_ENCODE.serialize(writer)?;
+                u.serialize(writer)?;
             }
             Value::I32(i) => {
-                I32_ENCODE.bin_serialize(writer)?;
-                i.bin_serialize(writer)?;
+                I32_ENCODE.serialize(writer)?;
+                i.serialize(writer)?;
             }
             Value::U32(u) => {
-                U32_ENCODE.bin_serialize(writer)?;
-                u.bin_serialize(writer)?;
+                U32_ENCODE.serialize(writer)?;
+                u.serialize(writer)?;
             }
             Value::F64(f) => {
-                F64_ENCODE.bin_serialize(writer)?;
-                f.bin_serialize(writer)?;
+                F64_ENCODE.serialize(writer)?;
+                f.serialize(writer)?;
             }
             Value::F32(f) => {
-                F32_ENCODE.bin_serialize(writer)?;
-                f.bin_serialize(writer)?;
+                F32_ENCODE.serialize(writer)?;
+                f.serialize(writer)?;
             }
             Value::Date(d) => {
-                DATE_ENCODE.bin_serialize(writer)?;
-                d.timestamp_nanos().bin_serialize(writer)?;
+                DATE_ENCODE.serialize(writer)?;
+                d.timestamp_nanos().serialize(writer)?;
             }
             Value::Bytes(b) => {
-                BYTES_ENCODE.bin_serialize(writer)?;
-                b.bin_serialize(writer)?;
+                BYTES_ENCODE.serialize(writer)?;
+                b.serialize(writer)?;
             }
         }
         Ok(())
     }
 
-    fn debin_serialize<R: Read>(reader: &mut R) -> GyResult<Self> {
-        match u8::debin_serialize(reader)? {
-            STR_ENCODE => Ok(Value::String(String::debin_serialize(reader)?)),
-            I64_ENCODE => Ok(Value::I64(i64::debin_serialize(reader)?)),
-            U64_ENCODE => Ok(Value::U64(u64::debin_serialize(reader)?)),
-            I32_ENCODE => Ok(Value::I32(i32::debin_serialize(reader)?)),
-            U32_ENCODE => Ok(Value::U32(u32::debin_serialize(reader)?)),
-            F64_ENCODE => Ok(Value::F64(f64::debin_serialize(reader)?)),
-            F32_ENCODE => Ok(Value::F32(f32::debin_serialize(reader)?)),
-            DATE_ENCODE => Ok(Value::Date(
-                Utc.timestamp_nanos(i64::debin_serialize(reader)?),
-            )),
-            BYTES_ENCODE => Ok(Value::Bytes(Vec::<u8>::debin_serialize(reader)?)),
+    fn deserialize<R: Read>(reader: &mut R) -> GyResult<Self> {
+        match u8::deserialize(reader)? {
+            STR_ENCODE => Ok(Value::String(String::deserialize(reader)?)),
+            I64_ENCODE => Ok(Value::I64(i64::deserialize(reader)?)),
+            U64_ENCODE => Ok(Value::U64(u64::deserialize(reader)?)),
+            I32_ENCODE => Ok(Value::I32(i32::deserialize(reader)?)),
+            U32_ENCODE => Ok(Value::U32(u32::deserialize(reader)?)),
+            F64_ENCODE => Ok(Value::F64(f64::deserialize(reader)?)),
+            F32_ENCODE => Ok(Value::F32(f32::deserialize(reader)?)),
+            DATE_ENCODE => Ok(Value::Date(Utc.timestamp_nanos(i64::deserialize(reader)?))),
+            BYTES_ENCODE => Ok(Value::Bytes(Vec::<u8>::deserialize(reader)?)),
             _ => Err(GyError::ErrInvalidValueType),
         }
     }
@@ -401,38 +431,38 @@ impl Value {
             Value::String(s) => Ok(s.as_bytes().to_vec()),
             Value::I64(i) => {
                 let mut v = vec![0u8; 8];
-                i.bin_serialize(&mut v)?;
+                i.serialize(&mut v)?;
                 Ok(v)
             }
 
             Value::U64(i) => {
                 let mut v = vec![0u8; 8];
-                i.bin_serialize(&mut v)?;
+                i.serialize(&mut v)?;
                 Ok(v)
             }
             Value::I32(i) => {
                 let mut v = vec![0u8; 4];
-                i.bin_serialize(&mut v)?;
+                i.serialize(&mut v)?;
                 Ok(v)
             }
             Value::U32(u) => {
                 let mut v = vec![0u8; 4];
-                u.bin_serialize(&mut v)?;
+                u.serialize(&mut v)?;
                 Ok(v)
             }
             Value::F64(f) => {
                 let mut v = vec![0u8; 8];
-                f.bin_serialize(&mut v)?;
+                f.serialize(&mut v)?;
                 Ok(v)
             }
             Value::F32(f) => {
                 let mut v = vec![0u8; 4];
-                f.bin_serialize(&mut v)?;
+                f.serialize(&mut v)?;
                 Ok(v)
             }
             Value::Date(f) => {
                 let mut v = vec![0u8; 4];
-                f.timestamp_nanos().bin_serialize(&mut v)?;
+                f.timestamp_nanos().serialize(&mut v)?;
                 Ok(v)
             }
             Value::Bytes(v) => Ok(v.clone()),
@@ -441,20 +471,34 @@ impl Value {
     }
 }
 
-impl<T: BinarySerialize> BinarySerialize for Vec<T> {
-    fn bin_serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
-        VUInt(self.len() as u64).bin_serialize(writer)?;
-        for it in self {
-            it.bin_serialize(writer)?;
+impl<T: BinarySerialize> BinarySerialize for &[T] {
+    fn serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
+        VUInt(self.len() as u64).serialize(writer)?;
+        for it in *self {
+            it.serialize(writer)?;
         }
         Ok(())
     }
 
-    fn debin_serialize<R: Read>(reader: &mut R) -> GyResult<Vec<T>> {
-        let num_items = VUInt::debin_serialize(reader)?.val();
+    fn deserialize<R: Read>(reader: &mut R) -> GyResult<Self> {
+        todo!()
+    }
+}
+
+impl<T: BinarySerialize> BinarySerialize for Vec<T> {
+    fn serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
+        VUInt(self.len() as u64).serialize(writer)?;
+        for it in self {
+            it.serialize(writer)?;
+        }
+        Ok(())
+    }
+
+    fn deserialize<R: Read>(reader: &mut R) -> GyResult<Vec<T>> {
+        let num_items = VUInt::deserialize(reader)?.val();
         let mut items: Vec<T> = Vec::with_capacity(num_items as usize);
         for _ in 0..num_items {
-            let item = T::debin_serialize(reader)?;
+            let item = T::deserialize(reader)?;
             items.push(item);
         }
         Ok(items)
@@ -462,15 +506,15 @@ impl<T: BinarySerialize> BinarySerialize for Vec<T> {
 }
 
 impl BinarySerialize for String {
-    fn bin_serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
+    fn serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
         let data: &[u8] = self.as_bytes();
-        VUInt(data.len() as u64).bin_serialize(writer)?;
+        VUInt(data.len() as u64).serialize(writer)?;
         writer.write_all(data)?;
         Ok(())
     }
 
-    fn debin_serialize<R: Read>(reader: &mut R) -> GyResult<String> {
-        let str_len = VUInt::debin_serialize(reader)?.val() as usize;
+    fn deserialize<R: Read>(reader: &mut R) -> GyResult<String> {
+        let str_len = VUInt::deserialize(reader)?.val() as usize;
         let mut result = String::with_capacity(str_len);
         reader.take(str_len as u64).read_to_string(&mut result)?;
         Ok(result)
@@ -478,96 +522,96 @@ impl BinarySerialize for String {
 }
 
 impl BinarySerialize for u8 {
-    fn bin_serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
+    fn serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
         writer.write_u8(*self)?;
         Ok(())
     }
 
-    fn debin_serialize<R: Read>(reader: &mut R) -> GyResult<Self> {
+    fn deserialize<R: Read>(reader: &mut R) -> GyResult<Self> {
         let v = reader.read_u8()?;
         Ok(v)
     }
 }
 
 impl BinarySerialize for i32 {
-    fn bin_serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
+    fn serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
         writer.write_i32::<BigEndian>(*self)?;
         Ok(())
     }
 
-    fn debin_serialize<R: Read>(reader: &mut R) -> GyResult<Self> {
+    fn deserialize<R: Read>(reader: &mut R) -> GyResult<Self> {
         let v = reader.read_i32::<BigEndian>()?;
         Ok(v as i32)
     }
 }
 
 impl BinarySerialize for u32 {
-    fn bin_serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
+    fn serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
         writer.write_u32::<BigEndian>(*self)?;
         Ok(())
     }
 
-    fn debin_serialize<R: Read>(reader: &mut R) -> GyResult<Self> {
+    fn deserialize<R: Read>(reader: &mut R) -> GyResult<Self> {
         let v = reader.read_u32::<BigEndian>()?;
         Ok(v as u32)
     }
 }
 
 impl BinarySerialize for usize {
-    fn bin_serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
+    fn serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
         writer.write_u32::<BigEndian>(*self as u32)?;
         Ok(())
     }
 
-    fn debin_serialize<R: Read>(reader: &mut R) -> GyResult<Self> {
+    fn deserialize<R: Read>(reader: &mut R) -> GyResult<Self> {
         let v = reader.read_u32::<BigEndian>()?;
         Ok(v as usize)
     }
 }
 
 impl BinarySerialize for i64 {
-    fn bin_serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
+    fn serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
         writer.write_i64::<BigEndian>(*self)?;
         Ok(())
     }
 
-    fn debin_serialize<R: Read>(reader: &mut R) -> GyResult<Self> {
+    fn deserialize<R: Read>(reader: &mut R) -> GyResult<Self> {
         let v = reader.read_i64::<BigEndian>()?;
         Ok(v)
     }
 }
 
 impl BinarySerialize for u64 {
-    fn bin_serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
+    fn serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
         writer.write_u64::<BigEndian>(*self)?;
         Ok(())
     }
 
-    fn debin_serialize<R: Read>(reader: &mut R) -> GyResult<Self> {
+    fn deserialize<R: Read>(reader: &mut R) -> GyResult<Self> {
         let v = reader.read_u64::<BigEndian>()?;
         Ok(v)
     }
 }
 
 impl BinarySerialize for f64 {
-    fn bin_serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
+    fn serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
         writer.write_f64::<BigEndian>(*self)?;
         Ok(())
     }
 
-    fn debin_serialize<R: Read>(reader: &mut R) -> GyResult<Self> {
+    fn deserialize<R: Read>(reader: &mut R) -> GyResult<Self> {
         let v = reader.read_f64::<BigEndian>()?;
         Ok(v)
     }
 }
 
 impl BinarySerialize for f32 {
-    fn bin_serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
+    fn serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
         writer.write_f32::<BigEndian>(*self)?;
         Ok(())
     }
 
-    fn debin_serialize<R: Read>(reader: &mut R) -> GyResult<Self> {
+    fn deserialize<R: Read>(reader: &mut R) -> GyResult<Self> {
         let v = reader.read_f32::<BigEndian>()?;
         Ok(v)
     }
@@ -583,12 +627,12 @@ impl VUInt {
 }
 
 impl BinarySerialize for VUInt {
-    fn bin_serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
+    fn serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
         writer.write_vu64::<Binary>(self.0)?;
         Ok(())
     }
 
-    fn debin_serialize<R: Read>(reader: &mut R) -> GyResult<Self> {
+    fn deserialize<R: Read>(reader: &mut R) -> GyResult<Self> {
         let (v, _) = reader.read_vu64::<Binary>();
         Ok(VUInt(v))
     }
@@ -598,12 +642,12 @@ impl BinarySerialize for VUInt {
 pub struct VInt(pub i64);
 
 impl BinarySerialize for VInt {
-    fn bin_serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
+    fn serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
         writer.write_vi64::<Binary>(self.0)?;
         Ok(())
     }
 
-    fn debin_serialize<R: Read>(reader: &mut R) -> GyResult<Self> {
+    fn deserialize<R: Read>(reader: &mut R) -> GyResult<Self> {
         let (v, _) = reader.read_vi64::<Binary>();
         Ok(VInt(v))
     }
@@ -641,26 +685,26 @@ mod tests {
         let value_8 = Value::Date(Utc::now());
         let value_9 = Value::Bytes(vec![0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
 
-        value_1.bin_serialize(&mut cursor).unwrap();
-        value_2.bin_serialize(&mut cursor).unwrap();
-        value_3.bin_serialize(&mut cursor).unwrap();
-        value_4.bin_serialize(&mut cursor).unwrap();
-        value_5.bin_serialize(&mut cursor).unwrap();
-        value_6.bin_serialize(&mut cursor).unwrap();
-        value_7.bin_serialize(&mut cursor).unwrap();
-        value_8.bin_serialize(&mut cursor).unwrap();
-        value_9.bin_serialize(&mut cursor).unwrap();
+        value_1.serialize(&mut cursor).unwrap();
+        value_2.serialize(&mut cursor).unwrap();
+        value_3.serialize(&mut cursor).unwrap();
+        value_4.serialize(&mut cursor).unwrap();
+        value_5.serialize(&mut cursor).unwrap();
+        value_6.serialize(&mut cursor).unwrap();
+        value_7.serialize(&mut cursor).unwrap();
+        value_8.serialize(&mut cursor).unwrap();
+        value_9.serialize(&mut cursor).unwrap();
 
         let mut cursor = Cursor::new(&bytes);
-        let d_value_1 = Value::debin_serialize(&mut cursor).unwrap();
-        let d_value_2 = Value::debin_serialize(&mut cursor).unwrap();
-        let d_value_3 = Value::debin_serialize(&mut cursor).unwrap();
-        let d_value_4 = Value::debin_serialize(&mut cursor).unwrap();
-        let d_value_5 = Value::debin_serialize(&mut cursor).unwrap();
-        let d_value_6 = Value::debin_serialize(&mut cursor).unwrap();
-        let d_value_7 = Value::debin_serialize(&mut cursor).unwrap();
-        let d_value_8 = Value::debin_serialize(&mut cursor).unwrap();
-        let d_value_9 = Value::debin_serialize(&mut cursor).unwrap();
+        let d_value_1 = Value::deserialize(&mut cursor).unwrap();
+        let d_value_2 = Value::deserialize(&mut cursor).unwrap();
+        let d_value_3 = Value::deserialize(&mut cursor).unwrap();
+        let d_value_4 = Value::deserialize(&mut cursor).unwrap();
+        let d_value_5 = Value::deserialize(&mut cursor).unwrap();
+        let d_value_6 = Value::deserialize(&mut cursor).unwrap();
+        let d_value_7 = Value::deserialize(&mut cursor).unwrap();
+        let d_value_8 = Value::deserialize(&mut cursor).unwrap();
+        let d_value_9 = Value::deserialize(&mut cursor).unwrap();
         assert_eq!(value_1, d_value_1);
         assert_eq!(value_2, d_value_2);
         assert_eq!(value_3, d_value_3);
@@ -689,26 +733,26 @@ mod tests {
             Value::Bytes(vec![0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
         );
 
-        field_1.bin_serialize(&mut cursor).unwrap();
-        field_2.bin_serialize(&mut cursor).unwrap();
-        field_3.bin_serialize(&mut cursor).unwrap();
-        field_4.bin_serialize(&mut cursor).unwrap();
-        field_5.bin_serialize(&mut cursor).unwrap();
-        field_6.bin_serialize(&mut cursor).unwrap();
-        field_7.bin_serialize(&mut cursor).unwrap();
-        field_8.bin_serialize(&mut cursor).unwrap();
-        field_9.bin_serialize(&mut cursor).unwrap();
+        field_1.serialize(&mut cursor).unwrap();
+        field_2.serialize(&mut cursor).unwrap();
+        field_3.serialize(&mut cursor).unwrap();
+        field_4.serialize(&mut cursor).unwrap();
+        field_5.serialize(&mut cursor).unwrap();
+        field_6.serialize(&mut cursor).unwrap();
+        field_7.serialize(&mut cursor).unwrap();
+        field_8.serialize(&mut cursor).unwrap();
+        field_9.serialize(&mut cursor).unwrap();
 
         let mut cursor = Cursor::new(&bytes);
-        let d_field_1 = FieldValue::debin_serialize(&mut cursor).unwrap();
-        let d_field_2 = FieldValue::debin_serialize(&mut cursor).unwrap();
-        let d_field_3 = FieldValue::debin_serialize(&mut cursor).unwrap();
-        let d_field_4 = FieldValue::debin_serialize(&mut cursor).unwrap();
-        let d_field_5 = FieldValue::debin_serialize(&mut cursor).unwrap();
-        let d_field_6 = FieldValue::debin_serialize(&mut cursor).unwrap();
-        let d_field_7 = FieldValue::debin_serialize(&mut cursor).unwrap();
-        let d_field_8 = FieldValue::debin_serialize(&mut cursor).unwrap();
-        let d_field_9 = FieldValue::debin_serialize(&mut cursor).unwrap();
+        let d_field_1 = FieldValue::deserialize(&mut cursor).unwrap();
+        let d_field_2 = FieldValue::deserialize(&mut cursor).unwrap();
+        let d_field_3 = FieldValue::deserialize(&mut cursor).unwrap();
+        let d_field_4 = FieldValue::deserialize(&mut cursor).unwrap();
+        let d_field_5 = FieldValue::deserialize(&mut cursor).unwrap();
+        let d_field_6 = FieldValue::deserialize(&mut cursor).unwrap();
+        let d_field_7 = FieldValue::deserialize(&mut cursor).unwrap();
+        let d_field_8 = FieldValue::deserialize(&mut cursor).unwrap();
+        let d_field_9 = FieldValue::deserialize(&mut cursor).unwrap();
         assert_eq!(field_1, d_field_1);
         assert_eq!(field_2, d_field_2);
         assert_eq!(field_3, d_field_3);
@@ -718,7 +762,7 @@ mod tests {
         assert_eq!(field_7, d_field_7);
         assert_eq!(field_8, d_field_8);
         assert_eq!(field_9, d_field_9);
-        // value_str1.bin_serialize(&mut cursor).unwrap();
+        // value_str1.serialize(&mut cursor).unwrap();
     }
 
     #[test]
@@ -744,11 +788,11 @@ mod tests {
             field_10,
         ];
         let doc1 = Document::from(field_values);
-        doc1.bin_serialize(&mut cursor).unwrap();
+        doc1.serialize(&mut cursor).unwrap();
         println!("pos:{}", cursor.position());
         drop(cursor);
         let mut cursor1 = Cursor::new(&bytes);
-        let d_doc1 = Document::debin_serialize(&mut cursor1).unwrap();
+        let d_doc1 = Document::deserialize(&mut cursor1).unwrap();
         assert_eq!(doc1, d_doc1);
         println!("doc size:{}", doc1.size());
     }

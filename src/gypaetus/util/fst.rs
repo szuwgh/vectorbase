@@ -8,6 +8,12 @@ pub(crate) struct FstBuilder {
 }
 
 impl FstBuilder {
+    pub(crate) fn new() -> FstBuilder {
+        FstBuilder {
+            fst: Builder::new(Vec::with_capacity(4 * 1024 * 1024)),
+        }
+    }
+
     pub(crate) fn add(&mut self, key: &[u8], val: u64) -> GyResult<()> {
         self.fst.add(key, val)?;
         Ok(())

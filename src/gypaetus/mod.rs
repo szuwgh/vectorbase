@@ -9,8 +9,8 @@ mod util;
 use art_tree::{Art, ByteString, Key};
 use query::Term;
 use util::error::{GyError, GyResult};
+mod macros;
 pub mod wal;
-
 use ann::BoxedAnnIndex;
 use ann::{Create, Metric, HNSW};
 use buffer::{
@@ -30,6 +30,8 @@ use std::sync::{Arc, RwLock, Weak};
 use wal::{IOType, Wal, DEFAULT_WAL_FILE_SIZE};
 
 use crate::gypaetus::wal::WalReader;
+
+use self::schema::DocFreq;
 pub struct IndexConfig {
     io_type: IOType,
     wal_path: PathBuf,
@@ -200,7 +202,7 @@ impl IndexBase {
         let offset = {
             let mut w = self.wal.write()?;
             let offset = w.offset();
-            doc.bin_serialize(&mut *w)?;
+            doc.serialize(&mut *w)?;
             w.flush()?;
             drop(w);
             offset
@@ -217,7 +219,7 @@ impl IndexBase {
             self.doc_offset.write()?.push(doc_offset);
         }
         let mut cursor = Cursor::new(content);
-        let doc = Document::debin_serialize(&mut cursor)?;
+        let doc = Document::deserialize(&mut cursor)?;
         self.inner_add(&doc)?;
         //添加向量
         *self.doc_id.borrow_mut() += 1;
@@ -366,15 +368,16 @@ impl FieldCache {
 
     fn commit(&self) -> GyResult<()> {
         let pool = self.share_bytes_block.upgrade().unwrap();
-        self.commit_posting.borrow_mut().iter().try_for_each(
-            |posting| -> Result<(), std::io::Error> {
+        self.commit_posting
+            .borrow_mut()
+            .iter()
+            .try_for_each(|posting| -> GyResult<()> {
                 let p = &mut posting.write().unwrap();
                 Self::write_doc_freq(p.doc_delta, p, &mut *pool.borrow_mut())?;
                 p.add_commit = false;
                 p.freq = 0;
                 Ok(())
-            },
-        )?;
+            })?;
         self.commit_posting.borrow_mut().clear();
         Ok(())
     }
@@ -414,7 +417,7 @@ impl FieldCache {
         doc_id: DocID,
         posting: &mut _Posting,
         block_pool: &mut ByteBlockPool,
-    ) -> Result<(), std::io::Error> {
+    ) -> GyResult<()> {
         if !posting.add_commit {
             posting.doc_num += 1;
             posting.doc_delta = doc_id - posting.last_doc_id;
@@ -436,15 +439,18 @@ impl FieldCache {
         doc_delta: DocID,
         posting: &mut _Posting,
         block_pool: &mut ByteBlockPool,
-    ) -> Result<(), std::io::Error> {
-        if posting.freq == 1 {
-            let doc_code = doc_delta << 1 | 1;
-            let addr = block_pool.write_var_u64(posting.doc_freq_addr, doc_code)?;
-            posting.doc_freq_addr = addr;
-        } else {
-            let addr = block_pool.write_var_u64(posting.doc_freq_addr, doc_delta << 1)?;
-            posting.doc_freq_addr = block_pool.write_vu32(addr, posting.freq)?;
-        }
+    ) -> GyResult<()> {
+        block_pool.set_pos(posting.doc_freq_addr);
+        DocFreq(doc_delta, posting.freq).serialize(block_pool)?;
+        // if posting.freq == 1 {
+        //     let doc_code = doc_delta << 1 | 1;
+        //     let addr = block_pool.write_var_u64(posting.doc_freq_addr, doc_code)?;
+        //     posting.doc_freq_addr = addr;
+        // } else {
+        //     let addr = block_pool.write_var_u64(posting.doc_freq_addr, doc_delta << 1)?;
+        //     posting.doc_freq_addr = block_pool.write_vu32(addr, posting.freq)?;
+        // }
+        posting.doc_freq_addr = block_pool.get_pos();
         Ok(())
     }
 
@@ -452,7 +458,7 @@ impl FieldCache {
         pos: usize,
         posting: &mut Posting,
         pool: Arc<RefCell<ByteBlockPool>>,
-    ) -> Result<(), std::io::Error> {
+    ) -> GyResult<()> {
         Ok(())
     }
 }
@@ -593,7 +599,7 @@ impl IndexReader {
         let doc: Document = {
             let mut wal = self.wal.read()?;
             let mut wal_read = WalReader::from(&mut wal, doc_offset);
-            Document::debin_serialize(&mut wal_read)?
+            Document::deserialize(&mut wal_read)?
         };
         Ok(doc)
     }
@@ -824,7 +830,7 @@ mod tests {
 
         let mut v = vec![0u8; 0];
 
-        1.bin_serialize(&mut v);
+        1.serialize(&mut v);
         println!("search 1");
         p = field_reader.get(&v).unwrap();
         for x in p.iter() {

@@ -64,6 +64,14 @@ impl ByteBlockPool {
         Ok(x)
     }
 
+    pub(crate) fn set_pos(&mut self, pos: Addr) {
+        self.pos = pos;
+    }
+
+    pub(crate) fn get_pos(&self) -> Addr {
+        self.pos
+    }
+
     pub(super) fn write_array(&mut self, pos: Addr, v: &[u8]) -> Result<Addr, std::io::Error> {
         self.pos = pos;
         self.write(v)?;
@@ -94,7 +102,7 @@ impl ByteBlockPool {
     }
 
     fn get_bytes(&self, start_addr: Addr, limit: Addr) -> &[u8] {
-        let pos_tuple = Self::get_pos(start_addr);
+        let pos_tuple = Self::get_pos_tuple(start_addr);
         &self
             .buffers
             .get(pos_tuple.0)
@@ -102,7 +110,7 @@ impl ByteBlockPool {
     }
 
     fn get_bytes_mut(&mut self, start_addr: Addr, limit: usize) -> &mut [u8] {
-        let pos_tuple = Self::get_pos(start_addr);
+        let pos_tuple = Self::get_pos_tuple(start_addr);
         &mut self
             .buffers
             .get_mut(pos_tuple.0)
@@ -110,7 +118,7 @@ impl ByteBlockPool {
     }
 
     fn get_next_addr(&self, limit: Addr) -> Addr {
-        let pos_tuple = Self::get_pos(limit);
+        let pos_tuple = Self::get_pos_tuple(limit);
         let b = self.buffers.get(pos_tuple.0).unwrap();
         let next_addr = (((b[pos_tuple.1]) as Addr & 0xff) << 24)
             + (((b[pos_tuple.1 + 1]) as Addr & 0xff) << 16)
@@ -160,7 +168,7 @@ impl ByteBlockPool {
         }
     }
 
-    fn get_pos(pos: Addr) -> PosTuple {
+    fn get_pos_tuple(pos: Addr) -> PosTuple {
         let m = pos / BYTE_BLOCK_SIZE;
         let n = pos & (BYTE_BLOCK_SIZE - 1);
         return PosTuple(m, n);
@@ -175,7 +183,7 @@ impl Write for ByteBlockPool {
     fn write(&mut self, mut x: &[u8]) -> Result<usize, std::io::Error> {
         let total = x.len();
         while x.len() > 0 {
-            let mut pos_tuple = Self::get_pos(self.pos);
+            let mut pos_tuple = Self::get_pos_tuple(self.pos);
             let (i, cur_level) = {
                 let b = self.buffers.get_mut(pos_tuple.0).unwrap();
                 let i = x.iter().enumerate().find(|(i, v)| {
