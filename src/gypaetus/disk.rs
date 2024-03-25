@@ -1,17 +1,19 @@
 use super::schema::BinarySerialize;
 use super::schema::{DocID, Document};
-use super::util::error::GyResult;
+use super::util::error::{GyError, GyResult};
 use super::util::fs;
 use super::util::fst::{FstBuilder, FstReader};
 use super::IndexReader;
-use crate::gypaetus::schema::DocFreq;
 use crate::gypaetus::Term;
 use crate::iocopy;
 use art_tree::Key;
+use bytes::Buf;
 use memmap2::Mmap;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
+use std::os::unix::fs::{FileExt, MetadataExt};
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::{
@@ -22,6 +24,9 @@ use varintrs::{Binary, WriteBytesVarExt};
 const KB: usize = 1 << 10;
 const MB: usize = KB * KB;
 const DEFAULT_BLOCK_SIZE: usize = 4 * KB + KB;
+const FOOTER_LEN: u64 = 48;
+
+const MAGIC: &'static [u8] = b"\xD4\x56\x3F\x35\xE0\xEF\x09\x7A";
 
 //压缩类型
 enum CompressionType {
@@ -71,7 +76,7 @@ enum CompressionType {
 //  +---------------------+
 
 //合并索引
-pub fn flush_disk(reader: IndexReader, fname: PathBuf, offset: usize) -> GyResult<DiskStoreWriter> {
+pub fn flush_index(reader: &IndexReader) -> GyResult<()> {
     let mut writer =
         DiskStoreWriter::with_offset(fname, offset, reader.reader.doc_offset.read()?.len())?;
     let mut buf = Vec::with_capacity(1024);
@@ -103,18 +108,20 @@ pub fn flush_disk(reader: IndexReader, fname: PathBuf, offset: usize) -> GyResul
         }
         writer.finish_field()?;
     }
-    //写入文件和偏移量关系 meta
+    // 写入文档和偏移量关系 meta
     writer.write_doc_meta(&reader.get_doc_offset().read()?)?;
+    // 写入每个域的 meta
     writer.write_field_meta()?;
     writer.close()?;
 
-    Ok(writer)
+    Ok(())
 }
 
 pub fn merge() {}
 
 pub struct DiskStoreReader {
-    fields: Vec<FieldHandle>,
+    fields_meta: Vec<FieldHandle>,
+    doc_meta: Vec<usize>,
     file: File,
     mmap: Arc<Mmap>,
 }
@@ -126,21 +133,50 @@ impl DiskStoreReader {
             .read(true)
             .write(true)
             .open(fname)?;
-        let nmmap = unsafe {
+        let file_size = file.metadata()?.size();
+        if file_size < FOOTER_LEN {}
+        let footer_pos = file_size - FOOTER_LEN;
+        let mut footer = [0u8; FOOTER_LEN as usize];
+        file.read_at(&mut footer, footer_pos)?;
+        //判断魔数是否正确
+        if &footer[FOOTER_LEN as usize - MAGIC.len()..FOOTER_LEN as usize] != MAGIC {
+            return Err(GyError::ErrBadMagicNumber);
+        }
+        let mut c = std::io::Cursor::new(&footer[..]);
+        let doc_meta_bh: BlockHandle = BlockHandle::deserialize(&mut c)?;
+        let field_meta_bh = BlockHandle::deserialize(&mut c)?;
+
+        let mmap: Mmap = unsafe {
             memmap2::MmapOptions::new()
                 .offset(0)
                 .map(&file)
                 .map_err(|e| format!("mmap failed: {}", e))?
         };
+        let doc_meta = Self::read_at_bh::<Vec<usize>>(&mmap, doc_meta_bh)?;
+        let fields_meta = Self::read_at_bh::<Vec<FieldHandle>>(&mmap, field_meta_bh)?;
+
         Ok(Self {
-            fields: Vec::new(),
+            fields_meta: fields_meta,
+            doc_meta: doc_meta,
             file: file,
-            mmap: Arc::new(nmmap),
+            mmap: Arc::new(mmap),
         })
     }
 
+    fn read_at_bh<T: BinarySerialize>(mmap: &Mmap, bh: BlockHandle) -> GyResult<T> {
+        let mut r = mmap[bh.start()..bh.end()].reader();
+        let v = T::deserialize(&mut r)?;
+        Ok(v)
+    }
+
+    fn read_at<T: BinarySerialize>(&self, offset: usize) -> GyResult<T> {
+        let mut r = self.mmap[offset..].reader();
+        let v = T::deserialize(&mut r)?;
+        Ok(v)
+    }
+
     pub fn field_reader<'a>(&'a self, field_id: u32) -> GyResult<DiskFieldReader<'a>> {
-        let field_handle = &self.fields[field_id as usize];
+        let field_handle = &self.fields_meta[field_id as usize];
         let fst =
             FstReader::load(&self.mmap[field_handle.fst_bh.start()..field_handle.fst_bh.end()]);
         Ok(DiskFieldReader {
@@ -152,19 +188,14 @@ impl DiskStoreReader {
     fn search(&self, term: Term) -> GyResult<DiskPostingReader> {
         let field_id = term.field_id().0;
         let field_reader = self.field_reader(field_id)?;
-        //  field_reader.get(term.bytes_value())
-        todo!()
+        field_reader.get(term.bytes_value())
     }
 
-    // pub(crate) fn doc(&self, doc_id: DocID) -> GyResult<Document> {
-    //     let doc_offset = self.reader.doc_offset(doc_id)?;
-    //     let doc: Document = {
-    //         let mut wal = self.wal.read()?;
-    //         let mut wal_read = WalReader::from(&mut wal, doc_offset);
-    //         Document::deserialize(&mut wal_read)?
-    //     };
-    //     Ok(doc)
-    // }
+    pub(crate) fn doc(&self, doc_id: DocID) -> GyResult<Document> {
+        let doc_offset = self.doc_meta[doc_id as usize];
+        let doc = self.read_at::<Document>(doc_offset)?;
+        Ok(doc)
+    }
 }
 
 pub struct DiskFieldReader<'a> {
@@ -172,11 +203,25 @@ pub struct DiskFieldReader<'a> {
     mmap: Arc<Mmap>,
 }
 
-// impl<'a> DiskFieldReader<'a> {}
+impl<'a> DiskFieldReader<'a> {
+    fn get(&self, term: &[u8]) -> GyResult<DiskPostingReader> {
+        let offset = self.fst.get(term)?;
+        Ok(DiskPostingReader::new(self.mmap.clone(), offset as usize))
+    }
+}
 
 struct DiskPostingReader {
     last_docid: DocID,
     snapshot: DiskSnapshotReader,
+}
+
+impl DiskPostingReader {
+    fn new(mmap: Arc<Mmap>, offset: usize) -> DiskPostingReader {
+        DiskPostingReader {
+            last_docid: 0,
+            snapshot: DiskSnapshotReader::new(mmap, offset),
+        }
+    }
 }
 
 // impl Iterator for DiskPostingReader {
@@ -189,6 +234,12 @@ struct DiskPostingReader {
 struct DiskSnapshotReader {
     mmap: Arc<Mmap>,
     offset: usize,
+}
+
+impl DiskSnapshotReader {
+    fn new(mmap: Arc<Mmap>, offset: usize) -> DiskSnapshotReader {
+        Self { mmap, offset }
+    }
 }
 
 impl Read for DiskSnapshotReader {
@@ -240,8 +291,8 @@ pub struct DiskStoreWriter {
     filter_block: FilterBlock, //布隆过滤器
     index_block: IndexBlock,   //fst
     field_bhs: Vec<FieldHandle>,
-    doc_meta_offset: usize,
-    field_meta_offset: usize,
+    doc_meta_bh: BlockHandle,
+    field_meta_bh: BlockHandle,
     file: File,
 }
 
@@ -290,24 +341,24 @@ impl BinarySerialize for BlockHandle {
 }
 
 impl DiskStoreWriter {
-    fn new(fname: PathBuf) -> GyResult<DiskStoreWriter> {
+    fn new(fname: &Path) -> GyResult<DiskStoreWriter> {
         let file = fs::open_file(fname, true, true)?;
         let w = DiskStoreWriter {
             offset: 0,
             filter_block: FilterBlock::new(),
             index_block: IndexBlock::new(),
             field_bhs: Vec::new(),
-            doc_meta_offset: 0,
-            field_meta_offset: 0,
+            doc_meta_bh: BlockHandle::default(),
+            field_meta_bh: BlockHandle::default(),
             file: file,
         };
         Ok(w)
     }
 
-    fn with_offset(fname: PathBuf, offset: usize, length: usize) -> GyResult<DiskStoreWriter> {
+    fn with_offset(fname: &Path, offset: usize, length: usize) -> GyResult<DiskStoreWriter> {
         let mut w = DiskStoreWriter::new(fname)?;
         w.seek(offset as i64)?;
-        w.file.set_len(offset as u64)?;
+        // w.file.set_len(offset as u64)?;
         Ok(w)
     }
 
@@ -322,18 +373,20 @@ impl DiskStoreWriter {
     }
 
     fn write_doc_meta(&mut self, meta: &[usize]) -> GyResult<()> {
-        self.doc_meta_offset = self.offset;
+        let offset = self.offset;
         meta.serialize(self)?;
         self.flush()?;
         self.offset = self.file.metadata()?.len() as usize;
+        self.doc_meta_bh = BlockHandle(offset, self.offset - offset);
         Ok(())
     }
 
     fn write_field_meta(&mut self) -> GyResult<()> {
-        self.field_meta_offset = self.offset;
+        let offset = self.offset;
         self.field_bhs.serialize(&mut self.file)?;
         self.flush()?;
         self.offset = self.file.metadata()?.len() as usize;
+        self.field_meta_bh = BlockHandle(offset, self.offset - offset);
         Ok(())
     }
 
@@ -347,10 +400,12 @@ impl DiskStoreWriter {
     }
 
     fn close(&mut self) -> GyResult<()> {
-        let mut footer = [0u8; 48];
+        let mut footer = [0u8; FOOTER_LEN as usize];
         let mut c = std::io::Cursor::new(&mut footer[..]);
-        self.doc_meta_offset.serialize(&mut c)?;
-        self.field_meta_offset.serialize(&mut c)?;
+        self.doc_meta_bh.serialize(&mut c)?;
+        self.field_meta_bh.serialize(&mut c)?;
+        iocopy!(&mut footer[FOOTER_LEN as usize - MAGIC.len()..], MAGIC);
+        self.write(&footer)?;
         Ok(())
     }
 

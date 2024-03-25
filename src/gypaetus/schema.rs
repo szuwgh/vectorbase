@@ -21,14 +21,15 @@ pub trait BinarySerialize: Sized {
 
 pub type DocID = u64;
 
-pub(crate) struct DocFreq(pub(crate) DocID, pub(crate) u32);
+#[derive(Debug)]
+pub struct DocFreq(pub(crate) DocID, pub(crate) u32);
 
 impl DocFreq {
-    fn doc(&self) -> DocID {
+    pub(crate) fn doc(&self) -> DocID {
         self.0
     }
 
-    fn freq(&self) -> u32 {
+    pub(crate) fn freq(&self) -> u32 {
         self.1
     }
 }
@@ -49,7 +50,14 @@ impl BinarySerialize for DocFreq {
         Ok(())
     }
     fn deserialize<R: Read>(reader: &mut R) -> GyResult<Self> {
-        todo!()
+        let doc_code = VUInt::deserialize(reader)?.val();
+        // self.last_docid += doc_code >> 1;
+        let freq = if doc_code & 1 > 0 {
+            1
+        } else {
+            VUInt::deserialize(reader)?.val() as u32
+        };
+        Ok(DocFreq(doc_code, freq))
     }
 }
 
@@ -633,7 +641,10 @@ impl BinarySerialize for VUInt {
     }
 
     fn deserialize<R: Read>(reader: &mut R) -> GyResult<Self> {
-        let (v, _) = reader.read_vu64::<Binary>();
+        let (v, i) = reader.read_vu64::<Binary>();
+        if i == 0 {
+            return Err(GyError::EOF);
+        }
         Ok(VUInt(v))
     }
 }

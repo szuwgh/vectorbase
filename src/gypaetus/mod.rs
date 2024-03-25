@@ -38,6 +38,16 @@ pub struct IndexConfig {
     fsize: usize,
 }
 
+impl IndexConfig {
+    fn get_io_type(&self) -> &IOType {
+        &self.io_type
+    }
+    fn get_wal_path(&self) -> &Path {
+        &self.wal_path
+    }
+    fn get_fsize() {}
+}
+
 impl Default for IndexConfig {
     fn default() -> IndexConfig {
         IndexConfig {
@@ -176,6 +186,10 @@ impl IndexBase {
 
     fn reload() -> GyResult<()> {
         Ok(())
+    }
+
+    fn get_config(&self) -> &IndexConfig {
+        &self.config
     }
 
     fn inner_add(&self, doc: &Document) -> GyResult<()> {
@@ -442,14 +456,6 @@ impl FieldCache {
     ) -> GyResult<()> {
         block_pool.set_pos(posting.doc_freq_addr);
         DocFreq(doc_delta, posting.freq).serialize(block_pool)?;
-        // if posting.freq == 1 {
-        //     let doc_code = doc_delta << 1 | 1;
-        //     let addr = block_pool.write_var_u64(posting.doc_freq_addr, doc_code)?;
-        //     posting.doc_freq_addr = addr;
-        // } else {
-        //     let addr = block_pool.write_var_u64(posting.doc_freq_addr, doc_delta << 1)?;
-        //     posting.doc_freq_addr = block_pool.write_vu32(addr, posting.freq)?;
-        // }
         posting.doc_freq_addr = block_pool.get_pos();
         Ok(())
     }
@@ -531,16 +537,16 @@ pub struct PostingReaderIter<'a> {
 }
 
 impl<'b, 'a> Iterator for PostingReaderIter<'a> {
-    type Item = (DocID, u32);
+    type Item = DocFreq;
     fn next(&mut self) -> Option<Self::Item> {
-        let doc_code = self.snap_iter.next()?;
-        self.last_docid += doc_code >> 1;
-        let freq = if doc_code & 1 > 0 {
-            1
-        } else {
-            self.snap_iter.next()? as u32
+        return match DocFreq::deserialize(&mut self.snap_iter) {
+            Ok(mut doc_freq) => {
+                self.last_docid += doc_freq.doc() >> 1;
+                doc_freq.0 = self.last_docid;
+                Some(doc_freq)
+            }
+            Err(_) => None,
         };
-        Some((self.last_docid, freq))
     }
 }
 
@@ -584,6 +590,10 @@ impl IndexReader {
         }
     }
 
+    pub fn get_index_config(&self) -> &IndexConfig {
+        self.reader.get_config()
+    }
+
     pub fn iter(&self) -> IndexReaderIter {
         IndexReaderIter::new(self.reader.clone())
     }
@@ -602,6 +612,11 @@ impl IndexReader {
             Document::deserialize(&mut wal_read)?
         };
         Ok(doc)
+    }
+
+    pub(crate) fn offset(&self) -> GyResult<usize> {
+        let i = self.wal.read()?.offset();
+        Ok(i)
     }
 
     pub(crate) fn get_doc_offset(&self) -> &RwLock<Vec<usize>> {
@@ -656,10 +671,11 @@ mod tests {
             .search(Term::from_field_text(field_id_title, "aa"))
             .unwrap();
 
-        for (doc_id, freq) in p.iter() {
-            let doc = reader.doc(doc_id).unwrap();
-            println!("docid:{},doc{:?}", doc_id, doc);
+        for doc_freq in p.iter() {
+            let doc = reader.doc(doc_freq.doc()).unwrap();
+            println!("docid:{},doc{:?}", doc_freq.doc(), doc);
         }
+        disk::flush_index(&reader);
     }
 
     #[test]
@@ -684,9 +700,9 @@ mod tests {
             .search(Term::from_field_text(field_id_title, "aa"))
             .unwrap();
 
-        for (doc_id, freq) in p.iter() {
-            let doc = reader.doc(doc_id).unwrap();
-            println!("docid:{},doc{:?}", doc_id, doc);
+        for doc_freq in p.iter() {
+            let doc = reader.doc(doc_freq.doc()).unwrap();
+            println!("docid:{},doc{:?}", doc_freq.doc(), doc);
         }
     }
 

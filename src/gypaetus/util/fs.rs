@@ -7,7 +7,7 @@ use std::fs;
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
-pub(crate) fn open_file(fname: PathBuf, read: bool, write: bool) -> GyResult<File> {
+pub(crate) fn open_file(fname: &Path, read: bool, write: bool) -> GyResult<File> {
     let file = OpenOptions::new()
         .create(true)
         .read(read)
