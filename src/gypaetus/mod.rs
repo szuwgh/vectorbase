@@ -32,8 +32,11 @@ use wal::{IOType, Wal, DEFAULT_WAL_FILE_SIZE};
 use crate::gypaetus::wal::WalReader;
 
 use self::schema::DocFreq;
+
 pub struct IndexConfig {
+    index_name: String,
     io_type: IOType,
+    index_path: PathBuf,
     wal_path: PathBuf,
     fsize: usize,
 }
@@ -48,10 +51,14 @@ impl IndexConfig {
     fn get_fsize() {}
 }
 
+impl IndexConfig {}
+
 impl Default for IndexConfig {
     fn default() -> IndexConfig {
         IndexConfig {
+            index_name: String::default(),
             io_type: IOType::MMAP,
+            index_path: PathBuf::from("./000000000000000.wal"),
             wal_path: PathBuf::from("./000000000000000.wal"),
             fsize: DEFAULT_WAL_FILE_SIZE,
         }
@@ -675,7 +682,8 @@ mod tests {
             let doc = reader.doc(doc_freq.doc()).unwrap();
             println!("docid:{},doc{:?}", doc_freq.doc(), doc);
         }
-        disk::flush_index(&reader);
+        println!("doc vec:{:?}", reader.get_doc_offset().read().unwrap());
+        disk::flush_index(&reader).unwrap();
     }
 
     #[test]

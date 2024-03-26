@@ -77,19 +77,22 @@ enum CompressionType {
 
 //合并索引
 pub fn flush_index(reader: &IndexReader) -> GyResult<()> {
-    let mut writer =
-        DiskStoreWriter::with_offset(fname, offset, reader.reader.doc_offset.read()?.len())?;
-    let mut buf = Vec::with_capacity(1024);
+    let mut writer = DiskStoreWriter::with_offset(
+        reader.get_index_config().get_wal_path(),
+        reader.offset()?,
+        reader.reader.doc_offset.read()?.len(),
+    )?;
+    let mut buf = Vec::with_capacity(4 * KB);
     //写入文档位置信息
 
     //写入每个域的信息
     for field in reader.iter() {
         let mut term_offset_cache: HashMap<Vec<u8>, usize> = HashMap::new();
         for (b, p) in field.indexs.read()?.iter() {
-            let (start_addr, end_addr) = (
-                (*p).read()?.byte_addr.clone(),
-                (*p).read()?.doc_freq_addr.clone(),
-            );
+            let (start_addr, end_addr) = {
+                let posting = (*p).read()?;
+                (posting.byte_addr.clone(), posting.doc_freq_addr.clone())
+            };
             let posting_buffer = field.posting_buffer(start_addr, end_addr)?;
             //写入倒排表
             buf.clear();
@@ -357,14 +360,18 @@ impl DiskStoreWriter {
 
     fn with_offset(fname: &Path, offset: usize, length: usize) -> GyResult<DiskStoreWriter> {
         let mut w = DiskStoreWriter::new(fname)?;
-        w.seek(offset as i64)?;
-        // w.file.set_len(offset as u64)?;
+        w.seek(offset as u64)?;
         Ok(w)
     }
 
-    fn seek(&mut self, offset: i64) -> GyResult<()> {
-        self.file.seek(SeekFrom::Current(offset))?;
+    fn seek(&mut self, offset: u64) -> GyResult<()> {
+        self.file.seek(SeekFrom::Start(offset))?;
         Ok(())
+    }
+
+    fn get_cursor(&mut self) -> GyResult<u64> {
+        let cursor = self.file.seek(SeekFrom::Current(0))?;
+        Ok(cursor)
     }
 
     fn add_term(&mut self, key: &[u8], offset: usize) -> GyResult<()> {
@@ -374,18 +381,22 @@ impl DiskStoreWriter {
 
     fn write_doc_meta(&mut self, meta: &[usize]) -> GyResult<()> {
         let offset = self.offset;
+        println!("doc_meta:{}", offset);
         meta.serialize(self)?;
         self.flush()?;
-        self.offset = self.file.metadata()?.len() as usize;
+        self.offset = self.get_cursor()? as usize;
+        println!("doc_meta cursor:{}", self.offset);
         self.doc_meta_bh = BlockHandle(offset, self.offset - offset);
         Ok(())
     }
 
     fn write_field_meta(&mut self) -> GyResult<()> {
         let offset = self.offset;
+        println!("field_meta:{}", offset);
         self.field_bhs.serialize(&mut self.file)?;
         self.flush()?;
-        self.offset = self.file.metadata()?.len() as usize;
+        self.offset = self.get_cursor()? as usize;
+        println!("field_meta cursor:{}", self.offset);
         self.field_meta_bh = BlockHandle(offset, self.offset - offset);
         Ok(())
     }
@@ -406,6 +417,14 @@ impl DiskStoreWriter {
         self.field_meta_bh.serialize(&mut c)?;
         iocopy!(&mut footer[FOOTER_LEN as usize - MAGIC.len()..], MAGIC);
         self.write(&footer)?;
+        self.flush()?;
+        self.truncate()?;
+        Ok(())
+    }
+
+    fn truncate(&mut self) -> GyResult<()> {
+        let cursor = self.get_cursor()?;
+        self.file.set_len(cursor)?;
         Ok(())
     }
 
@@ -414,6 +433,7 @@ impl DiskStoreWriter {
         let offset = self.offset;
         self.index_block.serialize(&mut self.file)?;
         self.index_block.reset();
+        self.flush()?;
         self.offset = offset + length;
         Ok(BlockHandle(offset, length))
     }

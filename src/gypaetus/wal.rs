@@ -9,7 +9,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock, Weak};
 
-pub(crate) const DEFAULT_WAL_FILE_SIZE: usize = 512 << 20; //
+pub(crate) const DEFAULT_WAL_FILE_SIZE: usize = 1 << 20; //512 << 20; //
 
 #[derive(Copy, Clone)]
 pub enum IOType {
