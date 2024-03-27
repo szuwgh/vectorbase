@@ -38,6 +38,7 @@ pub enum GyError {
     ErrInvalidFst(FstError),
     #[error("bad magic number")]
     ErrBadMagicNumber,
+    
 }
 
 impl From<&str> for GyError {

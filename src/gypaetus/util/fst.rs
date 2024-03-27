@@ -28,13 +28,14 @@ impl FstBuilder {
         self.fst.get()
     }
 
-    pub(crate) fn reset(&mut self) {
-        self.fst.reset()
+    pub(crate) fn reset(&mut self) -> GyResult<()> {
+        self.fst.reset()?;
+        Ok(())
     }
 }
 
 pub(crate) struct FstReader<'a> {
-    fst: FST<'a>,
+    fst: FST<&'a [u8]>,
 }
 
 impl<'a> FstReader<'a> {
@@ -45,5 +46,21 @@ impl<'a> FstReader<'a> {
     pub(crate) fn get(&self, key: &[u8]) -> GyResult<u64> {
         let u = self.fst.get(key)?;
         Ok(u)
+    }
+}
+#[cfg(test)]
+mod tests {
+
+    use super::*;
+    #[test]
+    fn test_fst() {
+        let mut fst = FstBuilder::new();
+        fst.add(b"aa", 1).unwrap();
+        fst.add(b"bb", 2).unwrap();
+        fst.finish();
+        println!("{:?}", fst.get_ref());
+        let fst_r = FstReader::load(fst.get_ref());
+        let u = fst_r.get(b"aa").unwrap();
+        println!("u:{}", u);
     }
 }

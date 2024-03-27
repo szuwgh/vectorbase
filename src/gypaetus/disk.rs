@@ -4,6 +4,9 @@ use super::util::error::{GyError, GyResult};
 use super::util::fs;
 use super::util::fst::{FstBuilder, FstReader};
 use super::IndexReader;
+use crate::gypaetus::schema::VUInt;
+use crate::gypaetus::schema::VarIntSerialize;
+use crate::gypaetus::DocFreq;
 use crate::gypaetus::Term;
 use crate::iocopy;
 use art_tree::Key;
@@ -42,6 +45,10 @@ enum CompressionType {
 //  |       Doc           |
 //  |                     |
 //  +---------------------+
+//  |                     |
+//  |       vector        |
+//  |                     |
+//  +---------------------+
 //  |       ......        |
 //  +---------------------+
 //  |                     |
@@ -59,10 +66,6 @@ enum CompressionType {
 //  |       ......        |
 //  +---------------------+
 //  |                     |
-//  |       vector        |
-//  |                     |
-//  +---------------------+
-//  |                     |
 //  |       doc_meta      |
 //  |                     |
 //  +---------------------+
@@ -78,7 +81,7 @@ enum CompressionType {
 //合并索引
 pub fn flush_index(reader: &IndexReader) -> GyResult<()> {
     let mut writer = DiskStoreWriter::with_offset(
-        reader.get_index_config().get_wal_path(),
+        reader.get_index_config().get_wal_fname(),
         reader.offset()?,
         reader.reader.doc_offset.read()?.len(),
     )?;
@@ -95,18 +98,19 @@ pub fn flush_index(reader: &IndexReader) -> GyResult<()> {
             };
             let posting_buffer = field.posting_buffer(start_addr, end_addr)?;
             //写入倒排表
-            buf.clear();
             for rb in posting_buffer.iter() {
                 buf.write(rb)?;
             }
             let offset = writer.write_posting(buf.as_slice())?;
             term_offset_cache.insert(b.to_bytes(), offset);
+            buf.clear();
         }
         let mut term_vec: Vec<(&Vec<u8>, &usize)> = term_offset_cache.iter().collect();
         //排序
-        term_vec.sort_by(|a, b| b.1.cmp(a.1));
+        term_vec.sort_by(|a, b| a.1.cmp(b.1));
         // 写入字典索引
         for (t, u) in term_vec {
+            println!("{:?}", t);
             writer.add_term(t, *u)?;
         }
         writer.finish_field()?;
@@ -130,12 +134,8 @@ pub struct DiskStoreReader {
 }
 
 impl DiskStoreReader {
-    fn open(fname: PathBuf) -> GyResult<DiskStoreReader> {
-        let file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .open(fname)?;
+    pub fn open<P: AsRef<Path>>(fname: P) -> GyResult<DiskStoreReader> {
+        let mut file = OpenOptions::new().read(true).open(fname)?;
         let file_size = file.metadata()?.size();
         if file_size < FOOTER_LEN {}
         let footer_pos = file_size - FOOTER_LEN;
@@ -151,16 +151,15 @@ impl DiskStoreReader {
 
         let mmap: Mmap = unsafe {
             memmap2::MmapOptions::new()
-                .offset(0)
                 .map(&file)
                 .map_err(|e| format!("mmap failed: {}", e))?
         };
-        let doc_meta = Self::read_at_bh::<Vec<usize>>(&mmap, doc_meta_bh)?;
         let fields_meta = Self::read_at_bh::<Vec<FieldHandle>>(&mmap, field_meta_bh)?;
+        let doc_meta = Self::read_at_bh::<Vec<usize>>(&mmap, doc_meta_bh)?;
 
         Ok(Self {
-            fields_meta: fields_meta,
-            doc_meta: doc_meta,
+            fields_meta: fields_meta, //fields_meta,
+            doc_meta: doc_meta,       //doc_meta,
             file: file,
             mmap: Arc::new(mmap),
         })
@@ -180,6 +179,10 @@ impl DiskStoreReader {
 
     pub fn field_reader<'a>(&'a self, field_id: u32) -> GyResult<DiskFieldReader<'a>> {
         let field_handle = &self.fields_meta[field_id as usize];
+        println!(
+            "get fst:{:?}",
+            &self.mmap[field_handle.fst_bh.start()..field_handle.fst_bh.end()]
+        );
         let fst =
             FstReader::load(&self.mmap[field_handle.fst_bh.start()..field_handle.fst_bh.end()]);
         Ok(DiskFieldReader {
@@ -188,7 +191,7 @@ impl DiskStoreReader {
         })
     }
 
-    fn search(&self, term: Term) -> GyResult<DiskPostingReader> {
+    pub fn search(&self, term: Term) -> GyResult<DiskPostingReader> {
         let field_id = term.field_id().0;
         let field_reader = self.field_reader(field_id)?;
         field_reader.get(term.bytes_value())
@@ -209,79 +212,78 @@ pub struct DiskFieldReader<'a> {
 impl<'a> DiskFieldReader<'a> {
     fn get(&self, term: &[u8]) -> GyResult<DiskPostingReader> {
         let offset = self.fst.get(term)?;
-        Ok(DiskPostingReader::new(self.mmap.clone(), offset as usize))
+        Ok(DiskPostingReader::new(self.mmap.clone(), offset as usize)?)
     }
 }
 
-struct DiskPostingReader {
+pub struct DiskPostingReader {
     last_docid: DocID,
     snapshot: DiskSnapshotReader,
 }
 
 impl DiskPostingReader {
-    fn new(mmap: Arc<Mmap>, offset: usize) -> DiskPostingReader {
-        DiskPostingReader {
+    fn new(mmap: Arc<Mmap>, offset: usize) -> GyResult<DiskPostingReader> {
+        Ok(DiskPostingReader {
             last_docid: 0,
-            snapshot: DiskSnapshotReader::new(mmap, offset),
-        }
+            snapshot: DiskSnapshotReader::new(mmap, offset)?,
+        })
     }
 }
 
-// impl Iterator for DiskPostingReader {
-//     type Item = DocFreq;
-//     fn next(&mut self) -> Option<Self::Item> {
-//         //   vec![]
-//     }
-// }
+impl Iterator for DiskPostingReader {
+    type Item = DocFreq;
+    fn next(&mut self) -> Option<Self::Item> {
+        return match DocFreq::deserialize(&mut self.snapshot) {
+            Ok(mut doc_freq) => {
+                self.last_docid += doc_freq.doc() >> 1;
+                doc_freq.0 = self.last_docid;
+                Some(doc_freq)
+            }
+            Err(_) => None,
+        };
+    }
+}
 
 struct DiskSnapshotReader {
     mmap: Arc<Mmap>,
     offset: usize,
+    end: usize,
 }
 
 impl DiskSnapshotReader {
-    fn new(mmap: Arc<Mmap>, offset: usize) -> DiskSnapshotReader {
-        Self { mmap, offset }
+    fn new(mmap: Arc<Mmap>, mut offset: usize) -> GyResult<DiskSnapshotReader> {
+        let mut r = mmap[offset..].reader();
+        let (length, i) = VUInt::deserialize(&mut r)?;
+        let l = length.val() as usize;
+        println!(
+            "length:{},p:{:?},offset:{}",
+            length.val(),
+            &mmap[offset..offset + l],
+            offset
+        );
+        offset += i;
+        let snapshot = Self {
+            mmap: mmap,
+            offset: offset,
+            end: offset + l,
+        };
+        Ok(snapshot)
     }
 }
 
 impl Read for DiskSnapshotReader {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.offset >= self.end {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "io EOF",
+            ));
+        }
         let i = iocopy!(buf, &self.mmap[self.offset..]);
         self.offset += i;
         Ok(i)
     }
 }
-
-// impl Iterator for DiskPostingReader {
-//     type Item = (DocID, u32);
-//     fn next(&mut self) -> Option<Self::Item> {}
-// }
-
-// pub struct DiskPostingReaderIter<'a> {
-//     last_docid: DocID,
-//     snap_iter: SnapshotReaderIter<'a>,
-// }
-
-// impl<'b, 'a> Iterator for PostingReaderIter<'a> {
-//     type Item = (DocID, u32);
-//     fn next(&mut self) -> Option<Self::Item> {
-//         let doc_code = self.snap_iter.next()?;
-//         self.last_docid += doc_code >> 1;
-//         let freq = if doc_code & 1 > 0 {
-//             1
-//         } else {
-//             self.snap_iter.next()? as u32
-//         };
-//         Some((self.last_docid, freq))
-//     }
-// }
-
-// struct DiskSnapshotReader {
-//     mmap: Arc<Mmap>,
-//     offset: usize,
-//     lenght: usize,
-// }
 
 struct DiskSnapshotReaderIter {
     mmap: Arc<Mmap>,
@@ -299,6 +301,7 @@ pub struct DiskStoreWriter {
     file: File,
 }
 
+#[derive(Debug)]
 struct FieldHandle {
     fst_bh: BlockHandle,
     filter_bh: BlockHandle,
@@ -317,7 +320,7 @@ impl BinarySerialize for FieldHandle {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct BlockHandle(usize, usize);
 
 impl BlockHandle {
@@ -332,14 +335,15 @@ impl BlockHandle {
 
 impl BinarySerialize for BlockHandle {
     fn serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
-        self.0.serialize(writer)?;
-        self.1.serialize(writer)
+        VUInt(self.0 as u64).serialize(writer)?;
+        VUInt(self.1 as u64).serialize(writer)?;
+        Ok(())
     }
 
     fn deserialize<R: Read>(reader: &mut R) -> GyResult<Self> {
-        let u1 = usize::deserialize(reader)?;
-        let u2 = usize::deserialize(reader)?;
-        Ok(BlockHandle(u1, u2))
+        let u1 = VUInt::deserialize(reader)?.0.val();
+        let u2 = VUInt::deserialize(reader)?.0.val();
+        Ok(BlockHandle(u1 as usize, u2 as usize))
     }
 }
 
@@ -361,6 +365,7 @@ impl DiskStoreWriter {
     fn with_offset(fname: &Path, offset: usize, length: usize) -> GyResult<DiskStoreWriter> {
         let mut w = DiskStoreWriter::new(fname)?;
         w.seek(offset as u64)?;
+        w.offset = offset;
         Ok(w)
     }
 
@@ -432,7 +437,7 @@ impl DiskStoreWriter {
         let length = self.index_block.finish()?;
         let offset = self.offset;
         self.index_block.serialize(&mut self.file)?;
-        self.index_block.reset();
+        self.index_block.reset()?;
         self.flush()?;
         self.offset = offset + length;
         Ok(BlockHandle(offset, length))
@@ -440,9 +445,11 @@ impl DiskStoreWriter {
 
     fn write_posting(&mut self, b: &[u8]) -> GyResult<usize> {
         let offset = self.offset;
-        let i = self.file.write_vu64::<Binary>(b.len() as u64)?;
+        VUInt(b.len() as u64).serialize(&mut self.file)?;
+        println!("len:{},u8:{:?},offset:{}", b.len(), b, offset);
         self.file.write(b)?;
-        self.offset += i + b.len();
+        self.flush()?;
+        self.offset = self.get_cursor()? as usize;
         Ok(offset)
     }
 }
@@ -485,7 +492,7 @@ impl IndexBlock {
         Ok(self.fst.get_ref().len())
     }
 
-    fn reset(&mut self) {
+    fn reset(&mut self) -> GyResult<()> {
         self.fst.reset()
     }
 }

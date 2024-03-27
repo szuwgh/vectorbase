@@ -33,35 +33,93 @@ use crate::gypaetus::wal::WalReader;
 
 use self::schema::DocFreq;
 
+const META_FILE: &'static str = "meta.json"; // index 元数据
+const DELETE_FILE: &'static str = "ids.del"; // 被删除的id
+
+pub struct IndexConfigBuilder {
+    index_name: String,
+    io_type: IOType,
+    index_path: PathBuf,
+    wal_fname: PathBuf,
+    fsize: usize,
+}
+
+impl Default for IndexConfigBuilder {
+    fn default() -> IndexConfigBuilder {
+        IndexConfigBuilder {
+            index_name: String::default(),
+            io_type: IOType::MMAP,
+            index_path: PathBuf::from("./"),
+            wal_fname: PathBuf::from("./000000.wal"),
+            fsize: DEFAULT_WAL_FILE_SIZE,
+        }
+    }
+}
+
+impl IndexConfigBuilder {
+    pub fn index_name(mut self, index_name: String) -> IndexConfigBuilder {
+        self.index_name = index_name;
+        self
+    }
+
+    pub fn io_type(mut self, io_type: IOType) -> IndexConfigBuilder {
+        self.io_type = io_type;
+        self
+    }
+
+    pub fn index_path(mut self, index_path: PathBuf) -> IndexConfigBuilder {
+        self.index_path = index_path;
+        self
+    }
+
+    pub fn wal_fname(mut self, wal_fname: PathBuf) -> IndexConfigBuilder {
+        self.wal_fname = wal_fname;
+        self
+    }
+
+    pub fn fsize(mut self, fsize: usize) -> IndexConfigBuilder {
+        self.fsize = fsize;
+        self
+    }
+
+    pub fn build(self) -> IndexConfig {
+        IndexConfig {
+            index_name: self.index_name,
+            io_type: self.io_type,
+            index_path: self.index_path,
+            wal_fname: self.wal_fname,
+            fsize: self.fsize,
+        }
+    }
+}
+
 pub struct IndexConfig {
     index_name: String,
     io_type: IOType,
     index_path: PathBuf,
-    wal_path: PathBuf,
+    wal_fname: PathBuf,
     fsize: usize,
 }
 
 impl IndexConfig {
-    fn get_io_type(&self) -> &IOType {
+    pub fn get_index_name(&self) -> &str {
+        &self.index_name
+    }
+
+    pub fn get_io_type(&self) -> &IOType {
         &self.io_type
     }
-    fn get_wal_path(&self) -> &Path {
-        &self.wal_path
+
+    pub fn get_index_path(&self) -> &Path {
+        &self.index_path
     }
-    fn get_fsize() {}
-}
 
-impl IndexConfig {}
+    pub fn get_wal_fname(&self) -> &Path {
+        &self.wal_fname
+    }
 
-impl Default for IndexConfig {
-    fn default() -> IndexConfig {
-        IndexConfig {
-            index_name: String::default(),
-            io_type: IOType::MMAP,
-            index_path: PathBuf::from("./000000000000000.wal"),
-            wal_path: PathBuf::from("./000000000000000.wal"),
-            fsize: DEFAULT_WAL_FILE_SIZE,
-        }
+    pub fn get_fsize(&self) -> usize {
+        self.fsize
     }
 }
 
@@ -91,6 +149,8 @@ impl Index {
     {
         Collection::new(self, &vector)
     }
+
+    pub fn close() {}
 }
 
 //时序搜索
@@ -170,6 +230,8 @@ pub struct IndexBase {
 
 impl IndexBase {
     fn new(schema: Schema, config: IndexConfig) -> GyResult<IndexBase> {
+        let index_path = config.get_index_path().join(config.get_index_name());
+
         let buffer_pool = Arc::new(RingBuffer::new());
         let mut field_cache: Vec<FieldCache> = Vec::new();
         for _ in 0..schema.fields.len() {
@@ -182,7 +244,7 @@ impl IndexBase {
             schema: schema,
             rw_lock: Mutex::new(()),
             wal: Arc::new(RwLock::new(Wal::new(
-                &config.wal_path,
+                &config.wal_fname,
                 config.fsize,
                 config.io_type,
             )?)),
@@ -655,6 +717,7 @@ mod tests {
     use super::{schema::FieldEntry, *};
     use schema::BinarySerialize;
     use std::thread;
+    use tests::disk::DiskStoreReader;
 
     #[test]
     fn test_add_doc() {
@@ -662,7 +725,8 @@ mod tests {
         schema.add_field(FieldEntry::str("body"));
         schema.add_field(FieldEntry::i32("title"));
         let field_id_title = schema.get_field("title").unwrap();
-        let mut index = Index::new(schema, IndexConfig::default()).unwrap();
+        let config = IndexConfigBuilder::default().build();
+        let mut index = Index::new(schema, config).unwrap();
         let mut writer1 = index.writer().unwrap();
 
         let mut d = Document::new();
@@ -684,6 +748,27 @@ mod tests {
         }
         println!("doc vec:{:?}", reader.get_doc_offset().read().unwrap());
         disk::flush_index(&reader).unwrap();
+
+        // let disk_reader =
+        //     DiskStoreReader::open("/opt/rsproject/gptgrep/searchlite/0000000.wal");
+    }
+
+    #[test]
+    fn test_read() {
+        let mut schema = Schema::new();
+        schema.add_field(FieldEntry::str("body"));
+        schema.add_field(FieldEntry::i32("title"));
+        let field_id_title = schema.get_field("title").unwrap();
+        let disk_reader =
+            DiskStoreReader::open("/opt/rsproject/gptgrep/searchlite/000000.wal").unwrap();
+        let p = disk_reader
+            .search(Term::from_field_text(field_id_title, "aa"))
+            .unwrap();
+        for doc_freq in p {
+            println!("{:?}", doc_freq);
+            // let doc = disk_reader.doc(doc_freq.doc()).unwrap();
+            //  println!("docid:{},doc{:?}", doc_freq.doc(), doc);
+        }
     }
 
     #[test]
@@ -692,7 +777,8 @@ mod tests {
         schema.add_field(FieldEntry::str("body"));
         schema.add_field(FieldEntry::i32("title"));
         let field_id_title = schema.get_field("title").unwrap();
-        let mut index = Index::new(schema, IndexConfig::default()).unwrap();
+        let config = IndexConfigBuilder::default().build();
+        let mut index = Index::new(schema, config).unwrap();
         let mut writer1 = index.writer().unwrap();
 
         let mut d = Document::new();
@@ -721,7 +807,8 @@ mod tests {
         schema.add_field(FieldEntry::i32("title"));
         let field_id_title = schema.get_field("title").unwrap();
         println!("field_id_title:{:?}", field_id_title.clone());
-        let mut index = Index::new(schema, IndexConfig::default()).unwrap();
+        let config = IndexConfigBuilder::default().build();
+        let mut index = Index::new(schema, config).unwrap();
         let mut writer1 = index.writer().unwrap();
         let t1 = thread::spawn(move || loop {
             let mut d = Document::new();

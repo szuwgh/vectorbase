@@ -16,7 +16,7 @@ impl Query for TermQuery {
     }
 }
 
-pub(crate) struct Term(pub(crate) Vec<u8>);
+pub struct Term(pub(crate) Vec<u8>);
 
 impl Term {
     pub fn from_field_i32(field: FieldID, val: i32) -> Term {

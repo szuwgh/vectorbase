@@ -19,6 +19,13 @@ pub trait BinarySerialize: Sized {
     fn deserialize<R: Read>(reader: &mut R) -> GyResult<Self>;
 }
 
+pub trait VarIntSerialize: Sized {
+    /// Serialize
+    fn serialize<W: Write>(&self, writer: &mut W) -> GyResult<usize>;
+    /// Deserialize
+    fn deserialize<R: Read>(reader: &mut R) -> GyResult<(Self, usize)>;
+}
+
 pub type DocID = u64;
 
 #[derive(Debug)]
@@ -50,12 +57,11 @@ impl BinarySerialize for DocFreq {
         Ok(())
     }
     fn deserialize<R: Read>(reader: &mut R) -> GyResult<Self> {
-        let doc_code = VUInt::deserialize(reader)?.val();
-        // self.last_docid += doc_code >> 1;
+        let doc_code = VUInt::deserialize(reader)?.0.val();
         let freq = if doc_code & 1 > 0 {
             1
         } else {
-            VUInt::deserialize(reader)?.val() as u32
+            VUInt::deserialize(reader)?.0.val() as u32
         };
         Ok(DocFreq(doc_code, freq))
     }
@@ -200,7 +206,7 @@ impl BinarySerialize for Document {
     }
 
     fn deserialize<R: Read>(reader: &mut R) -> GyResult<Self> {
-        let num_field_values = VUInt::deserialize(reader)?.val() as usize;
+        let num_field_values = VUInt::deserialize(reader)?.0.val() as usize;
         let field_values = (0..num_field_values)
             .map(|_| FieldValue::deserialize(reader))
             .collect::<GyResult<Vec<FieldValue>>>()?;
@@ -503,7 +509,7 @@ impl<T: BinarySerialize> BinarySerialize for Vec<T> {
     }
 
     fn deserialize<R: Read>(reader: &mut R) -> GyResult<Vec<T>> {
-        let num_items = VUInt::deserialize(reader)?.val();
+        let num_items = VUInt::deserialize(reader)?.0.val();
         let mut items: Vec<T> = Vec::with_capacity(num_items as usize);
         for _ in 0..num_items {
             let item = T::deserialize(reader)?;
@@ -522,7 +528,7 @@ impl BinarySerialize for String {
     }
 
     fn deserialize<R: Read>(reader: &mut R) -> GyResult<String> {
-        let str_len = VUInt::deserialize(reader)?.val() as usize;
+        let str_len = VUInt::deserialize(reader)?.0.val() as usize;
         let mut result = String::with_capacity(str_len);
         reader.take(str_len as u64).read_to_string(&mut result)?;
         Ok(result)
@@ -629,23 +635,23 @@ impl BinarySerialize for f32 {
 pub struct VUInt(pub u64);
 
 impl VUInt {
-    fn val(&self) -> u64 {
+    pub(crate) fn val(&self) -> u64 {
         self.0
     }
 }
 
-impl BinarySerialize for VUInt {
-    fn serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
-        writer.write_vu64::<Binary>(self.0)?;
-        Ok(())
+impl VarIntSerialize for VUInt {
+    fn serialize<W: Write>(&self, writer: &mut W) -> GyResult<usize> {
+        let i = writer.write_vu64::<Binary>(self.0)?;
+        Ok(i)
     }
 
-    fn deserialize<R: Read>(reader: &mut R) -> GyResult<Self> {
+    fn deserialize<R: Read>(reader: &mut R) -> GyResult<(Self, usize)> {
         let (v, i) = reader.read_vu64::<Binary>();
         if i == 0 {
             return Err(GyError::EOF);
         }
-        Ok(VUInt(v))
+        Ok((VUInt(v), i as usize))
     }
 }
 
