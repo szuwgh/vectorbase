@@ -10,7 +10,7 @@ pub type GyResult<T> = Result<T, GyError>;
 pub enum GyError {
     #[error("io EOF")]
     EOF,
-    #[error("Unexpected: {0}, {1}")]
+    #[error("Unexpected io: {0}, {1}")]
     UnexpectIO(String, io::Error),
     #[error("Unexpected: {0}")]
     Unexpected(String),
@@ -38,7 +38,6 @@ pub enum GyError {
     ErrInvalidFst(FstError),
     #[error("bad magic number")]
     ErrBadMagicNumber,
-    
 }
 
 impl From<&str> for GyError {

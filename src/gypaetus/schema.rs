@@ -168,14 +168,14 @@ pub enum FieldType {
 
 pub struct Vector<V> {
     pub v: V,
-    pub d: Document,
+    pub payload: Document,
 }
 
 impl<V> Vector<V> {
     pub fn with(v: V) -> Vector<V> {
         Self {
             v: v,
-            d: Document::new(),
+            payload: Document::new(),
         }
     }
 
@@ -186,7 +186,7 @@ impl<V> Vector<V> {
     pub fn with_fields(v: V, field_values: Vec<FieldValue>) -> Vector<V> {
         Self {
             v: v,
-            d: Document::from(field_values),
+            payload: Document::from(field_values),
         }
     }
 }

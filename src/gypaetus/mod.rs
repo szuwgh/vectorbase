@@ -11,16 +11,18 @@ use query::Term;
 use util::error::{GyError, GyResult};
 mod macros;
 pub mod wal;
+use crate::gypaetus::schema::Vector;
 use ann::BoxedAnnIndex;
 use ann::{Create, Metric, HNSW};
 use buffer::{
     Addr, ByteBlockPool, RingBuffer, RingBufferReader, SnapshotReader, SnapshotReaderIter,
     BLOCK_SIZE_CLASS,
 };
-
 use schema::{BinarySerialize, DocID, Document, Schema, Value, VectorType};
 
 //use jiebars::Jieba;
+use crate::gypaetus::util::time::Time;
+use crate::gypaetus::wal::WalReader;
 use lock_api::RawMutex;
 use parking_lot::Mutex;
 use std::cell::RefCell;
@@ -29,9 +31,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock, Weak};
 use wal::{IOType, Wal, DEFAULT_WAL_FILE_SIZE};
 
-use crate::gypaetus::wal::WalReader;
-
 use self::schema::DocFreq;
+use self::util::fs;
 
 const META_FILE: &'static str = "meta.json"; // index 元数据
 const DELETE_FILE: &'static str = "ids.del"; // 被删除的id
@@ -39,7 +40,7 @@ const DELETE_FILE: &'static str = "ids.del"; // 被删除的id
 pub struct IndexConfigBuilder {
     index_name: String,
     io_type: IOType,
-    index_path: PathBuf,
+    data_path: PathBuf,
     wal_fname: PathBuf,
     fsize: usize,
 }
@@ -47,10 +48,10 @@ pub struct IndexConfigBuilder {
 impl Default for IndexConfigBuilder {
     fn default() -> IndexConfigBuilder {
         IndexConfigBuilder {
-            index_name: String::default(),
+            index_name: "my_index".to_string(),
             io_type: IOType::MMAP,
-            index_path: PathBuf::from("./"),
-            wal_fname: PathBuf::from("./000000.wal"),
+            data_path: PathBuf::from("./"),
+            wal_fname: PathBuf::from("./gy.wal"),
             fsize: DEFAULT_WAL_FILE_SIZE,
         }
     }
@@ -67,15 +68,15 @@ impl IndexConfigBuilder {
         self
     }
 
-    pub fn index_path(mut self, index_path: PathBuf) -> IndexConfigBuilder {
-        self.index_path = index_path;
+    pub fn data_path(mut self, index_path: PathBuf) -> IndexConfigBuilder {
+        self.data_path = index_path;
         self
     }
 
-    pub fn wal_fname(mut self, wal_fname: PathBuf) -> IndexConfigBuilder {
-        self.wal_fname = wal_fname;
-        self
-    }
+    // pub fn wal_fname(mut self, wal_fname: PathBuf) -> IndexConfigBuilder {
+    //     self.wal_fname = wal_fname;
+    //     self
+    // }
 
     pub fn fsize(mut self, fsize: usize) -> IndexConfigBuilder {
         self.fsize = fsize;
@@ -86,7 +87,7 @@ impl IndexConfigBuilder {
         IndexConfig {
             index_name: self.index_name,
             io_type: self.io_type,
-            index_path: self.index_path,
+            data_path: self.data_path,
             wal_fname: self.wal_fname,
             fsize: self.fsize,
         }
@@ -96,7 +97,7 @@ impl IndexConfigBuilder {
 pub struct IndexConfig {
     index_name: String,
     io_type: IOType,
-    index_path: PathBuf,
+    data_path: PathBuf,
     wal_fname: PathBuf,
     fsize: usize,
 }
@@ -110,8 +111,8 @@ impl IndexConfig {
         &self.io_type
     }
 
-    pub fn get_index_path(&self) -> &Path {
-        &self.index_path
+    pub fn get_data_path(&self) -> &Path {
+        &self.data_path
     }
 
     pub fn get_wal_fname(&self) -> &Path {
@@ -143,11 +144,15 @@ impl Index {
         Ok(IndexWriter::new(self.0.clone()))
     }
 
-    pub fn create_vector_collection<V>(self, vector: VectorType) -> Collection<V>
-    where
-        V: Metric<V> + Create,
-    {
-        Collection::new(self, &vector)
+    // pub fn create_vector_collection<V>(self, vector: VectorType) -> Collection<V>
+    // where
+    //     V: Metric<V> + Create,
+    // {
+    //     Collection::with_index(self, &vector)
+    // }
+
+    pub fn flush_disk(&self) -> GyResult<()> {
+        Ok(())
     }
 
     pub fn close() {}
@@ -177,7 +182,7 @@ impl<V: 'static> Collection<V>
 where
     V: Metric<V> + Create,
 {
-    fn new(index: Index, vec_type: &VectorType) -> Collection<V> {
+    fn with_index(index: Index, vec_type: &VectorType) -> Collection<V> {
         Collection {
             vector_field: RwLock::new(Self::get_vector_index(&vec_type).unwrap()),
             index: index,
@@ -192,7 +197,7 @@ where
         }
     }
 
-    pub fn add(&mut self) -> GyResult<()> {
+    pub fn add(&mut self, v: Vector<V>) -> GyResult<()> {
         todo!()
     }
 
@@ -218,7 +223,7 @@ unsafe impl Send for IndexBase {}
 unsafe impl Sync for IndexBase {}
 
 pub struct IndexBase {
-    schema: Schema,
+    meta: Meta,
     fields: Vec<FieldCache>,
     doc_id: RefCell<DocID>,
     buffer: Arc<RingBuffer>,
@@ -228,20 +233,37 @@ pub struct IndexBase {
     config: IndexConfig,
 }
 
+struct Meta {
+    schema: Schema,
+    create_time: i64,
+    update_time: i64,
+}
+
+impl Meta {
+    fn new(s: Schema) -> Meta {
+        Self {
+            schema: (),
+            create_time: Time::now(),
+            update_time: (),
+        }
+    }
+}
+
 impl IndexBase {
     fn new(schema: Schema, config: IndexConfig) -> GyResult<IndexBase> {
-        let index_path = config.get_index_path().join(config.get_index_name());
-
+        let index_path = config.get_data_path().join(config.get_index_name());
+        fs::mkdir(&index_path)?;
         let buffer_pool = Arc::new(RingBuffer::new());
         let mut field_cache: Vec<FieldCache> = Vec::new();
         for _ in 0..schema.fields.len() {
             field_cache.push(FieldCache::new(Arc::downgrade(&buffer_pool)));
         }
+
         Ok(Self {
+            meta: schema,
             fields: field_cache,
             doc_id: RefCell::new(0),
             buffer: buffer_pool,
-            schema: schema,
             rw_lock: Mutex::new(()),
             wal: Arc::new(RwLock::new(Wal::new(
                 &config.wal_fname,

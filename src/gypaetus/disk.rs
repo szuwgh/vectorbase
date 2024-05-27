@@ -78,6 +78,14 @@ enum CompressionType {
 //  |                     |
 //  +---------------------+
 
+pub fn merge((a): (&DiskStoreReader, &DiskStoreReader)) -> GyResult<()> {
+    Ok(())
+}
+
+struct MergeIndex {
+    a: (DiskStoreReader, DiskStoreReader),
+}
+
 //合并索引
 pub fn flush_index(reader: &IndexReader) -> GyResult<()> {
     let mut writer = DiskStoreWriter::with_offset(
@@ -86,7 +94,6 @@ pub fn flush_index(reader: &IndexReader) -> GyResult<()> {
         reader.reader.doc_offset.read()?.len(),
     )?;
     let mut buf = Vec::with_capacity(4 * KB);
-    //写入文档位置信息
 
     //写入每个域的信息
     for field in reader.iter() {
@@ -124,9 +131,8 @@ pub fn flush_index(reader: &IndexReader) -> GyResult<()> {
     Ok(())
 }
 
-pub fn merge() {}
-
 pub struct DiskStoreReader {
+    fields: Vec<String>,
     fields_meta: Vec<FieldHandle>,
     doc_meta: Vec<usize>,
     file: File,
@@ -158,6 +164,7 @@ impl DiskStoreReader {
         let doc_meta = Self::read_at_bh::<Vec<usize>>(&mmap, doc_meta_bh)?;
 
         Ok(Self {
+            fields: Vec::new(),
             fields_meta: fields_meta, //fields_meta,
             doc_meta: doc_meta,       //doc_meta,
             file: file,
@@ -214,6 +221,8 @@ impl<'a> DiskFieldReader<'a> {
         let offset = self.fst.get(term)?;
         Ok(DiskPostingReader::new(self.mmap.clone(), offset as usize)?)
     }
+
+    fn iter() {}
 }
 
 pub struct DiskPostingReader {
@@ -298,6 +307,7 @@ pub struct DiskStoreWriter {
     field_bhs: Vec<FieldHandle>,
     doc_meta_bh: BlockHandle,
     field_meta_bh: BlockHandle,
+    vector_meta_bh: BlockHandle,
     file: File,
 }
 
@@ -357,6 +367,7 @@ impl DiskStoreWriter {
             field_bhs: Vec::new(),
             doc_meta_bh: BlockHandle::default(),
             field_meta_bh: BlockHandle::default(),
+            vector_meta_bh: BlockHandle::default(),
             file: file,
         };
         Ok(w)
