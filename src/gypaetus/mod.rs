@@ -240,11 +240,11 @@ struct Meta {
 }
 
 impl Meta {
-    fn new(s: Schema) -> Meta {
+    fn new(schema: Schema) -> Meta {
         Self {
-            schema: (),
+            schema: schema,
             create_time: Time::now(),
-            update_time: (),
+            update_time: 0,
         }
     }
 }
@@ -258,9 +258,8 @@ impl IndexBase {
         for _ in 0..schema.fields.len() {
             field_cache.push(FieldCache::new(Arc::downgrade(&buffer_pool)));
         }
-
         Ok(Self {
-            meta: schema,
+            meta: Meta::new(schema),
             fields: field_cache,
             doc_id: RefCell::new(0),
             buffer: buffer_pool,
@@ -782,7 +781,7 @@ mod tests {
         schema.add_field(FieldEntry::i32("title"));
         let field_id_title = schema.get_field("title").unwrap();
         let disk_reader =
-            DiskStoreReader::open("/opt/rsproject/gptgrep/searchlite/000000.wal").unwrap();
+            DiskStoreReader::open("/opt/rsproject/chappie/searchlite/000000.wal").unwrap();
         let p = disk_reader
             .search(Term::from_field_text(field_id_title, "aa"))
             .unwrap();

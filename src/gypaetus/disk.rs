@@ -78,12 +78,13 @@ enum CompressionType {
 //  |                     |
 //  +---------------------+
 
-pub fn merge((a): (&DiskStoreReader, &DiskStoreReader)) -> GyResult<()> {
-    Ok(())
-}
+pub fn merge(a: &DiskStoreReader, b: &DiskStoreReader, new_fname: &Path) -> GyResult<()> {
+    let mut writer = DiskStoreWriter::new(new_fname)?;
+    let doc_meta: Vec<usize> = Vec::with_capacity(a.doc_size() + b.doc_size());
+    // let mut buf = Vec::with_capacity(4 * KB);
+    // 定义缓冲区大小为 4KB
 
-struct MergeIndex {
-    a: (DiskStoreReader, DiskStoreReader),
+    Ok(())
 }
 
 //合并索引
@@ -135,6 +136,7 @@ pub struct DiskStoreReader {
     fields: Vec<String>,
     fields_meta: Vec<FieldHandle>,
     doc_meta: Vec<usize>,
+    doc_end: usize,
     file: File,
     mmap: Arc<Mmap>,
 }
@@ -167,6 +169,7 @@ impl DiskStoreReader {
             fields: Vec::new(),
             fields_meta: fields_meta, //fields_meta,
             doc_meta: doc_meta,       //doc_meta,
+            doc_end: 0,
             file: file,
             mmap: Arc::new(mmap),
         })
@@ -204,7 +207,15 @@ impl DiskStoreReader {
         field_reader.get(term.bytes_value())
     }
 
-    pub(crate) fn doc(&self, doc_id: DocID) -> GyResult<Document> {
+    pub fn doc_size(&self) -> usize {
+        self.doc_meta.len()
+    }
+
+    pub(crate) fn doc_block(&self) -> &[u8] {
+        &self.mmap[0..self.doc_end]
+    }
+
+    pub fn doc(&self, doc_id: DocID) -> GyResult<Document> {
         let doc_offset = self.doc_meta[doc_id as usize];
         let doc = self.read_at::<Document>(doc_offset)?;
         Ok(doc)
@@ -222,8 +233,17 @@ impl<'a> DiskFieldReader<'a> {
         Ok(DiskPostingReader::new(self.mmap.clone(), offset as usize)?)
     }
 
-    fn iter() {}
+    fn iter(&self) -> DiskFieldReaderIter {
+        DiskFieldReaderIter {}
+    }
 }
+
+struct DiskFieldReaderIter {}
+
+// impl Iterator for DiskFieldReaderIter {
+//     type Item = ( term: &'a[u8],DiskPostingReader);
+//     fn next(&mut self) -> Option<Self::Item> {}
+// }
 
 pub struct DiskPostingReader {
     last_docid: DocID,
@@ -395,6 +415,7 @@ impl DiskStoreWriter {
         Ok(())
     }
 
+    // write document meta
     fn write_doc_meta(&mut self, meta: &[usize]) -> GyResult<()> {
         let offset = self.offset;
         println!("doc_meta:{}", offset);
@@ -462,6 +483,17 @@ impl DiskStoreWriter {
         self.flush()?;
         self.offset = self.get_cursor()? as usize;
         Ok(offset)
+    }
+
+    fn write_doc_block(&mut self, doc_content: &[u8]) -> GyResult<()> {
+        let chunk_size = 4 * 1024;
+        let mut offset = 0;
+        while offset < doc_content.len() {
+            let end = std::cmp::min(offset + chunk_size, doc_content.len());
+            self.file.write_all(&doc_content[offset..end])?;
+            offset = end;
+        }
+        Ok(())
     }
 }
 
