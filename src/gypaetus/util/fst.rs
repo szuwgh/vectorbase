@@ -43,37 +43,55 @@ impl<'a> FstReader<'a> {
     }
 
     pub(crate) fn iter(&self) -> FstReaderIter {
-        FstReaderIter {
-            iter: self.0.iter(),
-        }
+        FstReaderIter(self.0.iter())
     }
 }
 
-pub(crate) struct FstReaderIter<'a> {
-    iter: FstIterator<'a, &'a [u8]>,
-    item: Option<(Cow, u64)>,
+pub(crate) struct FstReaderIter<'a>(FstIterator<'a, &'a [u8]>);
+
+impl<'a> Iterator for FstReaderIter<'a> {
+    type Item = (Cow, u64);
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next()
+    }
 }
 
-impl<'a> FstReaderIter<'a> {
-    fn next(&mut self) -> bool {
-        let m = self.iter.next();
-        match m {
-            Some(v) => {
-                self.item = m;
-                return true;
-            }
-            None => return false,
-        }
+use std::cmp::Ordering;
+use std::iter::Peekable;
+
+struct CompactionMerger<T: Iterator> {
+    a: Peekable<T>,
+    b: Peekable<T>,
+}
+
+impl<T: Iterator> CompactionMerger<T>
+where
+    T::Item: Ord,
+{
+    fn new(a: Peekable<T>, b: Peekable<T>) -> CompactionMerger<T> {
+        Self { a, b }
     }
-    fn at(&self) -> (&'a [u8], u64) {
-        self.item
+
+    fn merge(mut self) -> impl Iterator<Item = (Option<T::Item>, Option<T::Item>)>
+    where
+        Self: Sized,
+    {
+        std::iter::from_fn(move || match (self.a.peek(), self.b.peek()) {
+            (Some(v1), Some(v2)) => match v1.cmp(v2) {
+                Ordering::Less => Some((self.a.next(), None)),
+                Ordering::Greater => Some((None, self.b.next())),
+                Ordering::Equal => Some((self.a.next(), self.b.next())),
+            },
+            (Some(_), None) => Some((self.a.next(), None)),
+            (None, Some(_)) => Some((None, self.b.next())),
+            (None, None) => None,
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
 
-    use std::collections::HashMap;
     use std::vec;
 
     use super::*;
@@ -90,21 +108,27 @@ mod tests {
 
         let mut iter = fst_r.iter();
         while let Some(v) = iter.next() {
-            println!("v:{:?}", v);
+            println!("v:{:?}", v.0.as_ref());
         }
     }
-    use super::*;
-    use std::collections::BTreeMap;
+
     #[test]
     fn test_merge() {
-        let mut a_map: BTreeMap<i32, Vec<i32>> = BTreeMap::new();
-        a_map.insert(1, vec![1, 2, 3]);
-        a_map.insert(2, vec![1, 2, 3]);
-        a_map.insert(3, vec![1, 2, 3]);
-
-        let mut b_map: BTreeMap<i32, Vec<usize>> = BTreeMap::new();
-        b_map.insert(2, vec![1, 2, 3]);
-        b_map.insert(3, vec![1, 2, 3]);
-        b_map.insert(4, vec![1, 2, 3]);
+        let a = vec![0, 1, 2, 3];
+        let b = vec![3, 4, 6, 7, 8, 9];
+        CompactionMerger::new(a.iter().peekable(), b.iter().peekable())
+            .merge()
+            .for_each(|e| match (e.0, e.1) {
+                (Some(a), Some(b)) => {
+                    println!("a:{},b{}", a, b)
+                }
+                (None, Some(b)) => println!("a:{},b{}", "none", b),
+                (Some(a), None) => {
+                    println!("a:{},b{}", a, "none")
+                }
+                (None, None) => {
+                    println!("none")
+                }
+            });
     }
 }
