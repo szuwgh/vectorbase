@@ -477,7 +477,7 @@ impl FieldCache {
             .iter()
             .try_for_each(|posting| -> GyResult<()> {
                 let p = &mut posting.write().unwrap();
-                Self::write_doc_freq(p.doc_delta, p, &mut *pool.borrow_mut())?;
+                Self::write_doc_freq(p, &mut *pool.borrow_mut())?;
                 p.add_commit = false;
                 p.freq = 0;
                 Ok(())
@@ -530,7 +530,7 @@ impl FieldCache {
         } else if posting.last_doc_id == doc_id {
             posting.freq += 1;
         } else {
-            Self::write_doc_freq(posting.doc_delta, posting, block_pool)?;
+            Self::write_doc_freq(posting, block_pool)?;
             posting.doc_delta = doc_id - posting.last_doc_id;
             posting.last_doc_id = doc_id;
             posting.doc_num += 1;
@@ -539,13 +539,9 @@ impl FieldCache {
         Ok(())
     }
 
-    fn write_doc_freq(
-        doc_delta: DocID,
-        posting: &mut _Posting,
-        block_pool: &mut ByteBlockPool,
-    ) -> GyResult<()> {
+    fn write_doc_freq(posting: &mut _Posting, block_pool: &mut ByteBlockPool) -> GyResult<()> {
         block_pool.set_pos(posting.doc_freq_addr);
-        DocFreq(doc_delta, posting.freq).serialize(block_pool)?;
+        DocFreq(posting.doc_delta, posting.freq).serialize(block_pool)?;
         posting.doc_freq_addr = block_pool.get_pos();
         Ok(())
     }
@@ -749,14 +745,35 @@ mod tests {
         let config = IndexConfigBuilder::default().build();
         let mut index = Index::new(schema, config).unwrap();
         let mut writer1 = index.writer().unwrap();
+        {
+            let mut d = Document::new();
+            d.add_text(field_id_title.clone(), "bb");
+            writer1.add(&d).unwrap();
 
-        let mut d = Document::new();
-        d.add_text(field_id_title.clone(), "bb");
-        writer1.add(&d).unwrap();
+            let mut d1 = Document::new();
+            d1.add_text(field_id_title.clone(), "aa");
+            writer1.add(&d1).unwrap();
 
-        let mut d1 = Document::new();
-        d1.add_text(field_id_title.clone(), "aa");
-        writer1.add(&d1).unwrap();
+            let mut d2 = Document::new();
+            d2.add_text(field_id_title.clone(), "cc");
+            writer1.add(&d2).unwrap();
+
+            let mut d3 = Document::new();
+            d3.add_text(field_id_title.clone(), "aa");
+            writer1.add(&d3).unwrap();
+
+            let mut d1 = Document::new();
+            d1.add_text(field_id_title.clone(), "aa");
+            writer1.add(&d1).unwrap();
+
+            let mut d2 = Document::new();
+            d2.add_text(field_id_title.clone(), "cc");
+            writer1.add(&d2).unwrap();
+
+            let mut d3 = Document::new();
+            d3.add_text(field_id_title.clone(), "aa");
+            writer1.add(&d3).unwrap();
+        }
 
         let reader = index.reader().unwrap();
         let p = reader
@@ -781,7 +798,7 @@ mod tests {
         schema.add_field(FieldEntry::i32("title"));
         let field_id_title = schema.get_field("title").unwrap();
         let disk_reader =
-            DiskStoreReader::open("/opt/rsproject/chappie/searchlite/000000.wal").unwrap();
+            DiskStoreReader::open("/opt/rsproject/chappie/searchlite/gy.data").unwrap();
         let p = disk_reader
             .search(Term::from_field_text(field_id_title, "aa"))
             .unwrap();

@@ -1,5 +1,6 @@
 use super::error::GyResult;
-use furze::{fst::Cow, Builder, FstIterator, FST};
+use furze::fst::FstItem;
+use furze::{Builder, FstIterator, FST};
 
 pub(crate) fn new() {}
 
@@ -50,42 +51,9 @@ impl<'a> FstReader<'a> {
 pub(crate) struct FstReaderIter<'a>(FstIterator<'a, &'a [u8]>);
 
 impl<'a> Iterator for FstReaderIter<'a> {
-    type Item = (Cow, u64);
+    type Item = FstItem;
     fn next(&mut self) -> Option<Self::Item> {
         self.0.next()
-    }
-}
-
-use std::cmp::Ordering;
-use std::iter::Peekable;
-
-struct CompactionMerger<T: Iterator> {
-    a: Peekable<T>,
-    b: Peekable<T>,
-}
-
-impl<T: Iterator> CompactionMerger<T>
-where
-    T::Item: Ord,
-{
-    fn new(a: Peekable<T>, b: Peekable<T>) -> CompactionMerger<T> {
-        Self { a, b }
-    }
-
-    fn merge(mut self) -> impl Iterator<Item = (Option<T::Item>, Option<T::Item>)>
-    where
-        Self: Sized,
-    {
-        std::iter::from_fn(move || match (self.a.peek(), self.b.peek()) {
-            (Some(v1), Some(v2)) => match v1.cmp(v2) {
-                Ordering::Less => Some((self.a.next(), None)),
-                Ordering::Greater => Some((None, self.b.next())),
-                Ordering::Equal => Some((self.a.next(), self.b.next())),
-            },
-            (Some(_), None) => Some((self.a.next(), None)),
-            (None, Some(_)) => Some((None, self.b.next())),
-            (None, None) => None,
-        })
     }
 }
 
@@ -112,23 +80,23 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_merge() {
-        let a = vec![0, 1, 2, 3];
-        let b = vec![3, 4, 6, 7, 8, 9];
-        CompactionMerger::new(a.iter().peekable(), b.iter().peekable())
-            .merge()
-            .for_each(|e| match (e.0, e.1) {
-                (Some(a), Some(b)) => {
-                    println!("a:{},b{}", a, b)
-                }
-                (None, Some(b)) => println!("a:{},b{}", "none", b),
-                (Some(a), None) => {
-                    println!("a:{},b{}", a, "none")
-                }
-                (None, None) => {
-                    println!("none")
-                }
-            });
-    }
+    // #[test]
+    // fn test_merge() {
+    //     let a = vec![0, 1, 2, 3];
+    //     let b = vec![3, 4, 6, 7, 8, 9];
+    //     CompactionMerger::new(a.iter().peekable(), b.iter().peekable())
+    //         .merge()
+    //         .for_each(|e| match (e.0, e.1) {
+    //             (Some(a), Some(b)) => {
+    //                 println!("a:{},b{}", a, b)
+    //             }
+    //             (None, Some(b)) => println!("a:{},b{}", "none", b),
+    //             (Some(a), None) => {
+    //                 println!("a:{},b{}", a, "none")
+    //             }
+    //             (None, None) => {
+    //                 println!("none")
+    //             }
+    //         });
+    // }
 }
