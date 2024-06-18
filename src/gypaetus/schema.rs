@@ -30,7 +30,7 @@ pub type DocID = u64;
 pub struct DocFreq(pub(crate) DocID, pub(crate) u32);
 
 impl DocFreq {
-    pub(crate) fn doc(&self) -> DocID {
+    pub(crate) fn doc_id(&self) -> DocID {
         self.0
     }
 
@@ -42,12 +42,12 @@ impl DocFreq {
 impl BinarySerialize for DocFreq {
     fn binary_serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
         if self.freq() == 1 {
-            let doc_code = self.doc() << 1 | 1;
+            let doc_code = self.doc_id() << 1 | 1;
             VUInt(doc_code).binary_serialize(writer)?;
             //let addr = block_pool.write_var_u64(posting.doc_freq_addr, doc_code)?;
             //posting.doc_freq_addr = addr;
         } else {
-            VUInt(self.doc() << 1).binary_serialize(writer)?;
+            VUInt(self.doc_id() << 1).binary_serialize(writer)?;
             // let addr = block_pool.write_var_u64(posting.doc_freq_addr, doc_delta << 1)?;
             VUInt(self.freq() as u64).binary_serialize(writer)?;
             //posting.doc_freq_addr = block_pool.write_vu32(addr, posting.freq)?;
@@ -81,18 +81,19 @@ impl Schema {
     }
 
     //添加一个域
-    pub fn add_field(&mut self, field_entry: FieldEntry) {
-        let field_id = self.fields.len();
-        let field_name = field_entry.name().to_string();
+    pub fn add_field(&mut self, mut field_entry: FieldEntry) {
+        let field_id = FieldID::from_field_id(self.fields.len() as u32);
+        let field_name = field_entry.get_name().to_string();
+        field_entry.field_id = field_id.clone();
         self.fields.push(field_entry);
-        self.fields_map
-            .insert(field_name, FieldID::from_field_id(field_id as u32));
+        self.fields_map.insert(field_name, field_id);
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct FieldEntry {
     name: String,
+    field_id: FieldID,
     field_type: FieldType,
 }
 
@@ -100,6 +101,7 @@ impl FieldEntry {
     pub(crate) fn str(field_name: &str) -> FieldEntry {
         FieldEntry {
             name: field_name.to_string(),
+            field_id: FieldID::default(),
             field_type: FieldType::Str,
         }
     }
@@ -107,6 +109,7 @@ impl FieldEntry {
     pub(crate) fn i64(field_name: &str) -> FieldEntry {
         FieldEntry {
             name: field_name.to_string(),
+            field_id: FieldID::default(),
             field_type: FieldType::I64,
         }
     }
@@ -114,6 +117,7 @@ impl FieldEntry {
     pub(crate) fn i32(field_name: &str) -> FieldEntry {
         FieldEntry {
             name: field_name.to_string(),
+            field_id: FieldID::default(),
             field_type: FieldType::I32,
         }
     }
@@ -121,16 +125,21 @@ impl FieldEntry {
     pub(crate) fn u64(field_name: &str) -> FieldEntry {
         FieldEntry {
             name: field_name.to_string(),
+            field_id: FieldID::default(),
             field_type: FieldType::U64,
         }
     }
 
-    pub(crate) fn name(&self) -> &str {
+    pub(crate) fn get_name(&self) -> &str {
         &self.name
     }
 
-    pub fn field_type(&self) -> &FieldType {
+    pub fn get_field_type(&self) -> &FieldType {
         &self.field_type
+    }
+
+    pub fn get_field_id(&self) -> &FieldID {
+        &self.field_id
     }
 }
 
@@ -153,7 +162,7 @@ pub enum VectorType {
     NGTONNG,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum FieldType {
     Str,
     I64,
@@ -258,7 +267,7 @@ impl Document {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd, Serialize, Deserialize, Default)]
 pub struct FieldID(pub u32);
 
 impl FieldID {

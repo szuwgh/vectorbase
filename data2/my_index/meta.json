@@ -1,0 +1,1 @@
+{"schema":{"fields":[{"name":"body","field_id":0,"field_type":"Str"},{"name":"title","field_id":1,"field_type":"I32"}],"fields_map":{"body":0,"title":1}},"create_time":1718711049,"update_time":0}

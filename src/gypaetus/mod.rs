@@ -34,6 +34,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock, Weak};
 use wal::{IOType, Wal, DEFAULT_WAL_FILE_SIZE};
 
+const WAL_FILE: &'static str = "data.wal"; // 数据
+const DATA_FILE: &'static str = "data.gy"; // 数据
 const META_FILE: &'static str = "meta.json"; // index 元数据
 const DELETE_FILE: &'static str = "ids.del"; // 被删除的id
 
@@ -51,7 +53,7 @@ impl Default for IndexConfigBuilder {
             index_name: "my_index".to_string(),
             io_type: IOType::MMAP,
             data_path: PathBuf::from("./"),
-            wal_fname: PathBuf::from("gy.wal"),
+            wal_fname: PathBuf::from(WAL_FILE),
             fsize: DEFAULT_WAL_FILE_SIZE,
         }
     }
@@ -637,7 +639,7 @@ impl<'b, 'a> Iterator for PostingReaderIter<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         return match DocFreq::binary_deserialize(&mut self.snap_iter) {
             Ok(mut doc_freq) => {
-                self.last_docid += doc_freq.doc() >> 1;
+                self.last_docid += doc_freq.doc_id() >> 1;
                 doc_freq.0 = self.last_docid;
                 Some(doc_freq)
             }
@@ -757,7 +759,7 @@ mod tests {
         schema.add_field(FieldEntry::i32("title"));
         let field_id_title = schema.get_field("title").unwrap();
         let config = IndexConfigBuilder::default()
-            .data_path(PathBuf::from("/opt/rsproject/chappie/searchlite/data"))
+            .data_path(PathBuf::from("/opt/rsproject/chappie/searchlite/data1"))
             .build();
         let mut index = Index::new(schema, config).unwrap();
         let mut writer1 = index.writer().unwrap();
@@ -799,14 +801,87 @@ mod tests {
             .unwrap();
 
         for doc_freq in p.iter() {
-            let doc = reader.doc(doc_freq.doc()).unwrap();
-            println!("docid:{},doc{:?}", doc_freq.doc(), doc);
+            let doc = reader.doc(doc_freq.doc_id()).unwrap();
+            println!("docid:{},doc{:?}", doc_freq.doc_id(), doc);
         }
         println!("doc vec:{:?}", reader.get_doc_offset().read().unwrap());
         disk::flush_index(&reader).unwrap();
+    }
 
-        // let disk_reader =
-        //     DiskStoreReader::open("/opt/rsproject/gptgrep/searchlite/0000000.wal");
+    #[test]
+    fn test_add_doc2() {
+        let mut schema = Schema::new();
+        schema.add_field(FieldEntry::str("body"));
+        schema.add_field(FieldEntry::i32("title"));
+        let field_id_title = schema.get_field("title").unwrap();
+        let config = IndexConfigBuilder::default()
+            .data_path(PathBuf::from("/opt/rsproject/chappie/searchlite/data2"))
+            .build();
+        let mut index = Index::new(schema, config).unwrap();
+        let mut writer1 = index.writer().unwrap();
+        {
+            let mut d = Document::new();
+            d.add_text(field_id_title.clone(), "bb");
+            writer1.add(&d).unwrap();
+
+            let mut d1 = Document::new();
+            d1.add_text(field_id_title.clone(), "aa");
+            writer1.add(&d1).unwrap();
+
+            let mut d2 = Document::new();
+            d2.add_text(field_id_title.clone(), "cc");
+            writer1.add(&d2).unwrap();
+
+            let mut d3 = Document::new();
+            d3.add_text(field_id_title.clone(), "aa");
+            writer1.add(&d3).unwrap();
+
+            let mut d1 = Document::new();
+            d1.add_text(field_id_title.clone(), "aa");
+            writer1.add(&d1).unwrap();
+
+            let mut d2 = Document::new();
+            d2.add_text(field_id_title.clone(), "cc");
+            writer1.add(&d2).unwrap();
+
+            let mut d3 = Document::new();
+            d3.add_text(field_id_title.clone(), "aa");
+            writer1.add(&d3).unwrap();
+
+            writer1.commit().unwrap();
+        }
+
+        let reader = index.reader().unwrap();
+        let p = reader
+            .search(Term::from_field_text(field_id_title, "aa"))
+            .unwrap();
+
+        for doc_freq in p.iter() {
+            let doc = reader.doc(doc_freq.doc_id()).unwrap();
+            println!("docid:{},doc{:?}", doc_freq.doc_id(), doc);
+        }
+        println!("doc vec:{:?}", reader.get_doc_offset().read().unwrap());
+        disk::flush_index(&reader).unwrap();
+    }
+
+    #[test]
+    fn test_merge_store() {
+        let disk_reader1 = DiskStoreReader::open(PathBuf::from(
+            "/opt/rsproject/chappie/searchlite/data1/my_index",
+        ))
+        .unwrap();
+
+        let disk_reader2 = DiskStoreReader::open(PathBuf::from(
+            "/opt/rsproject/chappie/searchlite/data2/my_index",
+        ))
+        .unwrap();
+
+        disk::merge(
+            &disk_reader1,
+            &disk_reader2,
+            &PathBuf::from("/opt/rsproject/chappie/searchlite/data3"),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -815,10 +890,9 @@ mod tests {
         schema.add_field(FieldEntry::str("body"));
         schema.add_field(FieldEntry::i32("title"));
         let field_id_title = schema.get_field("title").unwrap();
-        let disk_reader = DiskStoreReader::open(
-            "/opt/rsproject/chappie/searchlite/gy.data",
-            "/opt/rsproject/chappie/searchlite/",
-        )
+        let disk_reader = DiskStoreReader::open(PathBuf::from(
+            "/opt/rsproject/chappie/searchlite/data/my_index",
+        ))
         .unwrap();
         let p = disk_reader
             .search(Term::from_field_text(field_id_title, "aa"))
@@ -835,16 +909,23 @@ mod tests {
         schema.add_field(FieldEntry::str("body"));
         schema.add_field(FieldEntry::i32("title"));
         let field_id_title = schema.get_field("title").unwrap();
-        let disk_reader = DiskStoreReader::open(
-            "/opt/rsproject/chappie/searchlite/gy.data",
-            "/opt/rsproject/chappie/searchlite/meta.json",
-        )
+        let disk_reader = DiskStoreReader::open(PathBuf::from(
+            "/opt/rsproject/chappie/searchlite/data/my_index",
+        ))
         .unwrap();
 
         for field in disk_reader.iter() {
-            //  println!("field_name:{}", field.get_field_name());
+            println!(
+                "field_name:{},field_id:{:?}",
+                field.get_field_name(),
+                field.get_field_id()
+            );
             for (c, p) in field.iter() {
-                println!("cow:{}", String::from_utf8_lossy(c.as_ref()))
+                println!("cow:{}", String::from_utf8_lossy(c.as_ref()));
+                for doc in p.iter() {
+                    println!("doc:{:?}", doc);
+                    println!("content:{:?}", disk_reader.doc(doc.doc_id()).unwrap())
+                }
             }
         }
         // let p = disk_reader
@@ -881,8 +962,8 @@ mod tests {
             .unwrap();
 
         for doc_freq in p.iter() {
-            let doc = reader.doc(doc_freq.doc()).unwrap();
-            println!("docid:{},doc{:?}", doc_freq.doc(), doc);
+            let doc = reader.doc(doc_freq.doc_id()).unwrap();
+            println!("docid:{},doc{:?}", doc_freq.doc_id(), doc);
         }
     }
 

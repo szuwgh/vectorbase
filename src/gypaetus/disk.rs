@@ -1,16 +1,16 @@
-use super::schema::{BinarySerialize, Schema};
+use super::schema::{BinarySerialize, FieldID, Schema};
 use super::schema::{DocID, Document};
 use super::util::error::{GyError, GyResult};
-use super::util::fs;
+use super::util::fs::{self, from_json_file};
 use super::util::fst::{FstBuilder, FstReader, FstReaderIter};
-use super::{IndexReader, Meta};
+use super::{IndexReader, Meta, DATA_FILE, META_FILE};
 use crate::gypaetus::schema::VUInt;
 use crate::gypaetus::schema::VarIntSerialize;
 use crate::gypaetus::DocFreq;
+use crate::gypaetus::FieldEntry;
 use crate::gypaetus::Term;
 use crate::iocopy;
 use art_tree::Key;
-
 use bytes::Buf;
 use furze::fst::Cow;
 use memmap2::Mmap;
@@ -138,9 +138,21 @@ impl Write for TmpBufWriter {
 }
 
 pub fn merge(a: &DiskStoreReader, b: &DiskStoreReader, new_fname: &Path) -> GyResult<()> {
-    let mut writer = DiskStoreWriter::new(new_fname)?;
-    let doc_meta: Vec<usize> = Vec::with_capacity(a.doc_size() + b.doc_size());
-
+    // let mut writer = DiskStoreWriter::new(new_fname)?;
+    //  let doc_meta: Vec<usize> = Vec::with_capacity(a.doc_size() + b.doc_size());
+    let reader_merger = CompactionMerger::new(a.iter().peekable(), b.iter().peekable());
+    reader_merger.merge().for_each(|e| match (e.0, e.1) {
+        (Some(a), Some(b)) => {
+         ///   let field_merger = CompactionMerger::new(a.iter().peekable(), b.iter().peekable());
+        }
+        (None, Some(b)) => println!("a:{},b{}", "none", b.get_field_name()),
+        (Some(a), None) => {
+            println!("a:{},b{}", a.get_field_name(), "none")
+        }
+        (None, None) => {
+            println!("none")
+        }
+    });
     // writer.write_posting(b);
     // let mut buf = Vec::with_capacity(4 * KB);
     // 定义缓冲区大小为 4KB
@@ -194,13 +206,12 @@ pub fn flush_index(reader: &IndexReader) -> GyResult<()> {
     writer.close()?;
     drop(writer);
     if let Some(dir_path) = fname.parent() {
-        std::fs::rename(fname, dir_path.join("gy.data"))?;
+        std::fs::rename(fname, dir_path.join(DATA_FILE))?;
         crate::gypaetus::fs::to_json_file(
             reader.get_index_base().get_meta(),
-            dir_path.join("meta.json"),
+            dir_path.join(META_FILE),
         )?;
     }
-
     Ok(())
 }
 
@@ -214,8 +225,10 @@ pub struct DiskStoreReader {
 }
 
 impl DiskStoreReader {
-    pub fn open<P: AsRef<Path>>(fname: P, meta_fname: P) -> GyResult<DiskStoreReader> {
-        let file = OpenOptions::new().read(true).open(fname)?;
+    pub fn open(index_path: PathBuf) -> GyResult<DiskStoreReader> {
+        let data_path = index_path.join(DATA_FILE);
+        let meta_path = index_path.join(META_FILE);
+        let file = OpenOptions::new().read(true).open(data_path)?;
         let file_size = file.metadata()?.size();
         if file_size < FOOTER_LEN {}
         let footer_pos = file_size - FOOTER_LEN;
@@ -236,9 +249,10 @@ impl DiskStoreReader {
         };
         let fields_meta = Self::read_at_bh::<Vec<FieldHandle>>(&mmap, field_meta_bh)?;
         let doc_meta = Self::read_at_bh::<Vec<usize>>(&mmap, doc_meta_bh)?;
-
+        let meta: Meta = from_json_file(&meta_path)?;
+        assert!(fields_meta.len() == meta.get_fields().len());
         Ok(Self {
-            meta: Meta::new(Schema::new()),
+            meta: meta,
             fields_meta: fields_meta,
             doc_meta: doc_meta,
             doc_end: 0,
@@ -262,26 +276,28 @@ impl DiskStoreReader {
     pub fn field_reader<'a>(&'a self, field_id: u32) -> GyResult<DiskFieldReader<'a>> {
         let field_id = field_id as usize;
         assert!(field_id < self.fields_meta.len());
-        //   assert!(field_id < self.meta.schema.fields.len());
+        assert!(field_id < self.meta.schema.fields.len());
         let field_handle = &self.fields_meta[field_id as usize];
-        self.get_field_reader(field_handle)
+        let field_entry = self.meta.schema.fields[field_id as usize].clone();
+        self.get_field_reader(field_entry, field_handle)
     }
 
     fn get_field_reader<'a>(
         &'a self,
-        //  field_name: String,
+        field_entry: FieldEntry,
         field_handle: &FieldHandle,
     ) -> GyResult<DiskFieldReader<'a>> {
         // let field_handle = &self.fields_meta[field_id as usize];
-        println!(
-            "get fst:{:?}",
-            &self.mmap[field_handle.fst_bh.start()..field_handle.fst_bh.end()]
-        );
+        // println!(
+        //     "get fst:{:?}",
+        //     &self.mmap[field_handle.fst_bh.start()..field_handle.fst_bh.end()]
+        // );
         let fst =
             FstReader::load(&self.mmap[field_handle.fst_bh.start()..field_handle.fst_bh.end()]);
         Ok(DiskFieldReader {
             fst: fst,
             mmap: self.mmap.clone(),
+            field_entry: field_entry,
         })
     }
 
@@ -306,10 +322,12 @@ impl DiskStoreReader {
     }
 
     pub fn iter(&self) -> DiskStoreReaderIter {
-        let t = self.fields_meta.iter();
+        let handle_iter = self.fields_meta.iter();
+        let field_iter = self.meta.get_fields().iter();
         DiskStoreReaderIter {
             reader: self,
-            iter: t,
+            handle_iter: handle_iter,
+            field_iter: field_iter,
         }
     }
 }
@@ -317,20 +335,43 @@ impl DiskStoreReader {
 use core::slice::Iter;
 pub struct DiskStoreReaderIter<'a> {
     reader: &'a DiskStoreReader,
-    iter: Iter<'a, FieldHandle>,
+    handle_iter: Iter<'a, FieldHandle>,
+    field_iter: Iter<'a, FieldEntry>,
+}
+
+impl<'a> PartialOrd for DiskFieldReader<'a> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.get_field_id().partial_cmp(other.get_field_id())
+    }
+}
+
+impl<'a> PartialEq for DiskFieldReader<'a> {
+    fn eq(&self, other: &Self) -> bool {
+        self.get_field_id() == other.get_field_id()
+    }
+}
+
+impl<'a> Eq for DiskFieldReader<'a> {}
+
+impl<'a> Ord for DiskFieldReader<'a> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.get_field_id().cmp(other.get_field_id())
+    }
 }
 
 impl<'a> Iterator for DiskStoreReaderIter<'a> {
     type Item = DiskFieldReader<'a>;
     fn next(&mut self) -> Option<Self::Item> {
-        let handle = self.iter.next()?;
-        self.reader.get_field_reader(handle).ok()
+        let handle = self.handle_iter.next()?;
+        let field = self.field_iter.next()?;
+        self.reader.get_field_reader(field.clone(), handle).ok()
     }
 }
 
 pub struct DiskFieldReader<'a> {
     fst: FstReader<'a>,
     mmap: Arc<Mmap>,
+    field_entry: FieldEntry,
 }
 
 impl<'a> DiskFieldReader<'a> {
@@ -346,9 +387,13 @@ impl<'a> DiskFieldReader<'a> {
         }
     }
 
-    // pub fn get_field_name(&self) -> &str {
-    //     &self.field_name
-    // }
+    pub fn get_field_name(&self) -> &str {
+        &self.field_entry.get_name()
+    }
+
+    pub fn get_field_id(&self) -> &FieldID {
+        &self.field_entry.get_field_id()
+    }
 
     fn get(&self, offset: usize) -> GyResult<DiskPostingReader> {
         Ok(DiskPostingReader::new(self.mmap.clone(), offset)?)
@@ -393,7 +438,6 @@ impl DiskPostingReader {
     fn new(mmap: Arc<Mmap>, offset: usize) -> GyResult<DiskPostingReader> {
         let mut r = mmap[offset..].reader();
         let (doc_num, i) = VUInt::binary_deserialize(&mut r)?;
-        println!("i:{}", i);
         Ok(DiskPostingReader {
             doc_num: doc_num.val() as usize,
             snapshot: DiskSnapshotReader::new(mmap, offset + i)?,
@@ -422,7 +466,7 @@ impl Iterator for DiskPostingReaderIter {
     fn next(&mut self) -> Option<Self::Item> {
         return match DocFreq::binary_deserialize(&mut self.snapshot) {
             Ok(mut doc_freq) => {
-                self.last_docid += doc_freq.doc() >> 1;
+                self.last_docid += doc_freq.doc_id() >> 1;
                 doc_freq.0 = self.last_docid;
                 Some(doc_freq)
             }
