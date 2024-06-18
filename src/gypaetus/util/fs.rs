@@ -3,9 +3,28 @@ use super::error::GyResult;
 use crate::iocopy;
 use fs2::FileExt;
 use memmap2::{self, MmapMut};
+use serde::de::DeserializeOwned;
+use serde::ser::Serialize;
 use std::fs;
 use std::fs::{File, OpenOptions};
+use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
+
+// 保存结构体到文件
+pub fn to_json_file<T: Serialize, P: AsRef<Path>>(data: &T, filename: P) -> GyResult<()> {
+    let file = File::create(filename)?;
+    let writer = BufWriter::new(file);
+    serde_json::to_writer(writer, data)?;
+    Ok(())
+}
+
+// 从文件读取并反序列化结构体
+pub fn from_json_file<T: DeserializeOwned, P: AsRef<Path>>(filename: P) -> GyResult<T> {
+    let file = File::open(filename)?;
+    let reader = BufReader::new(file);
+    let data = serde_json::from_reader(reader)?;
+    Ok(data)
+}
 
 pub(crate) fn open_file(fname: &Path, read: bool, write: bool) -> GyResult<File> {
     let file = OpenOptions::new()
@@ -169,6 +188,13 @@ mod tests {
 
     #[test]
     fn test_next_sequence_ext_file() {
+        let data_dir = PathBuf::from("/opt/rsproject/gptgrep/searchlite/data");
+        let file = next_sequence_ext_file(&data_dir, "wal").unwrap();
+        println!("file:{:?}", file);
+    }
+
+    #[test]
+    fn test_to_json_file() {
         let data_dir = PathBuf::from("/opt/rsproject/gptgrep/searchlite/data");
         let file = next_sequence_ext_file(&data_dir, "wal").unwrap();
         println!("file:{:?}", file);

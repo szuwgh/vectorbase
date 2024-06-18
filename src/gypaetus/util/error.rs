@@ -38,6 +38,8 @@ pub enum GyError {
     ErrInvalidFst(FstError),
     #[error("bad magic number")]
     ErrBadMagicNumber,
+    #[error("serde json err: {0}")]
+    ErrSerdeJson(serde_json::Error),
 }
 
 impl From<&str> for GyError {
@@ -85,5 +87,11 @@ impl<T> From<PoisonError<T>> for GyError {
 impl<T> From<TryLockError<T>> for GyError {
     fn from(e: TryLockError<T>) -> Self {
         GyError::ErrInvalidLock
+    }
+}
+
+impl From<serde_json::Error> for GyError {
+    fn from(e: serde_json::Error) -> Self {
+        GyError::ErrSerdeJson(e)
     }
 }

@@ -19,8 +19,11 @@ use buffer::{
     BLOCK_SIZE_CLASS,
 };
 use schema::{BinarySerialize, DocID, Document, Schema, Value, VectorType};
-
+use serde::{Deserialize, Serialize};
 //use jiebars::Jieba;
+use self::schema::DocFreq;
+use self::util::fs;
+use crate::gypaetus::schema::FieldEntry;
 use crate::gypaetus::util::time::Time;
 use crate::gypaetus::wal::WalReader;
 use lock_api::RawMutex;
@@ -30,9 +33,6 @@ use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock, Weak};
 use wal::{IOType, Wal, DEFAULT_WAL_FILE_SIZE};
-
-use self::schema::DocFreq;
-use self::util::fs;
 
 const META_FILE: &'static str = "meta.json"; // index 元数据
 const DELETE_FILE: &'static str = "ids.del"; // 被删除的id
@@ -51,7 +51,7 @@ impl Default for IndexConfigBuilder {
             index_name: "my_index".to_string(),
             io_type: IOType::MMAP,
             data_path: PathBuf::from("./"),
-            wal_fname: PathBuf::from("./gy.wal"),
+            wal_fname: PathBuf::from("gy.wal"),
             fsize: DEFAULT_WAL_FILE_SIZE,
         }
     }
@@ -72,11 +72,6 @@ impl IndexConfigBuilder {
         self.data_path = index_path;
         self
     }
-
-    // pub fn wal_fname(mut self, wal_fname: PathBuf) -> IndexConfigBuilder {
-    //     self.wal_fname = wal_fname;
-    //     self
-    // }
 
     pub fn fsize(mut self, fsize: usize) -> IndexConfigBuilder {
         self.fsize = fsize;
@@ -117,6 +112,12 @@ impl IndexConfig {
 
     pub fn get_wal_fname(&self) -> &Path {
         &self.wal_fname
+    }
+
+    pub fn get_wal_path(&self) -> PathBuf {
+        self.get_data_path()
+            .join(self.get_index_name())
+            .join(self.get_wal_fname())
     }
 
     pub fn get_fsize(&self) -> usize {
@@ -233,7 +234,8 @@ pub struct IndexBase {
     config: IndexConfig,
 }
 
-struct Meta {
+#[derive(Serialize, Deserialize, Debug)]
+pub(crate) struct Meta {
     schema: Schema,
     create_time: i64,
     update_time: i64,
@@ -246,6 +248,10 @@ impl Meta {
             create_time: Time::now(),
             update_time: 0,
         }
+    }
+
+    pub fn get_fields(&self) -> &[FieldEntry] {
+        &self.schema.fields
     }
 }
 
@@ -265,13 +271,17 @@ impl IndexBase {
             buffer: buffer_pool,
             rw_lock: Mutex::new(()),
             wal: Arc::new(RwLock::new(Wal::new(
-                &config.wal_fname,
+                &index_path.join(&config.wal_fname),
                 config.fsize,
                 config.io_type,
             )?)),
             doc_offset: RwLock::new(Vec::with_capacity(1024)), // Max memory doc
             config: config,
         })
+    }
+
+    pub(crate) fn get_meta(&self) -> &Meta {
+        &self.meta
     }
 
     fn reload() -> GyResult<()> {
@@ -306,7 +316,7 @@ impl IndexBase {
         let offset = {
             let mut w = self.wal.write()?;
             let offset = w.offset();
-            doc.serialize(&mut *w)?;
+            doc.binary_serialize(&mut *w)?;
             w.flush()?;
             drop(w);
             offset
@@ -323,7 +333,7 @@ impl IndexBase {
             self.doc_offset.write()?.push(doc_offset);
         }
         let mut cursor = Cursor::new(content);
-        let doc = Document::deserialize(&mut cursor)?;
+        let doc = Document::binary_deserialize(&mut cursor)?;
         self.inner_add(&doc)?;
         //添加向量
         *self.doc_id.borrow_mut() += 1;
@@ -541,7 +551,7 @@ impl FieldCache {
 
     fn write_doc_freq(posting: &mut _Posting, block_pool: &mut ByteBlockPool) -> GyResult<()> {
         block_pool.set_pos(posting.doc_freq_addr);
-        DocFreq(posting.doc_delta, posting.freq).serialize(block_pool)?;
+        DocFreq(posting.doc_delta, posting.freq).binary_serialize(block_pool)?;
         posting.doc_freq_addr = block_pool.get_pos();
         Ok(())
     }
@@ -625,7 +635,7 @@ pub struct PostingReaderIter<'a> {
 impl<'b, 'a> Iterator for PostingReaderIter<'a> {
     type Item = DocFreq;
     fn next(&mut self) -> Option<Self::Item> {
-        return match DocFreq::deserialize(&mut self.snap_iter) {
+        return match DocFreq::binary_deserialize(&mut self.snap_iter) {
             Ok(mut doc_freq) => {
                 self.last_docid += doc_freq.doc() >> 1;
                 doc_freq.0 = self.last_docid;
@@ -663,39 +673,43 @@ impl Iterator for IndexReaderIter {
 }
 
 pub struct IndexReader {
-    reader: Arc<IndexBase>,
-    wal: Arc<RwLock<Wal>>,
+    pub(crate) index_base: Arc<IndexBase>,
+    pub(crate) wal: Arc<RwLock<Wal>>,
 }
 
 impl IndexReader {
-    fn new(reader: Arc<IndexBase>) -> IndexReader {
-        let wal = reader.wal.clone();
+    fn new(index_base: Arc<IndexBase>) -> IndexReader {
+        let wal = index_base.wal.clone();
         IndexReader {
-            reader: reader,
+            index_base: index_base,
             wal: wal,
         }
     }
 
+    pub(crate) fn get_index_base(&self) -> &IndexBase {
+        &self.index_base
+    }
+
     pub fn get_index_config(&self) -> &IndexConfig {
-        self.reader.get_config()
+        self.index_base.get_config()
     }
 
     pub fn iter(&self) -> IndexReaderIter {
-        IndexReaderIter::new(self.reader.clone())
+        IndexReaderIter::new(self.index_base.clone())
     }
 
     fn search(&self, term: Term) -> GyResult<PostingReader> {
         let field_id = term.field_id().0;
-        let field_reader = self.reader.field_reader(field_id)?;
+        let field_reader = self.index_base.field_reader(field_id)?;
         field_reader.get(term.bytes_value())
     }
 
     pub(crate) fn doc(&self, doc_id: DocID) -> GyResult<Document> {
-        let doc_offset = self.reader.doc_offset(doc_id)?;
+        let doc_offset = self.index_base.doc_offset(doc_id)?;
         let doc: Document = {
             let mut wal = self.wal.read()?;
             let mut wal_read = WalReader::from(&mut wal, doc_offset);
-            Document::deserialize(&mut wal_read)?
+            Document::binary_deserialize(&mut wal_read)?
         };
         Ok(doc)
     }
@@ -706,7 +720,7 @@ impl IndexReader {
     }
 
     pub(crate) fn get_doc_offset(&self) -> &RwLock<Vec<usize>> {
-        &self.reader.doc_offset
+        &self.index_base.doc_offset
     }
 }
 
@@ -742,7 +756,9 @@ mod tests {
         schema.add_field(FieldEntry::str("body"));
         schema.add_field(FieldEntry::i32("title"));
         let field_id_title = schema.get_field("title").unwrap();
-        let config = IndexConfigBuilder::default().build();
+        let config = IndexConfigBuilder::default()
+            .data_path(PathBuf::from("/opt/rsproject/chappie/searchlite/data"))
+            .build();
         let mut index = Index::new(schema, config).unwrap();
         let mut writer1 = index.writer().unwrap();
         {
@@ -773,6 +789,8 @@ mod tests {
             let mut d3 = Document::new();
             d3.add_text(field_id_title.clone(), "aa");
             writer1.add(&d3).unwrap();
+
+            writer1.commit().unwrap();
         }
 
         let reader = index.reader().unwrap();
@@ -797,16 +815,46 @@ mod tests {
         schema.add_field(FieldEntry::str("body"));
         schema.add_field(FieldEntry::i32("title"));
         let field_id_title = schema.get_field("title").unwrap();
-        let disk_reader =
-            DiskStoreReader::open("/opt/rsproject/chappie/searchlite/gy.data").unwrap();
+        let disk_reader = DiskStoreReader::open(
+            "/opt/rsproject/chappie/searchlite/gy.data",
+            "/opt/rsproject/chappie/searchlite/",
+        )
+        .unwrap();
         let p = disk_reader
             .search(Term::from_field_text(field_id_title, "aa"))
             .unwrap();
-        for doc_freq in p {
+        println!("doc_size:{:?}", p.get_doc_size());
+        for doc_freq in p.iter() {
             println!("{:?}", doc_freq);
-            // let doc = disk_reader.doc(doc_freq.doc()).unwrap();
-            //  println!("docid:{},doc{:?}", doc_freq.doc(), doc);
         }
+    }
+
+    #[test]
+    fn test_read_iter() {
+        let mut schema = Schema::new();
+        schema.add_field(FieldEntry::str("body"));
+        schema.add_field(FieldEntry::i32("title"));
+        let field_id_title = schema.get_field("title").unwrap();
+        let disk_reader = DiskStoreReader::open(
+            "/opt/rsproject/chappie/searchlite/gy.data",
+            "/opt/rsproject/chappie/searchlite/meta.json",
+        )
+        .unwrap();
+
+        for field in disk_reader.iter() {
+            //  println!("field_name:{}", field.get_field_name());
+            for (c, p) in field.iter() {
+                println!("cow:{}", String::from_utf8_lossy(c.as_ref()))
+            }
+        }
+        // let p = disk_reader
+        //     .search(Term::from_field_text(field_id_title, "aa"))
+        //     .unwrap();
+        // for doc_freq in p {
+        //     println!("{:?}", doc_freq);
+        //     // let doc = disk_reader.doc(doc_freq.doc()).unwrap();
+        //     //  println!("docid:{},doc{:?}", doc_freq.doc(), doc);
+        // }
     }
 
     #[test]
@@ -920,8 +968,6 @@ mod tests {
         // field.add(doc_id, &valuea).unwrap(); // aa
         field.add(doc_id, &valueb).unwrap(); //
         field.add(doc_id, &value1).unwrap();
-        // field.add(doc_id, &value3).unwrap();
-        // field.add(doc_id, &value4).unwrap();
 
         doc_id = 1;
         field.add(doc_id, &valuea).unwrap();
@@ -979,11 +1025,11 @@ mod tests {
 
         let mut v = vec![0u8; 0];
 
-        1.serialize(&mut v);
-        println!("search 1");
-        p = field_reader.get(&v).unwrap();
-        for x in p.iter() {
-            println!("{:?}", x);
-        }
+        // 1.serialize(&mut v);
+        // println!("search 1");
+        // p = field_reader.get(&v).unwrap();
+        // for x in p.iter() {
+        //     println!("{:?}", x);
+        // }
     }
 }
