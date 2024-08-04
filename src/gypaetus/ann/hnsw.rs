@@ -33,8 +33,9 @@ struct Node<V> {
 }
 
 impl<V> Node<V> {
-    fn get_neighbors(&self, level: usize) -> impl Iterator<Item = usize> + '_ {
-        self.neighbors.get(level).unwrap().iter().cloned()
+    fn get_neighbors(&self, level: usize) -> Option<impl Iterator<Item = usize> + '_> {
+        let x = self.neighbors.get(level)?;
+        Some(x.iter().cloned())
     }
 }
 
@@ -45,7 +46,7 @@ pub struct HNSW<V> {
     ef_construction: usize,
     M: usize,
     M0: usize,
-    // n_items: usize,
+    n_items: usize,
     rng: ThreadRng,
     level_mut: f64,
     nodes: Vec<Node<V>>,
@@ -74,7 +75,7 @@ where
             changed = true;
             while changed {
                 changed = false;
-                for i in self.get_neighbors_nodes(ep.id, level) {
+                for i in self.get_neighbors_nodes(ep.id, level).unwrap() {
                     let d = self.get_node(ep_id).p.borrow().distance(&q); //distance(self.get_node(ep_id).p.borrow(), &q);
                     if d < ep.d {
                         ep.id = i;
@@ -99,7 +100,7 @@ where
             self.connect_neighbor(new_id, candidates, level);
         }
 
-        // self.n_items += 1;
+        self.n_items += 1;
 
         if cur_level > self.max_layer {
             self.max_layer = cur_level;
@@ -119,12 +120,14 @@ where
             changed = true;
             while changed {
                 changed = false;
-                for i in self.get_neighbors_nodes(ep.id, level) {
-                    let d = self.get_node(self.enter_point).p.borrow().distance(&q); // distance(self.get_node(self.enter_point).p.borrow(), &q);
-                    if d < ep.d {
-                        ep.id = i;
-                        ep.d = d;
-                        changed = true;
+                if let Some(x) = self.get_neighbors_nodes(ep.id, level) {
+                    for i in x {
+                        let d = self.get_node(self.enter_point).p.borrow().distance(&q); // distance(self.get_node(self.enter_point).p.borrow(), &q);
+                        if d < ep.d {
+                            ep.id = i;
+                            ep.d = d;
+                            changed = true;
+                        }
                     }
                 }
             }
@@ -156,7 +159,7 @@ where
             M: M,
             M0: M * 2,
             //   current_id: 0,
-            // n_items: 1,
+            n_items: 1,
         }
     }
 
@@ -272,12 +275,14 @@ where
                 let mut result_set: BinaryHeap<Neighbor> = BinaryHeap::with_capacity(maxl);
 
                 let p = self.get_node(n.id).p.borrow();
-                self.get_neighbors_nodes(n.id, level).for_each(|x| {
-                    result_set.push(Neighbor {
-                        id: x,
-                        d: -p.distance(self.get_node(x).p.borrow()), //distance(p, self.get_node(x).p.borrow()),
+                self.get_neighbors_nodes(n.id, level)
+                    .unwrap()
+                    .for_each(|x| {
+                        result_set.push(Neighbor {
+                            id: x,
+                            d: -p.distance(self.get_node(x).p.borrow()), //distance(p, self.get_node(x).p.borrow()),
+                        });
                     });
-                });
 
                 self.get_neighbors_by_heuristic_closest_frist(&mut result_set, self.M);
                 let neighbors = self.get_node_mut(n.id).neighbors.get_mut(level).unwrap();
@@ -290,7 +295,11 @@ where
         }
     }
 
-    fn get_neighbors_nodes(&self, n: usize, level: usize) -> impl Iterator<Item = usize> + '_ {
+    fn get_neighbors_nodes(
+        &self,
+        n: usize,
+        level: usize,
+    ) -> Option<impl Iterator<Item = usize> + '_> {
         self.get_node(n).get_neighbors(level)
     }
 
@@ -323,27 +332,29 @@ where
             // 把比d和q距离更近的e加入candidates、results中，如果results未满，
             // 则把所有的e都加入candidates、results
             // 如果results已满，则弹出和q距离最远的点
-            self.get_neighbors_nodes(c.id, level).for_each(|n| {
-                //如果e已经在visitedset中存在则跳过，
-                if visited_set.contains(&n) {
-                    return;
-                }
-                //不存在则加入visitedset
-                visited_set.insert(n);
-                let dist = q.distance(self.nodes.get(n).unwrap().p.borrow()); //   distance(q, self.nodes.get(n).unwrap().p.borrow());
-                let top_d = results.peek().unwrap();
-                //如果results未满，则把所有的e都加入candidates、results
+            self.get_neighbors_nodes(c.id, level)
+                .unwrap()
+                .for_each(|n| {
+                    //如果e已经在visitedset中存在则跳过，
+                    if visited_set.contains(&n) {
+                        return;
+                    }
+                    //不存在则加入visitedset
+                    visited_set.insert(n);
+                    let dist = q.distance(self.nodes.get(n).unwrap().p.borrow()); //   distance(q, self.nodes.get(n).unwrap().p.borrow());
+                    let top_d = results.peek().unwrap();
+                    //如果results未满，则把所有的e都加入candidates、results
 
-                if results.len() < self.ef_construction {
-                    results.push(Neighbor { id: n, d: dist });
-                    candidates.push(Neighbor { id: n, d: -dist });
-                } else if dist < top_d.d {
-                    // 如果results已满，则弹出和q距离最远的点
-                    results.pop();
-                    results.push(Neighbor { id: n, d: dist });
-                    candidates.push(Neighbor { id: n, d: -dist });
-                }
-            });
+                    if results.len() < self.ef_construction {
+                        results.push(Neighbor { id: n, d: dist });
+                        candidates.push(Neighbor { id: n, d: -dist });
+                    } else if dist < top_d.d {
+                        // 如果results已满，则弹出和q距离最远的点
+                        results.pop();
+                        results.push(Neighbor { id: n, d: dist });
+                        candidates.push(Neighbor { id: n, d: -dist });
+                    }
+                });
         }
         results
     }
@@ -499,14 +510,15 @@ mod tests {
         //     *i = *i + 1;
         // }
         // println!("{:?}", x);
-
+        let mut i = 1;
         for &feature in &features {
-            hnsw.insert(feature.to_vec(), 1);
+            hnsw.insert(feature.to_vec(), i);
+            i += 1;
         }
 
         hnsw.print();
 
-        let neighbors = hnsw.search(&[0.0f32, 1.0, 0.0, 0.0][..].to_vec(), 8);
+        let neighbors = hnsw.search(&[0.0f32, 0.0, 1.0, 0.0][..].to_vec(), 4);
         println!("{:?}", neighbors);
     }
 }

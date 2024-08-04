@@ -143,7 +143,7 @@ pub fn merge(a: &DiskStoreReader, b: &DiskStoreReader, new_fname: &Path) -> GyRe
     let reader_merger = CompactionMerger::new(a.iter().peekable(), b.iter().peekable());
     reader_merger.merge().for_each(|e| match (e.0, e.1) {
         (Some(a), Some(b)) => {
-         ///   let field_merger = CompactionMerger::new(a.iter().peekable(), b.iter().peekable());
+            // let field_merger = CompactionMerger::new(a.iter().peekable(), b.iter().peekable());
         }
         (None, Some(b)) => println!("a:{},b{}", "none", b.get_field_name()),
         (Some(a), None) => {
