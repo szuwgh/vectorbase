@@ -27,4 +27,4 @@ Cargo.lock
 
 *.wal
 
-/data
+/data*

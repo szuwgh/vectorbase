@@ -168,11 +168,11 @@ impl Index {
 
 //impl Series {}
 
-unsafe impl<V: 'static> Send for Collection<V> where V: Metric<V> + Create {}
-unsafe impl<V: 'static> Sync for Collection<V> where V: Metric<V> + Create {}
+unsafe impl<V: BinarySerialize + 'static> Send for Collection<V> where V: Metric<V> + Create {}
+unsafe impl<V: BinarySerialize + 'static> Sync for Collection<V> where V: Metric<V> + Create {}
 
 //向量搜索
-pub struct Collection<V: 'static>
+pub struct Collection<V: BinarySerialize + 'static>
 where
     V: Metric<V> + Create,
 {
@@ -181,7 +181,7 @@ where
     rw_lock: Mutex<()>,
 }
 
-impl<V: 'static> Collection<V>
+impl<V: BinarySerialize + 'static> Collection<V>
 where
     V: Metric<V> + Create,
 {
@@ -201,6 +201,23 @@ where
     }
 
     pub fn add(&mut self, v: Vector<V>) -> GyResult<()> {
+        unsafe {
+            self.rw_lock.raw().lock();
+        }
+        let doc_offset = self.write_vector_to_wal(&v)?;
+        {
+            self.index.0.doc_offset.write()?.push(doc_offset);
+        }
+        self.index.0.inner_add(&v.payload)?;
+        self.index.0.commit()?;
+        *self.index.0.doc_id.borrow_mut() += 1;
+        unsafe {
+            self.rw_lock.raw().unlock();
+        }
+        Ok(())
+    }
+
+    fn write_vector_to_wal(&mut self, v: &Vector<V>) -> GyResult<usize> {
         todo!()
     }
 
@@ -407,7 +424,7 @@ pub struct _Posting {
     doc_delta: DocID,
     byte_addr: Addr,
     doc_freq_addr: Addr,
-    doc_num: usize,
+    doc_count: usize,
     freq: u32,
     add_commit: bool,
 }
@@ -419,7 +436,7 @@ impl _Posting {
             doc_delta: 0,
             byte_addr: doc_freq_addr,
             doc_freq_addr: doc_freq_addr,
-            doc_num: 0,
+            doc_count: 0,
             add_commit: false,
             freq: 0,
         }
@@ -535,7 +552,7 @@ impl FieldCache {
         block_pool: &mut ByteBlockPool,
     ) -> GyResult<()> {
         if !posting.add_commit {
-            posting.doc_num += 1;
+            posting.doc_count += 1;
             posting.doc_delta = doc_id - posting.last_doc_id;
             posting.freq += 1;
             posting.last_doc_id = doc_id;
@@ -545,7 +562,7 @@ impl FieldCache {
             Self::write_doc_freq(posting, block_pool)?;
             posting.doc_delta = doc_id - posting.last_doc_id;
             posting.last_doc_id = doc_id;
-            posting.doc_num += 1;
+            posting.doc_count += 1;
             posting.freq = 1;
         }
         Ok(())
@@ -759,7 +776,7 @@ mod tests {
         schema.add_field(FieldEntry::i32("title"));
         let field_id_title = schema.get_field("title").unwrap();
         let config = IndexConfigBuilder::default()
-            .data_path(PathBuf::from("/opt/rsproject/chappie/searchlite/data1"))
+            .data_path(PathBuf::from("/opt/rsproject/chappie/searchlite/data2"))
             .build();
         let mut index = Index::new(schema, config).unwrap();
         let mut writer1 = index.writer().unwrap();
@@ -875,11 +892,14 @@ mod tests {
             "/opt/rsproject/chappie/searchlite/data2/my_index",
         ))
         .unwrap();
-
+        fs::mkdir(&PathBuf::from(
+            "/opt/rsproject/chappie/searchlite/data3/my_index",
+        ))
+        .unwrap();
         disk::merge(
             &disk_reader1,
             &disk_reader2,
-            &PathBuf::from("/opt/rsproject/chappie/searchlite/data3"),
+            &PathBuf::from("/opt/rsproject/chappie/searchlite/data3/my_index/data.gy"),
         )
         .unwrap();
     }
@@ -891,16 +911,17 @@ mod tests {
         schema.add_field(FieldEntry::i32("title"));
         let field_id_title = schema.get_field("title").unwrap();
         let disk_reader = DiskStoreReader::open(PathBuf::from(
-            "/opt/rsproject/chappie/searchlite/data/my_index",
+            "/opt/rsproject/chappie/searchlite/data3/my_index",
         ))
         .unwrap();
         let p = disk_reader
             .search(Term::from_field_text(field_id_title, "aa"))
             .unwrap();
-        println!("doc_size:{:?}", p.get_doc_size());
+        println!("doc_size:{:?}", p.get_doc_count());
         for doc_freq in p.iter() {
             println!("{:?}", doc_freq);
         }
+        //    let doc_reader = disk_reader.doc_reader().unwrap();
     }
 
     #[test]
@@ -920,9 +941,9 @@ mod tests {
                 field.get_field_name(),
                 field.get_field_id()
             );
-            for (c, p) in field.iter() {
-                println!("cow:{}", String::from_utf8_lossy(c.as_ref()));
-                for doc in p.iter() {
+            for v in field.iter() {
+                println!("cow:{}", String::from_utf8_lossy(v.term().as_ref()));
+                for doc in v.posting_reader().iter() {
                     println!("doc:{:?}", doc);
                     println!("content:{:?}", disk_reader.doc(doc.doc_id()).unwrap())
                 }

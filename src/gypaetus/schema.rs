@@ -175,12 +175,12 @@ pub enum FieldType {
     Bytes,
 }
 
-pub struct Vector<V> {
+pub struct Vector<V: BinarySerialize> {
     pub v: V,
     pub payload: Document,
 }
 
-impl<V> Vector<V> {
+impl<V: BinarySerialize> Vector<V> {
     pub fn with(v: V) -> Vector<V> {
         Self {
             v: v,
