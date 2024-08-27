@@ -7,10 +7,10 @@ edition = "2021"
 
 [dependencies]
 thiserror = "1.0"
-space = { version = "0.17.0", default-features = false, features = ["alloc"] }
+space = { version = "0.18.0", default-features = false, features = ["alloc"] }
 rand = "0.8.5"
 num-traits = "0.2"
-sp-std = "11.0.0"
+sp-std = "14.0.0"
 rand_pcg = "0.3.1"
 byteorder = "1.4.3"
 varintrs = "0.2.1"
@@ -26,3 +26,4 @@ bytes = "1.4.0"
 chrono = "0.4"
 furze = "0.1.0"
 serde_json = "1.0.122"
+galois = {path = "../galois", version = "0.1.0"}

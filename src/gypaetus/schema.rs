@@ -1,14 +1,28 @@
 // 每一行数据
 
+use super::ann::Metric;
 use super::util::error::{GyError, GyResult};
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use chrono::{TimeZone, Utc};
+use galois::Tensor;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Read;
 use std::io::Write;
 use varintrs::{Binary, ReadBytesVarExt, WriteBytesVarExt};
 pub type DateTime = chrono::DateTime<chrono::Utc>;
+
+pub trait VectorSerialize: Sized {
+    /// Serialize
+    fn binary_serialize<W: Write>(&self, writer: &mut W) -> GyResult<()>;
+    /// Deserialize
+    fn binary_deserialize<R: Read>(reader: &mut R, n_dims: usize, dims: &[usize])
+        -> GyResult<Self>;
+}
+
+pub trait ValueSized {
+    fn size(&self) -> usize;
+}
 
 pub trait BinarySerialize: Sized {
     /// Serialize
@@ -67,6 +81,7 @@ impl BinarySerialize for DocFreq {
 
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct Schema {
+    pub vector_field: VectorEntry,
     pub fields: Vec<FieldEntry>,
     pub fields_map: HashMap<String, FieldID>,
 }
@@ -74,6 +89,14 @@ pub struct Schema {
 impl Schema {
     pub fn new() -> Schema {
         Schema::default()
+    }
+
+    pub fn with_vector(vector_field: VectorEntry) -> Schema {
+        Self {
+            vector_field: vector_field,
+            fields: Vec::new(),
+            fields_map: HashMap::new(),
+        }
     }
 
     pub fn get_field(&self, field_name: &str) -> Option<FieldID> {
@@ -88,6 +111,29 @@ impl Schema {
         self.fields.push(field_entry);
         self.fields_map.insert(field_name, field_id);
     }
+}
+
+#[derive(Serialize, Deserialize, Debug, Default)]
+pub enum VectorIndexType {
+    #[default]
+    HNSW,
+}
+
+#[derive(Serialize, Deserialize, Debug, Default)]
+pub enum VectorType {
+    F32,
+    F16,
+    #[default]
+    I32,
+}
+
+#[derive(Serialize, Deserialize, Debug, Default)]
+pub struct VectorEntry {
+    name: String,
+    n_dims: usize,
+    dims: [usize; 4],
+    vector_type: VectorType,
+    index_type: VectorIndexType,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -143,7 +189,7 @@ impl FieldEntry {
     }
 }
 
-pub enum VectorType {
+pub enum SimilarityType {
     Flat,
     BinFlat,
     IvfFlat,
@@ -175,24 +221,75 @@ pub enum FieldType {
     Bytes,
 }
 
-pub struct Vector<V: BinarySerialize> {
+impl VectorSerialize for Tensor {
+    fn binary_serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
+        todo!()
+    }
+
+    fn binary_deserialize<R: Read>(
+        reader: &mut R,
+        n_dims: usize,
+        dims: &[usize],
+    ) -> GyResult<Self> {
+        todo!()
+    }
+}
+
+impl Metric for Tensor {
+    fn distance(&self, b: &Self) -> f32 {
+        todo!()
+    }
+}
+
+impl ValueSized for Tensor {
+    fn size(&self) -> usize {
+        self.nbytes()
+    }
+}
+
+pub type Vector = VectorBase<Tensor>;
+
+pub struct VectorBase<V: VectorSerialize + ValueSized> {
     pub v: V,
     pub payload: Document,
 }
 
-impl<V: BinarySerialize> Vector<V> {
-    pub fn with(v: V) -> Vector<V> {
+impl<V: VectorSerialize + ValueSized> ValueSized for VectorBase<V> {
+    fn size(&self) -> usize {
+        self.v.size() + self.payload.size()
+    }
+}
+
+impl<V: VectorSerialize + ValueSized> VectorSerialize for VectorBase<V> {
+    fn binary_deserialize<R: Read>(
+        reader: &mut R,
+        n_dims: usize,
+        dims: &[usize],
+    ) -> GyResult<Self> {
+        todo!()
+    }
+    fn binary_serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
+        todo!()
+    }
+}
+
+impl<V: VectorSerialize + ValueSized> VectorBase<V> {
+    pub fn with(v: V) -> VectorBase<V> {
         Self {
             v: v,
             payload: Document::new(),
         }
     }
 
+    pub fn size(&self) -> usize {
+        self.v.size() + self.payload.size()
+    }
+
     pub fn into(self) -> V {
         self.v
     }
 
-    pub fn with_fields(v: V, field_values: Vec<FieldValue>) -> Vector<V> {
+    pub fn with_fields(v: V, field_values: Vec<FieldValue>) -> VectorBase<V> {
         Self {
             v: v,
             payload: Document::from(field_values),
@@ -205,9 +302,15 @@ pub struct Document {
     pub field_values: Vec<FieldValue>,
 }
 
+impl ValueSized for Document {
+    fn size(&self) -> usize {
+        std::mem::size_of::<u32>() + self.field_values.iter().map(|f| f.size()).sum::<usize>()
+    }
+}
+
 impl BinarySerialize for Document {
     fn binary_serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
-        VUInt(self.field_values.len() as u64).binary_serialize(writer)?;
+        (self.field_values.len() as u32).binary_serialize(writer)?;
         for field_value in &self.field_values {
             field_value.binary_serialize(writer)?;
         }
@@ -215,7 +318,7 @@ impl BinarySerialize for Document {
     }
 
     fn binary_deserialize<R: Read>(reader: &mut R) -> GyResult<Self> {
-        let num_field_values = VUInt::binary_deserialize(reader)?.0.val() as usize;
+        let num_field_values = u32::binary_deserialize(reader)? as usize;
         let field_values = (0..num_field_values)
             .map(|_| FieldValue::binary_deserialize(reader))
             .collect::<GyResult<Vec<FieldValue>>>()?;
@@ -228,11 +331,6 @@ impl Document {
         Self {
             field_values: Vec::new(),
         }
-    }
-
-    pub fn size(&self) -> usize {
-        varintrs::vint_size!(self.field_values.len()) as usize
-            + self.field_values.iter().map(|f| f.size()).sum::<usize>()
     }
 
     pub fn add_u64(&mut self, field: FieldID, value: u64) {

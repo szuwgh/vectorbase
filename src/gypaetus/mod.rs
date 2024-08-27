@@ -6,19 +6,22 @@ mod schema;
 mod searcher;
 mod tokenize;
 mod util;
-use art_tree::{Art, ByteString, Key};
+use art_tree::{Art, ByteString};
+use galois::Tensor;
 use query::Term;
+use schema::ValueSized;
 use util::error::{GyError, GyResult};
 mod macros;
+use crate::gypaetus::schema::VectorBase;
 pub mod wal;
-use crate::gypaetus::schema::Vector;
+use crate::gypaetus::schema::VectorSerialize;
 use ann::BoxedAnnIndex;
-use ann::{Create, Metric, HNSW};
+use ann::Metric;
 use buffer::{
     Addr, ByteBlockPool, RingBuffer, RingBufferReader, SnapshotReader, SnapshotReaderIter,
     BLOCK_SIZE_CLASS,
 };
-use schema::{BinarySerialize, DocID, Document, Schema, Value, VectorType};
+use schema::{BinarySerialize, DocID, Document, Schema, Value};
 use serde::{Deserialize, Serialize};
 //use jiebars::Jieba;
 use self::schema::DocFreq;
@@ -147,13 +150,6 @@ impl Index {
         Ok(IndexWriter::new(self.0.clone()))
     }
 
-    // pub fn create_vector_collection<V>(self, vector: VectorType) -> Collection<V>
-    // where
-    //     V: Metric<V> + Create,
-    // {
-    //     Collection::with_index(self, &vector)
-    // }
-
     pub fn flush_disk(&self) -> GyResult<()> {
         Ok(())
     }
@@ -161,64 +157,76 @@ impl Index {
     pub fn close() {}
 }
 
-//时序搜索
-// pub struct Series {
-//     series: HashMap<SeriesID>,
-// }
+unsafe impl<V: VectorSerialize + ValueSized + 'static> Send for VectorCollection<V> where
+    V: Metric<V>
+{
+}
+unsafe impl<V: VectorSerialize + ValueSized + 'static> Sync for VectorCollection<V> where
+    V: Metric<V>
+{
+}
 
-//impl Series {}
-
-unsafe impl<V: BinarySerialize + 'static> Send for Collection<V> where V: Metric<V> + Create {}
-unsafe impl<V: BinarySerialize + 'static> Sync for Collection<V> where V: Metric<V> + Create {}
+pub struct Collection(Arc<VectorCollection<Tensor>>);
 
 //向量搜索
-pub struct Collection<V: BinarySerialize + 'static>
+pub struct VectorCollection<V: VectorSerialize + ValueSized + 'static>
 where
-    V: Metric<V> + Create,
+    V: Metric<V>,
 {
     vector_field: RwLock<BoxedAnnIndex<V>>,
-    index: Index,
+    index: IndexBase,
     rw_lock: Mutex<()>,
 }
 
-impl<V: BinarySerialize + 'static> Collection<V>
+impl<V: VectorSerialize + ValueSized + 'static> VectorCollection<V>
 where
-    V: Metric<V> + Create,
+    V: Metric<V>,
 {
-    fn with_index(index: Index, vec_type: &VectorType) -> Collection<V> {
-        Collection {
-            vector_field: RwLock::new(Self::get_vector_index(&vec_type).unwrap()),
-            index: index,
-            rw_lock: Mutex::new(()),
-        }
-    }
+    // fn with_index(index: Index, vec_type: &VectorType) -> VectorCollection<V> {
+    //     VectorCollection {
+    //         vector_field: RwLock::new(Self::get_vector_index(&vec_type).unwrap()),
+    //         index: index,
+    //         rw_lock: Mutex::new(()),
+    //     }
+    // }
 
-    pub fn get_vector_index(vec_type: &VectorType) -> Option<BoxedAnnIndex<V>> {
-        match vec_type {
-            VectorType::HNSW => Some(BoxedAnnIndex(Box::new(HNSW::<V>::new(32)))),
-            _ => None,
-        }
-    }
+    // pub fn get_vector_index(vec_type: &VectorType) -> Option<BoxedAnnIndex<V>> {
+    //     match vec_type {
+    //         VectorType::HNSW => Some(BoxedAnnIndex(Box::new(HNSW::<V>::new(32)))),
+    //         _ => None,
+    //     }
+    // }
 
-    pub fn add(&mut self, v: Vector<V>) -> GyResult<()> {
+    pub fn add(&mut self, v: VectorBase<V>) -> GyResult<()> {
         unsafe {
             self.rw_lock.raw().lock();
         }
         let doc_offset = self.write_vector_to_wal(&v)?;
         {
-            self.index.0.doc_offset.write()?.push(doc_offset);
+            self.index.doc_offset.write()?.push(doc_offset);
         }
-        self.index.0.inner_add(&v.payload)?;
-        self.index.0.commit()?;
-        *self.index.0.doc_id.borrow_mut() += 1;
+        self.index.inner_add(&v.payload)?;
+        self.index.commit()?;
+        *self.index.doc_id.borrow_mut() += 1;
         unsafe {
             self.rw_lock.raw().unlock();
         }
         Ok(())
     }
 
-    fn write_vector_to_wal(&mut self, v: &Vector<V>) -> GyResult<usize> {
-        todo!()
+    fn write_vector_to_wal(&self, v: &VectorBase<V>) -> GyResult<usize> {
+        {
+            self.index.wal.read()?.check_rotate(v)?;
+        }
+        let offset = {
+            let mut w = self.index.wal.write()?;
+            let offset = w.offset();
+            v.binary_serialize(&mut *w)?;
+            w.flush()?;
+            drop(w);
+            offset
+        };
+        Ok(offset)
     }
 
     pub fn add_with_raw(&mut self, content: &[u8]) -> GyResult<()> {
@@ -320,17 +328,17 @@ impl IndexBase {
         Ok(())
     }
 
-    pub fn write_wal(&self, content: &[u8]) -> GyResult<usize> {
-        self.wal.read()?.check_rotate(content.len())?;
-        let mut w = self.wal.write()?;
-        w.write_bytes(content)?;
-        w.flush()?;
-        Ok(w.offset())
-    }
+    // pub fn write_wal(&self, content: &[u8]) -> GyResult<usize> {
+    //     self.wal.read()?.check_rotate(content.len())?;
+    //     let mut w = self.wal.write()?;
+    //     w.write_bytes(content)?;
+    //     w.flush()?;
+    //     Ok(w.offset())
+    // }
 
     pub fn write_doc_to_wal(&self, doc: &Document) -> GyResult<usize> {
         {
-            self.wal.read()?.check_rotate(doc.size())?;
+            self.wal.read()?.check_rotate(doc)?;
         }
         let offset = {
             let mut w = self.wal.write()?;
@@ -343,26 +351,26 @@ impl IndexBase {
         Ok(offset)
     }
 
-    pub fn add_with_raw(&mut self, content: &[u8]) -> GyResult<()> {
-        unsafe {
-            self.rw_lock.raw().lock();
-        }
-        let doc_offset = self.write_wal(content)?;
-        {
-            self.doc_offset.write()?.push(doc_offset);
-        }
-        let mut cursor = Cursor::new(content);
-        let doc = Document::binary_deserialize(&mut cursor)?;
-        self.inner_add(&doc)?;
-        //添加向量
-        *self.doc_id.borrow_mut() += 1;
-        self.commit()?;
+    // pub fn add_with_raw(&mut self, content: &[u8]) -> GyResult<()> {
+    //     unsafe {
+    //         self.rw_lock.raw().lock();
+    //     }
+    //     let doc_offset = self.write_wal(content)?;
+    //     {
+    //         self.doc_offset.write()?.push(doc_offset);
+    //     }
+    //     let mut cursor = Cursor::new(content);
+    //     let doc = Document::binary_deserialize(&mut cursor)?;
+    //     self.inner_add(&doc)?;
+    //     //添加向量
+    //     *self.doc_id.borrow_mut() += 1;
+    //     self.commit()?;
 
-        unsafe {
-            self.rw_lock.raw().unlock();
-        }
-        Ok(())
-    }
+    //     unsafe {
+    //         self.rw_lock.raw().unlock();
+    //     }
+    //     Ok(())
+    // }
 
     //add vector
     pub fn add(&self, doc: &Document) -> GyResult<()> {

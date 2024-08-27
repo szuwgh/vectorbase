@@ -1,14 +1,15 @@
 use super::util::error::{GyError, GyResult};
 use super::util::fs::{FileIOSelector, IoSelector, MmapSelector};
+use crate::gypaetus::ValueSized;
 use crate::iocopy;
 use core::arch::x86_64::*;
 use memmap2::{self, Mmap, MmapMut};
+use serde::de::value;
 use std::fs::{self, File};
 use std::io::Read;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock, Weak};
-
 pub(crate) const DEFAULT_WAL_FILE_SIZE: usize = 1 << 20; //512 << 20; //
 
 #[derive(Copy, Clone)]
@@ -59,8 +60,8 @@ impl Wal {
         })
     }
 
-    pub(crate) fn check_rotate(&self, size: usize) -> GyResult<()> {
-        if self.i + size > self.fsize {
+    pub(crate) fn check_rotate<T: ValueSized>(&self, t: &T) -> GyResult<()> {
+        if self.i + t.size() > self.fsize {
             return Err(GyError::ErrWalOverflow);
         }
         Ok(())

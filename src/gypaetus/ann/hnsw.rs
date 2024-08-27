@@ -7,7 +7,7 @@ use std::fs::File;
 use std::path::Path;
 
 use super::super::util::error::GyResult;
-use super::{AnnIndex, Create, Metric, Neighbor};
+use super::{AnnIndex, Metric, Neighbor};
 
 impl Metric<Vec<f32>> for Vec<f32> {
     fn distance(&self, b: &Vec<f32>) -> f32 {
@@ -19,11 +19,11 @@ impl Metric<Vec<f32>> for Vec<f32> {
     }
 }
 
-impl Create for Vec<f32> {
-    fn create() -> Self {
-        Vec::new()
-    }
-}
+// impl Zero for Vec<f32> {
+//     fn zeor() -> Self {
+//         Vec::new()
+//     }
+// }
 
 #[derive(Default)]
 struct Node<V> {
@@ -50,62 +50,74 @@ pub struct HNSW<V> {
     rng: ThreadRng,
     level_mut: f64,
     nodes: Vec<Node<V>>,
-    // current_id: usize,
+    current_id: usize,
 }
 
 impl<V> AnnIndex<V> for HNSW<V>
 where
-    V: Metric<V> + Create,
+    V: Metric<V>,
 {
     //插入
-    fn insert(&mut self, q: V, id: usize) {
-        let cur_level = self.get_random_level();
-        let ep_id = self.enter_point;
-        let current_max_layer = self.get_node(ep_id).level;
-        let new_id = id;
+    fn insert(&mut self, q: V) {
+        let cur_level: usize = self.get_random_level();
+        if self.current_id == 0 {
+            let new_node = Node {
+                level: cur_level,
+                neighbors: vec![Vec::new(); cur_level],
+                p: q,
+            };
+            self.nodes.push(new_node);
+            self.enter_point = self.current_id;
+            self.current_id += 1;
+        } else {
+            let ep_id = self.enter_point;
+            let current_max_layer = self.get_node(ep_id).level;
+            let new_id = self.current_id;
+            self.current_id += 1;
 
-        //起始点
-        let mut ep = Neighbor {
-            id: self.enter_point,
-            d: self.get_node(ep_id).p.borrow().distance(&q),
-        };
-        let mut changed = true;
-        //那么从当前图的从最高层逐层往下寻找直至节点的层数+1停止，寻找到离data_point最近的节点，作为下面一层寻找的起始点
-        for level in (cur_level..current_max_layer).rev() {
-            changed = true;
-            while changed {
-                changed = false;
-                for i in self.get_neighbors_nodes(ep.id, level).unwrap() {
-                    let d = self.get_node(ep_id).p.borrow().distance(&q); //distance(self.get_node(ep_id).p.borrow(), &q);
-                    if d < ep.d {
-                        ep.id = i;
-                        ep.d = d;
-                        changed = true;
+            //起始点
+            let mut ep = Neighbor {
+                id: self.enter_point,
+                d: self.get_node(ep_id).p.borrow().distance(&q),
+            };
+            let mut changed = true;
+            //那么从当前图的从最高层逐层往下寻找直至节点的层数+1停止，寻找到离data_point最近的节点，作为下面一层寻找的起始点
+            for level in (cur_level..current_max_layer).rev() {
+                changed = true;
+                while changed {
+                    changed = false;
+                    for i in self.get_neighbors_nodes(ep.id, level).unwrap() {
+                        let d = self.get_node(ep_id).p.borrow().distance(&q); //distance(self.get_node(ep_id).p.borrow(), &q);
+                        if d < ep.d {
+                            ep.id = i;
+                            ep.d = d;
+                            changed = true;
+                        }
                     }
                 }
             }
+
+            let new_node = Node {
+                level: cur_level,
+                neighbors: vec![Vec::new(); cur_level],
+                p: q,
+            };
+            self.nodes.push(new_node);
+            //从curlevel依次开始往下，每一层寻找离data_point最接近的ef_construction_（构建HNSW是可指定）个节点构成候选集
+            for level in (0..core::cmp::min(cur_level, current_max_layer)).rev() {
+                //在每层选择data_point最接近的ef_construction_（构建HNSW是可指定）个节点构成候选集
+                let candidates = self.search_at_layer(self.get_node(new_id).p.borrow(), ep, level);
+                //连接邻居?
+                self.connect_neighbor(new_id, candidates, level);
+            }
+            self.n_items += 1;
+
+            if cur_level > self.max_layer {
+                self.max_layer = cur_level;
+                self.enter_point = new_id;
+            }
         }
 
-        let new_node = Node {
-            level: cur_level,
-            neighbors: vec![Vec::new(); cur_level],
-            p: q,
-        };
-        self.nodes.push(new_node);
-        //从curlevel依次开始往下，每一层寻找离data_point最接近的ef_construction_（构建HNSW是可指定）个节点构成候选集
-        for level in (0..core::cmp::min(cur_level, current_max_layer)).rev() {
-            //在每层选择data_point最接近的ef_construction_（构建HNSW是可指定）个节点构成候选集
-            let candidates = self.search_at_layer(self.get_node(new_id).p.borrow(), ep, level);
-            //连接邻居?
-            self.connect_neighbor(new_id, candidates, level);
-        }
-
-        self.n_items += 1;
-
-        if cur_level > self.max_layer {
-            self.max_layer = cur_level;
-            self.enter_point = new_id;
-        }
         //  new_id
     }
 
@@ -142,7 +154,7 @@ where
 
 impl<V> HNSW<V>
 where
-    V: Metric<V> + Create,
+    V: Metric<V>,
 {
     pub fn new(M: usize) -> HNSW<V> {
         Self {
@@ -151,14 +163,10 @@ where
             ef_construction: 400,
             rng: rand::thread_rng(),
             level_mut: 1f64 / ((M as f64).ln()),
-            nodes: vec![Node {
-                level: 0,
-                neighbors: Vec::new(),
-                p: V::create(),
-            }],
+            nodes: vec![],
             M: M,
             M0: M * 2,
-            //   current_id: 0,
+            current_id: 0,
             n_items: 1,
         }
     }
@@ -510,10 +518,10 @@ mod tests {
         //     *i = *i + 1;
         // }
         // println!("{:?}", x);
-        let mut i = 1;
+        // let mut i = 1;
         for &feature in &features {
-            hnsw.insert(feature.to_vec(), i);
-            i += 1;
+            hnsw.insert(feature.to_vec());
+            // i += 1;
         }
 
         hnsw.print();
