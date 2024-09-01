@@ -58,13 +58,9 @@ impl BinarySerialize for DocFreq {
         if self.freq() == 1 {
             let doc_code = self.doc_id() << 1 | 1;
             VUInt(doc_code).binary_serialize(writer)?;
-            //let addr = block_pool.write_var_u64(posting.doc_freq_addr, doc_code)?;
-            //posting.doc_freq_addr = addr;
         } else {
             VUInt(self.doc_id() << 1).binary_serialize(writer)?;
-            // let addr = block_pool.write_var_u64(posting.doc_freq_addr, doc_delta << 1)?;
             VUInt(self.freq() as u64).binary_serialize(writer)?;
-            //posting.doc_freq_addr = block_pool.write_vu32(addr, posting.freq)?;
         }
         Ok(())
     }
@@ -221,16 +217,12 @@ pub enum FieldType {
     Bytes,
 }
 
-impl VectorSerialize for Tensor {
+impl BinarySerialize for Tensor {
     fn binary_serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
         todo!()
     }
 
-    fn binary_deserialize<R: Read>(
-        reader: &mut R,
-        n_dims: usize,
-        dims: &[usize],
-    ) -> GyResult<Self> {
+    fn binary_deserialize<R: Read>(reader: &mut R) -> GyResult<Self> {
         todo!()
     }
 }
@@ -249,31 +241,34 @@ impl ValueSized for Tensor {
 
 pub type Vector = VectorBase<Tensor>;
 
-pub struct VectorBase<V: VectorSerialize + ValueSized> {
+pub struct VectorBase<V: BinarySerialize + ValueSized> {
     pub v: V,
     pub payload: Document,
 }
 
-impl<V: VectorSerialize + ValueSized> ValueSized for VectorBase<V> {
+impl<V: BinarySerialize + ValueSized> ValueSized for VectorBase<V> {
     fn size(&self) -> usize {
         self.v.size() + self.payload.size()
     }
 }
 
-impl<V: VectorSerialize + ValueSized> VectorSerialize for VectorBase<V> {
-    fn binary_deserialize<R: Read>(
-        reader: &mut R,
-        n_dims: usize,
-        dims: &[usize],
-    ) -> GyResult<Self> {
-        todo!()
+impl<V: BinarySerialize + ValueSized> BinarySerialize for VectorBase<V> {
+    fn binary_deserialize<R: Read>(reader: &mut R) -> GyResult<Self> {
+        let v = V::binary_deserialize(reader)?;
+        let payload = Document::binary_deserialize(reader)?;
+        Ok(Self {
+            v: v,
+            payload: payload,
+        })
     }
     fn binary_serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
-        todo!()
+        self.v.binary_serialize(writer)?;
+        self.payload.binary_serialize(writer)?;
+        Ok(())
     }
 }
 
-impl<V: VectorSerialize + ValueSized> VectorBase<V> {
+impl<V: BinarySerialize + ValueSized> VectorBase<V> {
     pub fn with(v: V) -> VectorBase<V> {
         Self {
             v: v,

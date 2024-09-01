@@ -14,6 +14,7 @@ use util::error::{GyError, GyResult};
 mod macros;
 use crate::gypaetus::schema::VectorBase;
 pub mod wal;
+use crate::gypaetus::ann::HNSW;
 use crate::gypaetus::schema::VectorSerialize;
 use ann::BoxedAnnIndex;
 use ann::Metric;
@@ -157,11 +158,12 @@ impl Index {
     pub fn close() {}
 }
 
-unsafe impl<V: VectorSerialize + ValueSized + 'static> Send for VectorCollection<V> where
+unsafe impl<V: BinarySerialize + ValueSized + 'static> Send for VectorCollection<V> where
     V: Metric<V>
 {
 }
-unsafe impl<V: VectorSerialize + ValueSized + 'static> Sync for VectorCollection<V> where
+
+unsafe impl<V: BinarySerialize + ValueSized + 'static> Sync for VectorCollection<V> where
     V: Metric<V>
 {
 }
@@ -169,7 +171,7 @@ unsafe impl<V: VectorSerialize + ValueSized + 'static> Sync for VectorCollection
 pub struct Collection(Arc<VectorCollection<Tensor>>);
 
 //向量搜索
-pub struct VectorCollection<V: VectorSerialize + ValueSized + 'static>
+pub struct VectorCollection<V: BinarySerialize + ValueSized + 'static>
 where
     V: Metric<V>,
 {
@@ -178,24 +180,17 @@ where
     rw_lock: Mutex<()>,
 }
 
-impl<V: VectorSerialize + ValueSized + 'static> VectorCollection<V>
+impl<V: BinarySerialize + ValueSized + 'static> VectorCollection<V>
 where
     V: Metric<V>,
 {
-    // fn with_index(index: Index, vec_type: &VectorType) -> VectorCollection<V> {
-    //     VectorCollection {
-    //         vector_field: RwLock::new(Self::get_vector_index(&vec_type).unwrap()),
-    //         index: index,
-    //         rw_lock: Mutex::new(()),
-    //     }
-    // }
-
-    // pub fn get_vector_index(vec_type: &VectorType) -> Option<BoxedAnnIndex<V>> {
-    //     match vec_type {
-    //         VectorType::HNSW => Some(BoxedAnnIndex(Box::new(HNSW::<V>::new(32)))),
-    //         _ => None,
-    //     }
-    // }
+    fn new(schema: Schema, config: IndexConfig) -> GyResult<VectorCollection<V>> {
+        Ok(Self {
+            vector_field: RwLock::new(BoxedAnnIndex(Box::new(HNSW::<V>::new(32)))),
+            index: IndexBase::new(schema, config)?,
+            rw_lock: Mutex::new(()),
+        })
+    }
 
     pub fn add(&mut self, v: VectorBase<V>) -> GyResult<()> {
         unsafe {

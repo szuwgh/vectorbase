@@ -6,6 +6,7 @@ use super::util::fst::{FstBuilder, FstReader, FstReaderIter};
 use super::{IndexReader, Meta, DATA_FILE, META_FILE};
 use crate::gypaetus::schema::VUInt;
 use crate::gypaetus::schema::VarIntSerialize;
+use crate::gypaetus::BoxedAnnIndex;
 use crate::gypaetus::DocFreq;
 use crate::gypaetus::FieldEntry;
 use crate::gypaetus::Term;
@@ -14,6 +15,7 @@ use art_tree::Key;
 use bytes::{Buf, BufMut};
 use bytes::{Bytes, BytesMut};
 use furze::fst::Cow;
+use galois::Tensor;
 use memmap2::Mmap;
 use std::borrow::Borrow;
 use std::collections::HashMap;
@@ -298,6 +300,7 @@ pub fn flush_index(reader: &IndexReader) -> GyResult<()> {
 
 pub struct DiskStoreReader {
     meta: Meta,
+    // vector_field: BoxedAnnIndex<Tensor>,
     fields_meta: Vec<FieldHandle>,
     doc_meta: Vec<usize>,
     doc_end: usize,

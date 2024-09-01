@@ -6,6 +6,8 @@ use std::collections::HashSet;
 use std::fs::File;
 use std::path::Path;
 
+use crate::gypaetus::schema::BinarySerialize;
+
 use super::super::util::error::GyResult;
 use super::{AnnIndex, Metric, Neighbor};
 
@@ -26,13 +28,13 @@ impl Metric<Vec<f32>> for Vec<f32> {
 // }
 
 #[derive(Default)]
-struct Node<V> {
+struct Node<V: BinarySerialize> {
     level: usize,
     neighbors: Vec<Vec<usize>>, //layer --> vec
     p: V,
 }
 
-impl<V> Node<V> {
+impl<V: BinarySerialize> Node<V> {
     fn get_neighbors(&self, level: usize) -> Option<impl Iterator<Item = usize> + '_> {
         let x = self.neighbors.get(level)?;
         Some(x.iter().cloned())
@@ -40,7 +42,7 @@ impl<V> Node<V> {
 }
 
 #[warn(non_snake_case)]
-pub struct HNSW<V> {
+pub struct HNSW<V: BinarySerialize> {
     enter_point: usize,
     max_layer: usize,
     ef_construction: usize,
@@ -53,7 +55,62 @@ pub struct HNSW<V> {
     current_id: usize,
 }
 
-impl<V> AnnIndex<V> for HNSW<V>
+impl<V: BinarySerialize> BinarySerialize for HNSW<V> {
+    fn binary_deserialize<R: std::io::Read>(reader: &mut R) -> GyResult<Self> {
+        let M = usize::binary_deserialize(reader)?;
+        let M0 = usize::binary_deserialize(reader)?;
+        let ef_construction = usize::binary_deserialize(reader)?;
+        let level_mut = f64::binary_deserialize(reader)?;
+        let max_layer = usize::binary_deserialize(reader)?;
+        let enter_point = usize::binary_deserialize(reader)?;
+        let node_len = usize::binary_deserialize(reader)?;
+        let mut nodes: Vec<Node<V>> = Vec::with_capacity(node_len);
+        for _ in 0..node_len {
+            let p = V::binary_deserialize(reader)?;
+            let level = usize::binary_deserialize(reader)?;
+            let neighbors: Vec<Vec<usize>> = Vec::<Vec<usize>>::binary_deserialize(reader)?;
+            // for _ in 0..neighbor_len {
+            //     neighbors.push(r.read_vec_usize()?);
+            // }
+            nodes.push(Node {
+                level: level,
+                neighbors: neighbors,
+                p: p,
+            });
+        }
+        Ok(HNSW {
+            enter_point: enter_point,
+            max_layer: max_layer,
+            ef_construction: ef_construction,
+            M: M,
+            M0: M0,
+            n_items: 0,
+            rng: rand::thread_rng(),
+            level_mut: level_mut,
+            nodes: nodes,
+            current_id: 0,
+        })
+    }
+    fn binary_serialize<W: std::io::Write>(&self, writer: &mut W) -> GyResult<()> {
+        // let mut file = File::create(filename).unwrap();
+        // let mut w = WriteDisk::new(file);
+        self.M.binary_serialize(writer)?;
+        self.M0.binary_serialize(writer)?;
+        self.ef_construction.binary_serialize(writer)?;
+        self.level_mut.binary_serialize(writer)?;
+        self.max_layer.binary_serialize(writer)?;
+        self.enter_point.binary_serialize(writer)?;
+        self.nodes.len().binary_serialize(writer)?;
+        for n in self.nodes.iter() {
+            n.p.binary_serialize(writer)?;
+            n.level.binary_serialize(writer)?;
+            n.neighbors.binary_serialize(writer)?;
+        }
+        Ok(())
+    }
+}
+
+impl<V: BinarySerialize> AnnIndex<V> for HNSW<V>
 where
     V: Metric<V>,
 {
@@ -152,7 +209,7 @@ where
     }
 }
 
-impl<V> HNSW<V>
+impl<V: BinarySerialize> HNSW<V>
 where
     V: Metric<V>,
 {
@@ -210,7 +267,7 @@ where
     //     })
     // }
 
-    // fn save(&self, filename: &Path) -> GyResult<()> {
+    // fn binary_serialize(&self, filename: &Path) -> GyResult<()> {
     //     let mut file = File::create(filename).unwrap();
     //     let mut w = WriteDisk::new(file);
     //     w.write_usize(self.M)?;
@@ -461,7 +518,7 @@ where
 mod tests {
     use super::*;
     use rand::{thread_rng, Rng};
-    use std::collections::HashMap;
+    use std::{collections::HashMap, io::Write};
 
     #[test]
     fn test_rng() {
@@ -524,6 +581,27 @@ mod tests {
             // i += 1;
         }
 
+        // level:3,[[1, 2, 3, 4, 5, 6, 7], [], []]
+        // level:1,[[0, 2, 3, 4, 5, 6, 7]]
+        // level:4,[[1, 0, 3, 4, 5, 6, 7], [3, 4], [], []]
+        // level:2,[[2, 0, 1, 4, 5, 6, 7], [2, 4]]
+        // level:2,[[2, 3, 0, 1, 5, 6, 7], [2, 3]]
+        // level:1,[[0, 3, 4, 2, 1, 6, 7]]
+        // level:1,[[4, 0, 1, 5, 3, 2, 7]]
+        // level:1,[[5, 2, 1, 6, 4, 0, 3]]
+        hnsw.print();
+
+        let neighbors = hnsw.search(&[0.0f32, 0.0, 1.0, 0.0][..].to_vec(), 4);
+        println!("{:?}", neighbors);
+        let mut file = File::create("./data.hnsw").unwrap();
+        hnsw.binary_serialize(&mut file).unwrap();
+        file.flush();
+    }
+
+    #[test]
+    fn test_reader() {
+        let mut file = File::open("./data.hnsw").unwrap();
+        let hnsw = HNSW::<Vec<f32>>::binary_deserialize(&mut file).unwrap();
         hnsw.print();
 
         let neighbors = hnsw.search(&[0.0f32, 0.0, 1.0, 0.0][..].to_vec(), 4);

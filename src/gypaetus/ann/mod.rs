@@ -1,4 +1,3 @@
-pub mod annoy;
 pub mod hnsw;
 pub use self::hnsw::HNSW;
 use super::util::error::GyResult;
