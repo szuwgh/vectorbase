@@ -4,7 +4,7 @@ use super::util::error::GyResult;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use core::cmp::Ordering;
 use std::io::{Read, Write};
-
+use std::sync::Arc;
 type Endian = LittleEndian;
 
 pub trait Metric<P = Self> {
@@ -37,12 +37,24 @@ impl Eq for Neighbor {}
 
 pub struct BoxedAnnIndex<V>(pub Box<dyn AnnIndex<V>>);
 
+impl<V> BoxedAnnIndex<V>
+where
+    V: Metric<V>,
+{
+    pub fn insert(&mut self, q: V) -> GyResult<usize> {
+        self.0.insert(q)
+    }
+    pub fn query(&self, q: &V, k: usize) -> GyResult<Vec<Neighbor>> {
+        self.0.query(q, k)
+    }
+}
+
 pub trait AnnIndex<V>
 where
     V: Metric<V>,
 {
-    fn insert(&mut self, q: V);
-    fn search(&self, q: &V, K: usize) -> Vec<Neighbor>;
+    fn insert(&mut self, q: V) -> GyResult<usize>;
+    fn query(&self, q: &V, k: usize) -> GyResult<Vec<Neighbor>>;
     // fn write_to();
 }
 

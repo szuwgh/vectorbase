@@ -115,7 +115,7 @@ where
     V: Metric<V>,
 {
     //插入
-    fn insert(&mut self, q: V) {
+    fn insert(&mut self, q: V) -> GyResult<usize> {
         let cur_level: usize = self.get_random_level();
         if self.current_id == 0 {
             let new_node = Node {
@@ -126,6 +126,7 @@ where
             self.nodes.push(new_node);
             self.enter_point = self.current_id;
             self.current_id += 1;
+            return Ok(self.enter_point);
         } else {
             let ep_id = self.enter_point;
             let current_max_layer = self.get_node(ep_id).level;
@@ -173,12 +174,13 @@ where
                 self.max_layer = cur_level;
                 self.enter_point = new_id;
             }
+            return Ok(new_id);
         }
 
         //  new_id
     }
 
-    fn search(&self, q: &V, K: usize) -> Vec<Neighbor> {
+    fn query(&self, q: &V, K: usize) -> GyResult<Vec<Neighbor>> {
         let current_max_layer = self.max_layer;
         let mut ep = Neighbor {
             id: self.enter_point,
@@ -205,7 +207,7 @@ where
         while x.len() > K {
             x.pop();
         }
-        x.into_sorted_vec()
+        Ok(x.into_sorted_vec())
     }
 }
 
@@ -591,7 +593,7 @@ mod tests {
         // level:1,[[5, 2, 1, 6, 4, 0, 3]]
         hnsw.print();
 
-        let neighbors = hnsw.search(&[0.0f32, 0.0, 1.0, 0.0][..].to_vec(), 4);
+        let neighbors = hnsw.query(&[0.0f32, 0.0, 1.0, 0.0][..].to_vec(), 4);
         println!("{:?}", neighbors);
         let mut file = File::create("./data.hnsw").unwrap();
         hnsw.binary_serialize(&mut file).unwrap();
@@ -604,7 +606,7 @@ mod tests {
         let hnsw = HNSW::<Vec<f32>>::binary_deserialize(&mut file).unwrap();
         hnsw.print();
 
-        let neighbors = hnsw.search(&[0.0f32, 0.0, 1.0, 0.0][..].to_vec(), 4);
+        let neighbors = hnsw.query(&[0.0f32, 0.0, 1.0, 0.0][..].to_vec(), 4);
         println!("{:?}", neighbors);
     }
 }

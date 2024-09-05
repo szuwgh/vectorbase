@@ -6,6 +6,7 @@ mod schema;
 mod searcher;
 mod tokenize;
 mod util;
+use ann::Neighbor;
 use art_tree::{Art, ByteString};
 use galois::Tensor;
 use query::Term;
@@ -168,15 +169,61 @@ unsafe impl<V: BinarySerialize + ValueSized + 'static> Sync for VectorCollection
 {
 }
 
-pub struct Collection(Arc<VectorCollection<Tensor>>);
+pub struct CollectionReader {
+    vector_field: Arc<VectorIndexBase<Tensor>>,
+    index_reader: IndexReader,
+}
+
+impl CollectionReader {
+    fn query(&self, v: &Tensor, k: usize) -> GyResult<Vec<Neighbor>> {
+        self.vector_field.query(v, k)
+    }
+
+    fn search(&self, term: Term) -> GyResult<PostingReader> {
+        self.index_reader.search(term)
+    }
+
+    pub fn doc(&self, doc_id: DocID) -> GyResult<Document> {
+        self.index_reader.doc(doc_id)
+    }
+}
+
+pub struct Collection(VectorCollection<Tensor>);
+
+impl Collection {
+    fn reader(&self) -> CollectionReader {
+        CollectionReader {
+            vector_field: self.0.vector_field.clone(),
+            index_reader: IndexReader {
+                index_base: self.0.index_base.clone(),
+                wal: self.0.index_base.wal.clone(),
+            },
+        }
+    }
+}
+
+struct VectorIndexBase<V>(RwLock<BoxedAnnIndex<V>>);
+
+impl<V> VectorIndexBase<V>
+where
+    V: Metric<V>,
+{
+    pub fn query(&self, v: &V, k: usize) -> GyResult<Vec<Neighbor>> {
+        self.0.read()?.query(&v, k)
+    }
+
+    pub fn insert(&self, v: V) -> GyResult<usize> {
+        self.0.write()?.insert(v)
+    }
+}
 
 //向量搜索
 pub struct VectorCollection<V: BinarySerialize + ValueSized + 'static>
 where
     V: Metric<V>,
 {
-    vector_field: RwLock<BoxedAnnIndex<V>>,
-    index: IndexBase,
+    vector_field: Arc<VectorIndexBase<V>>,
+    index_base: Arc<IndexBase>,
     rw_lock: Mutex<()>,
 }
 
@@ -186,8 +233,10 @@ where
 {
     fn new(schema: Schema, config: IndexConfig) -> GyResult<VectorCollection<V>> {
         Ok(Self {
-            vector_field: RwLock::new(BoxedAnnIndex(Box::new(HNSW::<V>::new(32)))),
-            index: IndexBase::new(schema, config)?,
+            vector_field: Arc::new(VectorIndexBase(RwLock::new(BoxedAnnIndex(Box::new(
+                HNSW::<V>::new(32),
+            ))))),
+            index_base: Arc::new(IndexBase::new(schema, config)?),
             rw_lock: Mutex::new(()),
         })
     }
@@ -198,11 +247,12 @@ where
         }
         let doc_offset = self.write_vector_to_wal(&v)?;
         {
-            self.index.doc_offset.write()?.push(doc_offset);
+            self.index_base.doc_offset.write()?.push(doc_offset);
         }
-        self.index.inner_add(&v.payload)?;
-        self.index.commit()?;
-        *self.index.doc_id.borrow_mut() += 1;
+        let id = self.vector_field.insert(v.v)? as DocID;
+        self.index_base.inner_add(id, &v.payload)?;
+        self.index_base.commit()?;
+        // *self.index_base.doc_id.borrow_mut() += 1;
         unsafe {
             self.rw_lock.raw().unlock();
         }
@@ -211,10 +261,10 @@ where
 
     fn write_vector_to_wal(&self, v: &VectorBase<V>) -> GyResult<usize> {
         {
-            self.index.wal.read()?.check_rotate(v)?;
+            self.index_base.wal.read()?.check_rotate(v)?;
         }
         let offset = {
-            let mut w = self.index.wal.write()?;
+            let mut w = self.index_base.wal.write()?;
             let offset = w.offset();
             v.binary_serialize(&mut *w)?;
             w.flush()?;
@@ -248,7 +298,7 @@ unsafe impl Sync for IndexBase {}
 pub struct IndexBase {
     meta: Meta,
     fields: Vec<FieldCache>,
-    doc_id: RefCell<DocID>,
+    //doc_id: RefCell<DocID>,
     buffer: Arc<RingBuffer>,
     wal: Arc<RwLock<Wal>>,
     doc_offset: RwLock<Vec<usize>>,
@@ -289,7 +339,7 @@ impl IndexBase {
         Ok(Self {
             meta: Meta::new(schema),
             fields: field_cache,
-            doc_id: RefCell::new(0),
+            // doc_id: RefCell::new(0),
             buffer: buffer_pool,
             rw_lock: Mutex::new(()),
             wal: Arc::new(RwLock::new(Wal::new(
@@ -314,11 +364,11 @@ impl IndexBase {
         &self.config
     }
 
-    fn inner_add(&self, doc: &Document) -> GyResult<()> {
+    fn inner_add(&self, doc_id: DocID, doc: &Document) -> GyResult<()> {
         for field in doc.field_values.iter() {
             println!("field.field_id().0:{}", field.field_id().0);
             let fw = self.fields.get(field.field_id().0 as usize).unwrap();
-            fw.add(*self.doc_id.borrow(), field.value())?;
+            fw.add(doc_id, field.value())?;
         }
         Ok(())
     }
@@ -368,7 +418,7 @@ impl IndexBase {
     // }
 
     //add vector
-    pub fn add(&self, doc: &Document) -> GyResult<()> {
+    pub fn add(&self, docId: DocID, doc: &Document) -> GyResult<()> {
         unsafe {
             self.rw_lock.raw().lock();
         }
@@ -376,9 +426,9 @@ impl IndexBase {
         {
             self.doc_offset.write()?.push(doc_offset);
         }
-        self.inner_add(doc)?;
+        self.inner_add(docId, doc)?;
         self.commit()?;
-        *self.doc_id.borrow_mut() += 1;
+        // *self.doc_id.borrow_mut() += 1;
         unsafe {
             self.rw_lock.raw().unlock();
         }
@@ -726,7 +776,7 @@ impl IndexReader {
         field_reader.get(term.bytes_value())
     }
 
-    pub(crate) fn doc(&self, doc_id: DocID) -> GyResult<Document> {
+    pub fn doc(&self, doc_id: DocID) -> GyResult<Document> {
         let doc_offset = self.index_base.doc_offset(doc_id)?;
         let doc: Document = {
             let mut wal = self.wal.read()?;
@@ -755,8 +805,8 @@ impl IndexWriter {
         IndexWriter { writer: writer }
     }
 
-    pub fn add(&mut self, doc: &Document) -> GyResult<()> {
-        self.writer.add(doc)
+    pub fn add(&mut self, doc_id: DocID, doc: &Document) -> GyResult<()> {
+        self.writer.add(doc_id, doc)
     }
 
     pub fn commit(&mut self) -> GyResult<()> {
@@ -786,31 +836,31 @@ mod tests {
         {
             let mut d = Document::new();
             d.add_text(field_id_title.clone(), "bb");
-            writer1.add(&d).unwrap();
+            writer1.add(1, &d).unwrap();
 
             let mut d1 = Document::new();
             d1.add_text(field_id_title.clone(), "aa");
-            writer1.add(&d1).unwrap();
+            writer1.add(2, &d1).unwrap();
 
             let mut d2 = Document::new();
             d2.add_text(field_id_title.clone(), "cc");
-            writer1.add(&d2).unwrap();
+            writer1.add(3, &d2).unwrap();
 
             let mut d3 = Document::new();
             d3.add_text(field_id_title.clone(), "aa");
-            writer1.add(&d3).unwrap();
+            writer1.add(4, &d3).unwrap();
 
             let mut d1 = Document::new();
             d1.add_text(field_id_title.clone(), "aa");
-            writer1.add(&d1).unwrap();
+            writer1.add(5, &d1).unwrap();
 
             let mut d2 = Document::new();
             d2.add_text(field_id_title.clone(), "cc");
-            writer1.add(&d2).unwrap();
+            writer1.add(6, &d2).unwrap();
 
             let mut d3 = Document::new();
             d3.add_text(field_id_title.clone(), "aa");
-            writer1.add(&d3).unwrap();
+            writer1.add(7, &d3).unwrap();
 
             writer1.commit().unwrap();
         }
@@ -825,7 +875,7 @@ mod tests {
             println!("docid:{},doc{:?}", doc_freq.doc_id(), doc);
         }
         println!("doc vec:{:?}", reader.get_doc_offset().read().unwrap());
-        disk::flush_index(&reader).unwrap();
+        //  disk::flush_index(&reader).unwrap();
     }
 
     #[test]
@@ -842,31 +892,31 @@ mod tests {
         {
             let mut d = Document::new();
             d.add_text(field_id_title.clone(), "bb");
-            writer1.add(&d).unwrap();
+            writer1.add(1, &d).unwrap();
 
             let mut d1 = Document::new();
             d1.add_text(field_id_title.clone(), "aa");
-            writer1.add(&d1).unwrap();
+            writer1.add(2, &d1).unwrap();
 
             let mut d2 = Document::new();
             d2.add_text(field_id_title.clone(), "cc");
-            writer1.add(&d2).unwrap();
+            writer1.add(3, &d2).unwrap();
 
             let mut d3 = Document::new();
             d3.add_text(field_id_title.clone(), "aa");
-            writer1.add(&d3).unwrap();
+            writer1.add(4, &d3).unwrap();
 
             let mut d1 = Document::new();
             d1.add_text(field_id_title.clone(), "aa");
-            writer1.add(&d1).unwrap();
+            writer1.add(5, &d1).unwrap();
 
             let mut d2 = Document::new();
             d2.add_text(field_id_title.clone(), "cc");
-            writer1.add(&d2).unwrap();
+            writer1.add(6, &d2).unwrap();
 
             let mut d3 = Document::new();
             d3.add_text(field_id_title.clone(), "aa");
-            writer1.add(&d3).unwrap();
+            writer1.add(7, &d3).unwrap();
 
             writer1.commit().unwrap();
         }
@@ -974,11 +1024,11 @@ mod tests {
 
         let mut d = Document::new();
         d.add_text(field_id_title.clone(), "bb");
-        writer1.add(&d).unwrap();
+        writer1.add(1, &d).unwrap();
 
         let mut d1 = Document::new();
         d1.add_text(field_id_title.clone(), "aa");
-        writer1.add(&d1).unwrap();
+        writer1.add(2, &d1).unwrap();
 
         let reader = index.reader().unwrap();
         let p = reader
@@ -1004,14 +1054,14 @@ mod tests {
         let t1 = thread::spawn(move || loop {
             let mut d = Document::new();
             d.add_i32(field_id_title.clone(), 2);
-            writer1.add(&d).unwrap();
+            writer1.add(1, &d).unwrap();
             break;
         });
         let mut writer2 = index.writer().unwrap();
         let t2 = thread::spawn(move || loop {
             let mut d = Document::new();
             d.add_i32(field_id_title.clone(), 2);
-            writer2.add(&d).unwrap();
+            writer2.add(2, &d).unwrap();
             break;
         });
 
