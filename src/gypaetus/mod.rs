@@ -16,6 +16,7 @@ mod macros;
 use crate::gypaetus::schema::VectorBase;
 pub mod wal;
 use crate::gypaetus::ann::HNSW;
+use crate::gypaetus::schema::VectorOps;
 use crate::gypaetus::schema::VectorSerialize;
 use ann::BoxedAnnIndex;
 use ann::Metric;
@@ -29,6 +30,7 @@ use serde::{Deserialize, Serialize};
 use self::schema::DocFreq;
 use self::util::fs;
 use crate::gypaetus::schema::FieldEntry;
+use crate::gypaetus::schema::Vector;
 use crate::gypaetus::util::time::Time;
 use crate::gypaetus::wal::WalReader;
 use lock_api::RawMutex;
@@ -159,12 +161,12 @@ impl Index {
     pub fn close() {}
 }
 
-unsafe impl<V: BinarySerialize + ValueSized + 'static> Send for VectorCollection<V> where
+unsafe impl<V: BinarySerialize + ValueSized + VectorOps + 'static> Send for VectorCollection<V> where
     V: Metric<V>
 {
 }
 
-unsafe impl<V: BinarySerialize + ValueSized + 'static> Sync for VectorCollection<V> where
+unsafe impl<V: BinarySerialize + ValueSized + VectorOps + 'static> Sync for VectorCollection<V> where
     V: Metric<V>
 {
 }
@@ -183,12 +185,23 @@ impl CollectionReader {
         self.index_reader.search(term)
     }
 
-    pub fn doc(&self, doc_id: DocID) -> GyResult<Document> {
-        self.index_reader.doc(doc_id)
+    pub fn vector(&self, doc_id: DocID) -> GyResult<Vector> {
+        let doc_offset = self.index_reader.index_base.doc_offset(doc_id)?;
+        let v: Vector = {
+            let mut wal = self.index_reader.wal.read()?;
+            let mut wal_read = WalReader::from(&mut wal, doc_offset);
+            Vector::binary_deserialize(&mut wal_read)?
+        };
+        Ok(v)
+    }
+
+    pub fn index_reader(&self) -> &IndexReader {
+        &self.index_reader
     }
 }
 
-pub struct Collection(VectorCollection<Tensor>);
+#[derive(Clone)]
+pub struct Collection(Arc<VectorCollection<Tensor>>);
 
 impl Collection {
     fn reader(&self) -> CollectionReader {
@@ -200,11 +213,19 @@ impl Collection {
             },
         }
     }
+
+    fn new(schema: Schema, config: IndexConfig) -> GyResult<Collection> {
+        Ok(Collection(Arc::new(VectorCollection::new(schema, config)?)))
+    }
+
+    fn add(&self, v: Vector) -> GyResult<()> {
+        self.0.add(v)
+    }
 }
 
-struct VectorIndexBase<V>(RwLock<BoxedAnnIndex<V>>);
+struct VectorIndexBase<V: BinarySerialize>(RwLock<BoxedAnnIndex<V>>);
 
-impl<V> VectorIndexBase<V>
+impl<V: BinarySerialize> VectorIndexBase<V>
 where
     V: Metric<V>,
 {
@@ -217,8 +238,17 @@ where
     }
 }
 
+impl<V: BinarySerialize> BinarySerialize for VectorIndexBase<V> {
+    fn binary_deserialize<R: std::io::Read>(reader: &mut R) -> GyResult<Self> {
+        todo!()
+    }
+    fn binary_serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
+        todo!()
+    }
+}
+
 //向量搜索
-pub struct VectorCollection<V: BinarySerialize + ValueSized + 'static>
+pub struct VectorCollection<V: BinarySerialize + ValueSized + VectorOps + 'static>
 where
     V: Metric<V>,
 {
@@ -227,7 +257,7 @@ where
     rw_lock: Mutex<()>,
 }
 
-impl<V: BinarySerialize + ValueSized + 'static> VectorCollection<V>
+impl<V: BinarySerialize + ValueSized + VectorOps + 'static> VectorCollection<V>
 where
     V: Metric<V>,
 {
@@ -241,7 +271,7 @@ where
         })
     }
 
-    pub fn add(&mut self, v: VectorBase<V>) -> GyResult<()> {
+    pub fn add(&self, v: VectorBase<V>) -> GyResult<()> {
         unsafe {
             self.rw_lock.raw().lock();
         }
@@ -274,22 +304,22 @@ where
         Ok(offset)
     }
 
-    pub fn add_with_raw(&mut self, content: &[u8]) -> GyResult<()> {
-        todo!()
-        // unsafe {
-        //     self.rw_lock.raw().lock();
-        // }
-        // self.index.0.write_wal(content)?;
-        // self.index.0.inner_add(&vec.d)?;
-        // self.vector_field
-        //     .write()?
-        //     .0
-        //     .insert(vec.into(), *self.index.0.doc_id.read().unwrap() as usize);
-        // *self.index.0.doc_id.write()? += 1;
-        // Ok(())
-    }
+    // pub fn add_with_raw(&mut self, content: &[u8]) -> GyResult<()> {
+    //     todo!()
+    // unsafe {
+    //     self.rw_lock.raw().lock();
+    // }
+    // self.index.0.write_wal(content)?;
+    // self.index.0.inner_add(&vec.d)?;
+    // self.vector_field
+    //     .write()?
+    //     .0
+    //     .insert(vec.into(), *self.index.0.doc_id.read().unwrap() as usize);
+    // *self.index.0.doc_id.write()? += 1;
+    // Ok(())
+    //  }
 
-    pub fn flush() {}
+    //pub fn commit(&self) -> GyResult<()> {}
 }
 
 unsafe impl Send for IndexBase {}
@@ -373,14 +403,6 @@ impl IndexBase {
         Ok(())
     }
 
-    // pub fn write_wal(&self, content: &[u8]) -> GyResult<usize> {
-    //     self.wal.read()?.check_rotate(content.len())?;
-    //     let mut w = self.wal.write()?;
-    //     w.write_bytes(content)?;
-    //     w.flush()?;
-    //     Ok(w.offset())
-    // }
-
     pub fn write_doc_to_wal(&self, doc: &Document) -> GyResult<usize> {
         {
             self.wal.read()?.check_rotate(doc)?;
@@ -396,29 +418,8 @@ impl IndexBase {
         Ok(offset)
     }
 
-    // pub fn add_with_raw(&mut self, content: &[u8]) -> GyResult<()> {
-    //     unsafe {
-    //         self.rw_lock.raw().lock();
-    //     }
-    //     let doc_offset = self.write_wal(content)?;
-    //     {
-    //         self.doc_offset.write()?.push(doc_offset);
-    //     }
-    //     let mut cursor = Cursor::new(content);
-    //     let doc = Document::binary_deserialize(&mut cursor)?;
-    //     self.inner_add(&doc)?;
-    //     //添加向量
-    //     *self.doc_id.borrow_mut() += 1;
-    //     self.commit()?;
-
-    //     unsafe {
-    //         self.rw_lock.raw().unlock();
-    //     }
-    //     Ok(())
-    // }
-
     //add vector
-    pub fn add(&self, docId: DocID, doc: &Document) -> GyResult<()> {
+    pub fn add(&self, doc_id: DocID, doc: &Document) -> GyResult<()> {
         unsafe {
             self.rw_lock.raw().lock();
         }
@@ -426,7 +427,7 @@ impl IndexBase {
         {
             self.doc_offset.write()?.push(doc_offset);
         }
-        self.inner_add(docId, doc)?;
+        self.inner_add(doc_id, doc)?;
         self.commit()?;
         // *self.doc_id.borrow_mut() += 1;
         unsafe {
@@ -878,6 +879,87 @@ mod tests {
         //  disk::flush_index(&reader).unwrap();
     }
 
+    // &[0.0, 0.0, 0.0, 1.0],
+    // &[0.0, 0.0, 1.0, 0.0],
+    // &[0.0, 1.0, 0.0, 0.0],
+    // &[1.0, 0.0, 0.0, 0.0],
+    // &[0.0, 0.0, 1.0, 1.0],
+    // &[0.0, 1.0, 1.0, 0.0],
+    // &[1.0, 1.0, 0.0, 0.0],
+    // &[1.0, 0.0, 0.0, 1.0],
+
+    #[test]
+    fn test_add_vector() {
+        let mut schema = Schema::new();
+        schema.add_field(FieldEntry::str("body"));
+        schema.add_field(FieldEntry::i32("title"));
+        let field_id_title = schema.get_field("title").unwrap();
+        let config = IndexConfigBuilder::default()
+            .data_path(PathBuf::from("E:\\rustproject\\chappie\\searchlite\\data"))
+            .build();
+        let mut collect = Collection::new(schema, config).unwrap();
+        //let mut writer1 = index.writer().unwrap();
+        {
+            //writer1.add(1, &d).unwrap();
+
+            let mut d1 = Document::new();
+            d1.add_text(field_id_title.clone(), "aa");
+
+            let v1 = Vector::from_array([0.0, 0.0, 0.0, 1.0], d1);
+
+            collect.add(v1).unwrap();
+
+            let mut d2 = Document::new();
+            d2.add_text(field_id_title.clone(), "cc");
+            let v2 = Vector::from_array([0.0, 0.0, 1.0, 0.0], d2);
+
+            collect.add(v2).unwrap();
+
+            let mut d3 = Document::new();
+            d3.add_text(field_id_title.clone(), "aa");
+
+            let v3 = Vector::from_array([0.0, 1.0, 0.0, 0.0], d3);
+
+            collect.add(v3).unwrap();
+
+            let mut d4 = Document::new();
+            d4.add_text(field_id_title.clone(), "aa");
+            let v4 = Vector::from_array([1.0, 0.0, 0.0, 0.0], d4);
+            collect.add(v4).unwrap();
+
+            let mut d5 = Document::new();
+            d5.add_text(field_id_title.clone(), "cc");
+            let v5 = Vector::from_array([0.0, 0.0, 1.0, 1.0], d5);
+            collect.add(v5).unwrap();
+
+            let mut d6 = Document::new();
+            d6.add_text(field_id_title.clone(), "aa");
+            let v6 = Vector::from_array([0.0, 1.0, 1.0, 0.0], d6);
+            collect.add(v6).unwrap();
+
+            let mut d7 = Document::new();
+            d7.add_text(field_id_title.clone(), "ff");
+            let v7 = Vector::from_array([1.0, 0.0, 0.0, 1.0], d7);
+            collect.add(v7).unwrap();
+
+            //  collect.commit().unwrap();
+        }
+
+        let reader = collect.reader();
+        let p = reader
+            .search(Term::from_field_text(field_id_title, "aa"))
+            .unwrap();
+
+        for doc_freq in p.iter() {
+            let doc = reader.vector(doc_freq.doc_id()).unwrap();
+            println!("docid:{},doc{:?}", doc_freq.doc_id(), unsafe {
+                doc.v.as_slice::<f32>()
+            });
+        }
+        //  println!("doc vec:{:?}", reader.get_doc_offset().read().unwrap());
+        //  disk::flush_index(&reader).unwrap();
+    }
+
     #[test]
     fn test_add_doc2() {
         let mut schema = Schema::new();
@@ -918,7 +1000,7 @@ mod tests {
             d3.add_text(field_id_title.clone(), "aa");
             writer1.add(7, &d3).unwrap();
 
-            writer1.commit().unwrap();
+            // writer1.commit().unwrap();
         }
 
         let reader = index.reader().unwrap();
@@ -931,7 +1013,7 @@ mod tests {
             println!("docid:{},doc{:?}", doc_freq.doc_id(), doc);
         }
         println!("doc vec:{:?}", reader.get_doc_offset().read().unwrap());
-        disk::flush_index(&reader).unwrap();
+        disk::persist_index(&reader).unwrap();
     }
 
     #[test]

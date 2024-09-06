@@ -1,11 +1,17 @@
+pub mod annoy;
 pub mod hnsw;
 pub use self::hnsw::HNSW;
+use super::schema::BinarySerialize;
 use super::util::error::GyResult;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use core::cmp::Ordering;
 use std::io::{Read, Write};
 use std::sync::Arc;
 type Endian = LittleEndian;
+
+pub enum AnnType {
+    HNSW,
+}
 
 pub trait Metric<P = Self> {
     fn distance(&self, b: &P) -> f32;
@@ -35,9 +41,9 @@ impl PartialOrd for Neighbor {
 
 impl Eq for Neighbor {}
 
-pub struct BoxedAnnIndex<V>(pub Box<dyn AnnIndex<V>>);
+pub struct BoxedAnnIndex<V: BinarySerialize>(pub Box<dyn AnnIndex<V>>);
 
-impl<V> BoxedAnnIndex<V>
+impl<V: BinarySerialize> BoxedAnnIndex<V>
 where
     V: Metric<V>,
 {
@@ -49,13 +55,13 @@ where
     }
 }
 
-pub trait AnnIndex<V>
+pub trait AnnIndex<V: BinarySerialize>
 where
     V: Metric<V>,
 {
+    const AnnType: t;
     fn insert(&mut self, q: V) -> GyResult<usize>;
     fn query(&self, q: &V, k: usize) -> GyResult<Vec<Neighbor>>;
-    // fn write_to();
 }
 
 // struct ReadDisk<R: Read> {

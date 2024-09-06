@@ -3,7 +3,7 @@ use super::schema::{DocID, Document};
 use super::util::error::{GyError, GyResult};
 use super::util::fs::{self, from_json_file};
 use super::util::fst::{FstBuilder, FstReader, FstReaderIter};
-use super::{IndexReader, Meta, DATA_FILE, META_FILE};
+use super::{CollectionReader, IndexReader, Meta, DATA_FILE, META_FILE};
 use crate::gypaetus::schema::VUInt;
 use crate::gypaetus::schema::VarIntSerialize;
 use crate::gypaetus::BoxedAnnIndex;
@@ -21,28 +21,19 @@ use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufWriter, Read};
+#[cfg(target_os = "unix")]
 use std::os::unix::fs::{FileExt, MetadataExt};
+#[cfg(target_os = "windows")]
+use std::os::windows::fs::{FileExt, MetadataExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::{
     fs::OpenOptions,
     io::{Seek, SeekFrom, Write},
 };
-const KB: usize = 1 << 10;
-const MB: usize = KB * KB;
-const DEFAULT_BLOCK_SIZE: usize = 4 * KB + KB;
-const FOOTER_LEN: u64 = 48;
 
-const MAGIC: &'static [u8] = b"\xD4\x56\x3F\x35\xE0\xEF\x09\x7A";
-
-//压缩类型
-enum CompressionType {
-    No,
-    LZ4,
-    LowercaseAscii,
-    Zstandard,
-    Snappy,
-}
+use std::cmp::Ordering;
+use std::iter::Peekable;
 
 //  +---------------------+
 //  |                     |
@@ -82,12 +73,21 @@ enum CompressionType {
 //  |                     |
 //  +---------------------+
 
-mod Writer {}
+const KB: usize = 1 << 10;
+const MB: usize = KB * KB;
+const DEFAULT_BLOCK_SIZE: usize = 4 * KB + KB;
+const FOOTER_LEN: u64 = 48;
 
-mod Reader {}
+const MAGIC: &'static [u8] = b"\xD4\x56\x3F\x35\xE0\xEF\x09\x7A";
 
-use std::cmp::Ordering;
-use std::iter::Peekable;
+//压缩类型
+enum CompressionType {
+    No,
+    LZ4,
+    LowercaseAscii,
+    Zstandard,
+    Snappy,
+}
 
 struct CompactionMerger<T: Iterator> {
     a: Peekable<T>,
@@ -241,19 +241,19 @@ pub fn merge(a: &DiskStoreReader, b: &DiskStoreReader, new_fname: &Path) -> GyRe
     Ok(())
 }
 
-//合并索引
-pub fn flush_index(reader: &IndexReader) -> GyResult<()> {
-    let fname = &reader.get_index_config().get_wal_path();
-    let doc_end = reader.offset()?;
+//持久化索引
+pub fn persist_index(index_reader: &IndexReader) -> GyResult<()> {
+    let fname = index_reader.get_index_config().get_wal_path();
+    let doc_end = index_reader.offset()?;
     let mut writer = DiskStoreWriter::with_offset(
-        fname,
+        &fname,
         doc_end,
-        reader.get_index_base().doc_offset.read()?.len(),
+        index_reader.get_index_base().doc_offset.read()?.len(),
     )?;
 
     let mut buf = Vec::with_capacity(4 * KB);
     // write field
-    for field in reader.iter() {
+    for field in index_reader.iter() {
         let mut term_offset_cache: HashMap<Vec<u8>, usize> = HashMap::new();
         for (b, p) in field.indexs.read()?.iter() {
             let (doc_count, start_addr, end_addr) = {
@@ -273,7 +273,8 @@ pub fn flush_index(reader: &IndexReader) -> GyResult<()> {
             term_offset_cache.insert(b.to_bytes(), offset);
             buf.clear();
         }
-        // write bloom
+        // write bloom todo
+
         // write fst
         for (b, _) in field.indexs.read()?.iter() {
             let v: &[u8] = b.borrow();
@@ -283,15 +284,77 @@ pub fn flush_index(reader: &IndexReader) -> GyResult<()> {
         writer.finish_field()?;
     }
     // 写入文档和偏移量关系 meta
-    writer.write_doc_meta(&reader.get_doc_offset().read()?)?;
+    writer.write_doc_meta(&index_reader.get_doc_offset().read()?)?;
     // 写入每个域的 meta
     writer.write_field_meta()?;
     writer.close()?;
     drop(writer);
     if let Some(dir_path) = fname.parent() {
-        std::fs::rename(fname, dir_path.join(DATA_FILE))?;
+        std::fs::rename(&fname, dir_path.join(DATA_FILE))?;
         crate::gypaetus::fs::to_json_file(
-            reader.get_index_base().get_meta(),
+            index_reader.get_index_base().get_meta(),
+            dir_path.join(META_FILE),
+        )?;
+    }
+    Ok(())
+}
+
+//合并索引
+pub fn persist_collection(reader: &CollectionReader) -> GyResult<()> {
+    let index_reader = reader.index_reader();
+    let fname = index_reader.get_index_config().get_wal_path();
+    let doc_end = index_reader.offset()?;
+    let mut writer = DiskStoreWriter::with_offset(
+        &fname,
+        doc_end,
+        index_reader.get_index_base().doc_offset.read()?.len(),
+    )?;
+    //write vector index
+
+    // reader.vector(doc_id)
+
+    let mut buf = Vec::with_capacity(4 * KB);
+    // write field
+    for field in index_reader.iter() {
+        let mut term_offset_cache: HashMap<Vec<u8>, usize> = HashMap::new();
+        for (b, p) in field.indexs.read()?.iter() {
+            let (doc_count, start_addr, end_addr) = {
+                let posting = (*p).read()?;
+                (
+                    posting.doc_count,
+                    posting.byte_addr.clone(),
+                    posting.doc_freq_addr.clone(),
+                )
+            };
+            // write posting
+            let posting_buffer = field.posting_buffer(start_addr, end_addr)?;
+            for rb in posting_buffer.iter() {
+                buf.write(rb)?;
+            }
+            let offset = writer.write_posting(doc_count, buf.as_slice())?;
+            term_offset_cache.insert(b.to_bytes(), offset);
+            buf.clear();
+        }
+        // write bloom todo
+
+        // write fst
+        for (b, _) in field.indexs.read()?.iter() {
+            let v: &[u8] = b.borrow();
+            let offset = term_offset_cache.get(v).unwrap();
+            writer.add_term(v, *offset)?;
+        }
+        writer.finish_field()?;
+    }
+    // 写入文档和偏移量关系 meta
+    writer.write_doc_meta(&index_reader.get_doc_offset().read()?)?;
+    // 写入每个域的 meta
+    writer.write_field_meta()?;
+    writer.close()?;
+    drop(writer);
+    if let Some(dir_path) = fname.parent() {
+        std::fs::rename(&fname, dir_path.join(DATA_FILE))?;
+        crate::gypaetus::fs::to_json_file(
+            index_reader.get_index_base().get_meta(),
             dir_path.join(META_FILE),
         )?;
     }
@@ -313,11 +376,11 @@ impl DiskStoreReader {
         let data_path = index_path.join(DATA_FILE);
         let meta_path = index_path.join(META_FILE);
         let file = OpenOptions::new().read(true).open(data_path)?;
-        let file_size = file.metadata()?.size();
+        let file_size = file.metadata()?.file_size();
         if file_size < FOOTER_LEN {}
         let footer_pos = file_size - FOOTER_LEN;
         let mut footer = [0u8; FOOTER_LEN as usize];
-        file.read_at(&mut footer, footer_pos)?;
+        file.seek_read(&mut footer, footer_pos)?;
         //判断魔数是否正确
         if &footer[FOOTER_LEN as usize - MAGIC.len()..FOOTER_LEN as usize] != MAGIC {
             return Err(GyError::ErrBadMagicNumber);
@@ -332,6 +395,7 @@ impl DiskStoreReader {
                 .map(&file)
                 .map_err(|e| format!("mmap failed: {}", e))?
         };
+
         let fields_meta = Self::read_at_bh::<Vec<FieldHandle>>(&mmap, field_meta_bh)?;
         let doc_meta = Self::read_at_bh::<Vec<usize>>(&mmap, doc_meta_bh)?;
         let meta: Meta = from_json_file(&meta_path)?;

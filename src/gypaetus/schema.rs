@@ -1,10 +1,11 @@
 // 每一行数据
-
 use super::ann::Metric;
 use super::util::error::{GyError, GyResult};
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use chrono::{TimeZone, Utc};
-use galois::Tensor;
+use galois::similarity::Similarity;
+use galois::{GGmlType, TensorType};
+use galois::{Shape, Tensor};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Read;
@@ -22,6 +23,11 @@ pub trait VectorSerialize: Sized {
 
 pub trait ValueSized {
     fn size(&self) -> usize;
+}
+
+pub trait VectorOps {
+    fn from_vec<T: TensorType>(v: Vec<T>) -> Self;
+    fn from_arr<T: TensorType, const N: usize>(v: [T; N]) -> Self;
 }
 
 pub trait BinarySerialize: Sized {
@@ -219,40 +225,70 @@ pub enum FieldType {
 
 impl BinarySerialize for Tensor {
     fn binary_serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
-        todo!()
+        (self.dtype() as usize).binary_serialize(writer)?;
+        self.n_dims().binary_serialize(writer)?;
+        for v in self.shape() {
+            v.binary_serialize(writer)?;
+        }
+        self.as_bytes().binary_serialize(writer)?;
+        Ok(())
     }
 
     fn binary_deserialize<R: Read>(reader: &mut R) -> GyResult<Self> {
-        todo!()
+        let dtype = usize::binary_deserialize(reader)?;
+        let n_dims = usize::binary_deserialize(reader)?;
+        let mut dimensions = [1usize; 4];
+        assert!(n_dims <= 4);
+        for j in 0..n_dims {
+            dimensions[j] = usize::binary_deserialize(reader)?;
+        }
+        let v = Vec::<u8>::binary_deserialize(reader)?;
+        Ok(Tensor::from_raw(
+            v,
+            n_dims,
+            Shape::from_array(dimensions),
+            GGmlType::from_usize(dtype),
+        ))
     }
 }
 
 impl Metric for Tensor {
     fn distance(&self, b: &Self) -> f32 {
-        todo!()
+        self.euclidean(b)
     }
 }
 
 impl ValueSized for Tensor {
     fn size(&self) -> usize {
-        self.nbytes()
+        let n = std::mem::size_of::<usize>();
+        n + n + n * self.n_dims() + self.nbytes()
+    }
+}
+
+impl VectorOps for Tensor {
+    fn from_arr<T: TensorType, const N: usize>(v: [T; N]) -> Self {
+        Tensor::arr_array(v)
+    }
+
+    fn from_vec<T: TensorType>(v: Vec<T>) -> Self {
+        Tensor::arr(v)
     }
 }
 
 pub type Vector = VectorBase<Tensor>;
 
-pub struct VectorBase<V: BinarySerialize + ValueSized> {
+pub struct VectorBase<V: BinarySerialize + ValueSized + VectorOps> {
     pub v: V,
     pub payload: Document,
 }
 
-impl<V: BinarySerialize + ValueSized> ValueSized for VectorBase<V> {
+impl<V: BinarySerialize + ValueSized + VectorOps> ValueSized for VectorBase<V> {
     fn size(&self) -> usize {
         self.v.size() + self.payload.size()
     }
 }
 
-impl<V: BinarySerialize + ValueSized> BinarySerialize for VectorBase<V> {
+impl<V: BinarySerialize + ValueSized + VectorOps> BinarySerialize for VectorBase<V> {
     fn binary_deserialize<R: Read>(reader: &mut R) -> GyResult<Self> {
         let v = V::binary_deserialize(reader)?;
         let payload = Document::binary_deserialize(reader)?;
@@ -268,7 +304,21 @@ impl<V: BinarySerialize + ValueSized> BinarySerialize for VectorBase<V> {
     }
 }
 
-impl<V: BinarySerialize + ValueSized> VectorBase<V> {
+impl<V: BinarySerialize + ValueSized + VectorOps> VectorBase<V> {
+    pub fn new(v: V, payload: Document) -> VectorBase<V> {
+        VectorBase {
+            v: v,
+            payload: payload,
+        }
+    }
+
+    pub fn from_array<T: TensorType, const N: usize>(xs: [T; N], payload: Document) -> Self {
+        VectorBase {
+            v: V::from_arr(xs),
+            payload: payload,
+        }
+    }
+
     pub fn with(v: V) -> VectorBase<V> {
         Self {
             v: v,
@@ -781,7 +831,7 @@ impl VInt {
 }
 
 mod tests {
-    use std::io::Cursor;
+    use std::{io::Cursor, vec};
 
     use crate::gypaetus::{util::fs::to_json_file, Meta};
 
@@ -792,6 +842,34 @@ mod tests {
         let u = Utc::now();
         let t = u.timestamp();
         println!("t:{}", t);
+    }
+
+    #[test]
+    fn test_vector() {
+        let mut bytes: Vec<u8> = Vec::with_capacity(1024);
+        let mut cursor = Cursor::new(&mut bytes);
+        let v1 = Tensor::from_vec(vec![0.0f32, 0.0, 0.0, 1.0], 1, Shape::from_array([4]));
+        let v2 = Tensor::from_vec(vec![1.0f32, 0.0, 0.0, 1.0], 1, Shape::from_array([4]));
+        v1.binary_serialize(&mut cursor).unwrap();
+        v2.binary_serialize(&mut cursor).unwrap();
+
+        let mut cursor = Cursor::new(&bytes);
+        let d_value_1 = Tensor::binary_deserialize(&mut cursor).unwrap();
+        let d_value_2 = Tensor::binary_deserialize(&mut cursor).unwrap();
+        println!(
+            "{:?},{},{:?},{:?}",
+            d_value_1.dtype(),
+            d_value_1.n_dims(),
+            d_value_1.shape(),
+            unsafe { d_value_1.as_slice::<f32>() }
+        );
+        println!(
+            "{:?},{},{:?},{:?}",
+            d_value_2.dtype(),
+            d_value_2.n_dims(),
+            d_value_2.shape(),
+            unsafe { d_value_2.as_slice::<f32>() }
+        );
     }
 
     #[test]
