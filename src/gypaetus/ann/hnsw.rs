@@ -1,16 +1,16 @@
+use super::super::util::error::GyResult;
+use super::{AnnIndex, Metric, Neighbor};
+use crate::gypaetus::schema::BinarySerialize;
+use crate::gypaetus::TensorEntry;
+use crate::gypaetus::VectorSerialize;
+use galois::Tensor;
 use rand::prelude::ThreadRng;
 use rand::Rng;
+use serde_json::map::Iter;
 use std::borrow::Borrow;
 use std::collections::BinaryHeap;
 use std::collections::HashSet;
-use std::fs::File;
 use std::path::Path;
-
-use crate::gypaetus::schema::BinarySerialize;
-
-use super::super::util::error::GyResult;
-use super::{AnnIndex, Metric, Neighbor};
-
 impl Metric<Vec<f32>> for Vec<f32> {
     fn distance(&self, b: &Vec<f32>) -> f32 {
         self.iter()
@@ -28,13 +28,13 @@ impl Metric<Vec<f32>> for Vec<f32> {
 // }
 
 #[derive(Default)]
-struct Node<V: BinarySerialize> {
+struct Node<V: VectorSerialize + Clone> {
     level: usize,
     neighbors: Vec<Vec<usize>>, //layer --> vec
     p: V,
 }
 
-impl<V: BinarySerialize> Node<V> {
+impl<V: VectorSerialize + Clone> Node<V> {
     fn get_neighbors(&self, level: usize) -> Option<impl Iterator<Item = usize> + '_> {
         let x = self.neighbors.get(level)?;
         Some(x.iter().cloned())
@@ -42,7 +42,7 @@ impl<V: BinarySerialize> Node<V> {
 }
 
 #[warn(non_snake_case)]
-pub struct HNSW<V: BinarySerialize> {
+pub struct HNSW<V: VectorSerialize + Clone> {
     enter_point: usize,
     max_layer: usize,
     ef_construction: usize,
@@ -55,8 +55,8 @@ pub struct HNSW<V: BinarySerialize> {
     current_id: usize,
 }
 
-impl<V: BinarySerialize> BinarySerialize for HNSW<V> {
-    fn binary_deserialize<R: std::io::Read>(reader: &mut R) -> GyResult<Self> {
+impl<V: VectorSerialize + Clone> VectorSerialize for HNSW<V> {
+    fn vector_deserialize<R: std::io::Read>(reader: &mut R, entry: &TensorEntry) -> GyResult<Self> {
         let M = usize::binary_deserialize(reader)?;
         let M0 = usize::binary_deserialize(reader)?;
         let ef_construction = usize::binary_deserialize(reader)?;
@@ -66,12 +66,9 @@ impl<V: BinarySerialize> BinarySerialize for HNSW<V> {
         let node_len = usize::binary_deserialize(reader)?;
         let mut nodes: Vec<Node<V>> = Vec::with_capacity(node_len);
         for _ in 0..node_len {
-            let p = V::binary_deserialize(reader)?;
+            let p = V::vector_deserialize(reader, entry)?;
             let level = usize::binary_deserialize(reader)?;
             let neighbors: Vec<Vec<usize>> = Vec::<Vec<usize>>::binary_deserialize(reader)?;
-            // for _ in 0..neighbor_len {
-            //     neighbors.push(r.read_vec_usize()?);
-            // }
             nodes.push(Node {
                 level: level,
                 neighbors: neighbors,
@@ -91,9 +88,8 @@ impl<V: BinarySerialize> BinarySerialize for HNSW<V> {
             current_id: 0,
         })
     }
-    fn binary_serialize<W: std::io::Write>(&self, writer: &mut W) -> GyResult<()> {
-        // let mut file = File::create(filename).unwrap();
-        // let mut w = WriteDisk::new(file);
+
+    fn vector_serialize<W: std::io::Write>(&self, writer: &mut W) -> GyResult<()> {
         self.M.binary_serialize(writer)?;
         self.M0.binary_serialize(writer)?;
         self.ef_construction.binary_serialize(writer)?;
@@ -102,7 +98,7 @@ impl<V: BinarySerialize> BinarySerialize for HNSW<V> {
         self.enter_point.binary_serialize(writer)?;
         self.nodes.len().binary_serialize(writer)?;
         for n in self.nodes.iter() {
-            n.p.binary_serialize(writer)?;
+            n.p.vector_serialize(writer)?;
             n.level.binary_serialize(writer)?;
             n.neighbors.binary_serialize(writer)?;
         }
@@ -110,7 +106,7 @@ impl<V: BinarySerialize> BinarySerialize for HNSW<V> {
     }
 }
 
-impl<V: BinarySerialize> AnnIndex<V> for HNSW<V>
+impl<V: VectorSerialize + Clone> AnnIndex<V> for HNSW<V>
 where
     V: Metric<V>,
 {
@@ -211,10 +207,21 @@ where
     }
 }
 
-impl<V: BinarySerialize> HNSW<V>
+impl<V: VectorSerialize + Clone> HNSW<V>
 where
     V: Metric<V>,
 {
+    pub fn merge(&self, other: &Self) -> GyResult<HNSW<V>> {
+        let mut new_hnsw = HNSW::<V>::new(self.M);
+        for n in self.nodes.iter() {
+            new_hnsw.insert(n.p.clone())?;
+        }
+        for n in other.nodes.iter() {
+            new_hnsw.insert(n.p.clone())?;
+        }
+        Ok(new_hnsw)
+    }
+
     pub fn new(M: usize) -> HNSW<V> {
         Self {
             enter_point: 0,
@@ -228,71 +235,6 @@ where
             current_id: 0,
             n_items: 1,
         }
-    }
-
-    // #[warn(non_snake_case)]
-    // fn load(&self, filename: &Path) -> GyResult<HNSW<V>> {
-    //     let mut file = File::open(filename).unwrap();
-    //     let mut r = ReadDisk::new(file);
-    //     let M = r.read_usize()?;
-    //     let M0 = r.read_usize()?;
-    //     let ef_construction = r.read_usize()?;
-    //     let level_mut = r.read_f64()?;
-    //     let max_layer = r.read_usize()?;
-    //     let enter_point = r.read_usize()?;
-    //     let node_len = r.read_usize()?;
-    //     let mut nodes: Vec<Node<V>> = Vec::with_capacity(node_len);
-    //     for _ in 0..node_len {
-    //         let p = r.read_vec_f32()?;
-    //         let level = r.read_usize()?;
-    //         let neighbor_len = r.read_usize()?;
-    //         let mut neighbors: Vec<Vec<usize>> = Vec::with_capacity(neighbor_len);
-    //         for _ in 0..neighbor_len {
-    //             neighbors.push(r.read_vec_usize()?);
-    //         }
-    //         nodes.push(Node {
-    //             level: level,
-    //             neighbors: neighbors,
-    //             p: V::create(),
-    //         });
-    //     }
-    //     Ok(HNSW {
-    //         enter_point: enter_point,
-    //         max_layer: max_layer,
-    //         ef_construction: ef_construction,
-    //         M: M,
-    //         M0: M0,
-    //         n_items: 0,
-    //         rng: rand::thread_rng(),
-    //         level_mut: level_mut,
-    //         nodes: nodes,
-    //     })
-    // }
-
-    // fn binary_serialize(&self, filename: &Path) -> GyResult<()> {
-    //     let mut file = File::create(filename).unwrap();
-    //     let mut w = WriteDisk::new(file);
-    //     w.write_usize(self.M)?;
-    //     w.write_usize(self.M0)?;
-    //     w.write_usize(self.ef_construction)?;
-    //     w.write_f64(self.level_mut)?;
-    //     w.write_usize(self.max_layer)?;
-    //     w.write_usize(self.enter_point)?;
-    //     w.write_usize(self.nodes.len())?;
-
-    //     for n in self.nodes.iter() {
-    //         w.write_vec_f32(&n.p)?;
-    //         w.write_usize(n.level)?;
-    //         w.write_usize(n.neighbors.len())?;
-    //         for x in n.neighbors.iter() {
-    //             w.write_vec_usize(x)?;
-    //         }
-    //     }
-    //     Ok(())
-    // }
-
-    fn save_to_buffer(&self, filename: &Path) -> GyResult<()> {
-        Ok(())
     }
 
     fn print(&self) {
@@ -518,10 +460,13 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use rand::{thread_rng, Rng};
-    use std::{collections::HashMap, io::Write};
+    use crate::gypaetus::schema::VectorType;
 
+    use super::*;
+    use galois::Shape;
+    use rand::{thread_rng, Rng};
+    use std::fs::File;
+    use std::{collections::HashMap, io::Write};
     #[test]
     fn test_rng() {
         let mut rng = rand::thread_rng();
@@ -557,56 +502,95 @@ mod tests {
 
     #[test]
     fn test_hnsw_search() {
-        let mut hnsw = HNSW::<Vec<f32>>::new(32);
+        let mut hnsw1 = HNSW::<Vec<f32>>::new(32);
 
         let features = [
             &[0.0, 0.0, 0.0, 1.0],
             &[0.0, 0.0, 1.0, 0.0],
             &[0.0, 1.0, 0.0, 0.0],
             &[1.0, 0.0, 0.0, 0.0],
+        ];
+
+        for &feature in &features {
+            hnsw1.insert(feature.to_vec());
+            // i += 1;
+        }
+
+        let mut hnsw2 = HNSW::<Vec<f32>>::new(32);
+        let features = [
             &[0.0, 0.0, 1.0, 1.0],
             &[0.0, 1.0, 1.0, 0.0],
             &[1.0, 1.0, 0.0, 0.0],
             &[1.0, 0.0, 0.0, 1.0],
         ];
 
-        //let mut x: HashMap<usize, usize> = HashMap::new();
-        // for _ in 0..=10000 {
-        //     let l = hnsw.get_random_level();
-        //     let i = x.entry(l).or_insert(0);
-        //     *i = *i + 1;
-        // }
-        // println!("{:?}", x);
-        // let mut i = 1;
         for &feature in &features {
-            hnsw.insert(feature.to_vec());
+            hnsw2.insert(feature.to_vec());
             // i += 1;
         }
 
-        // level:3,[[1, 2, 3, 4, 5, 6, 7], [], []]
-        // level:1,[[0, 2, 3, 4, 5, 6, 7]]
-        // level:4,[[1, 0, 3, 4, 5, 6, 7], [3, 4], [], []]
-        // level:2,[[2, 0, 1, 4, 5, 6, 7], [2, 4]]
-        // level:2,[[2, 3, 0, 1, 5, 6, 7], [2, 3]]
-        // level:1,[[0, 3, 4, 2, 1, 6, 7]]
-        // level:1,[[4, 0, 1, 5, 3, 2, 7]]
-        // level:1,[[5, 2, 1, 6, 4, 0, 3]]
+        let hnsw = hnsw1.merge(&hnsw2).unwrap();
+
         hnsw.print();
 
         let neighbors = hnsw.query(&[0.0f32, 0.0, 1.0, 0.0][..].to_vec(), 4);
         println!("{:?}", neighbors);
         let mut file = File::create("./data.hnsw").unwrap();
-        hnsw.binary_serialize(&mut file).unwrap();
+        hnsw.vector_serialize(&mut file).unwrap();
         file.flush();
     }
 
     #[test]
     fn test_reader() {
         let mut file = File::open("./data.hnsw").unwrap();
-        let hnsw = HNSW::<Vec<f32>>::binary_deserialize(&mut file).unwrap();
+        let hnsw =
+            HNSW::<Vec<f32>>::vector_deserialize(&mut file, &TensorEntry::default()).unwrap();
         hnsw.print();
 
         let neighbors = hnsw.query(&[0.0f32, 0.0, 1.0, 0.0][..].to_vec(), 4);
         println!("{:?}", neighbors);
+    }
+
+    #[test]
+    fn test_hnsw_tensor_search() {
+        let mut hnsw = HNSW::<Tensor>::new(32);
+
+        let features = [
+            Tensor::from_vec(vec![0.0f32, 0.0, 0.0, 1.0], 1, Shape::from_array([4])),
+            Tensor::from_vec(vec![0.0f32, 0.0, 1.0, 0.0], 1, Shape::from_array([4])),
+            Tensor::from_vec(vec![0.0f32, 1.0, 0.0, 0.0], 1, Shape::from_array([4])),
+            Tensor::from_vec(vec![1.0f32, 0.0, 0.0, 0.0], 1, Shape::from_array([4])),
+            Tensor::from_vec(vec![0.0f32, 0.0, 1.0, 1.0], 1, Shape::from_array([4])),
+            Tensor::from_vec(vec![0.0f32, 1.0, 1.0, 0.0], 1, Shape::from_array([4])),
+            Tensor::from_vec(vec![1.0f32, 0.0, 0.0, 1.0], 1, Shape::from_array([4])),
+            Tensor::from_vec(vec![1.0f32, 1.0, 0.0, 0.0], 1, Shape::from_array([4])),
+        ];
+        for feature in features.into_iter() {
+            hnsw.insert(feature);
+        }
+        hnsw.print();
+
+        let neighbors = hnsw.query(
+            &Tensor::from_vec(vec![0.0f32, 0.0, 1.0, 0.0], 1, Shape::from_array([4])),
+            4,
+        );
+        println!("{:?}", neighbors);
+        let mut file = File::create("./data.hnsw").unwrap();
+        hnsw.vector_serialize(&mut file).unwrap();
+        file.flush();
+    }
+
+    #[test]
+    fn test_tensor_reader() {
+        let mut file = File::open("./data.hnsw").unwrap();
+        let entry = TensorEntry::new(1, [4], VectorType::F32);
+        let hnsw = HNSW::<Tensor>::vector_deserialize(&mut file, &entry).unwrap();
+        hnsw.print();
+
+        let neighbors = hnsw.query(
+            &Tensor::from_vec(vec![0.0f32, 0.0, 1.0, 0.0], 1, Shape::from_array([4])),
+            4,
+        );
+        println!("xxx{:?}", neighbors);
     }
 }

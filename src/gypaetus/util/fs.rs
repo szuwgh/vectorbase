@@ -10,6 +10,8 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
 
+pub struct GyFile(File);
+
 // 保存结构体到文件
 pub fn to_json_file<T: Serialize, P: AsRef<Path>>(data: &T, filename: P) -> GyResult<()> {
     let file = File::create(filename)?;

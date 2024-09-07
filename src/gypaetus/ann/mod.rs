@@ -2,15 +2,86 @@ pub mod annoy;
 pub mod hnsw;
 pub use self::hnsw::HNSW;
 use super::schema::BinarySerialize;
+use super::schema::DocID;
 use super::util::error::GyResult;
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use crate::gypaetus::TensorEntry;
+use crate::gypaetus::VectorSerialize;
+use byteorder::LittleEndian;
 use core::cmp::Ordering;
+use serde::Deserialize;
+use serde::Serialize;
 use std::io::{Read, Write};
-use std::sync::Arc;
+
 type Endian = LittleEndian;
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[repr(usize)]
 pub enum AnnType {
-    HNSW,
+    #[default]
+    HNSW = 1,
+}
+
+impl AnnType {
+    fn to_usize(&self) -> usize {
+        *self as usize
+    }
+
+    fn from_usize(u: usize) -> Self {
+        match u {
+            1 => AnnType::HNSW,
+            _ => todo!(),
+        }
+    }
+}
+
+pub enum Ann<V: VectorSerialize + Clone> {
+    HNSW(HNSW<V>),
+}
+
+impl<V: VectorSerialize + Clone> VectorSerialize for Ann<V> {
+    fn vector_deserialize<R: Read>(reader: &mut R, entry: &TensorEntry) -> GyResult<Self> {
+        let n = usize::binary_deserialize(reader)?;
+        let ann_type = AnnType::from_usize(n);
+        match ann_type {
+            AnnType::HNSW => Ok(Ann::HNSW(HNSW::<V>::vector_deserialize(reader, entry)?)),
+            _ => todo!(),
+        }
+    }
+    fn vector_serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
+        match self {
+            Ann::HNSW(v) => {
+                AnnType::HNSW.to_usize().binary_serialize(writer)?;
+                v.vector_serialize(writer)
+            }
+            _ => todo!(),
+        }
+    }
+}
+
+impl<V: VectorSerialize + Clone> Ann<V>
+where
+    V: Metric<V>,
+{
+    pub fn insert(&mut self, q: V) -> GyResult<usize> {
+        match self {
+            Ann::HNSW(v) => v.insert(q),
+            _ => todo!(),
+        }
+    }
+
+    pub fn query(&self, q: &V, k: usize) -> GyResult<Vec<Neighbor>> {
+        match self {
+            Ann::HNSW(v) => v.query(q, k),
+            _ => todo!(),
+        }
+    }
+
+    pub fn merge(&self, other: &Self) -> GyResult<Self> {
+        match (self, other) {
+            (Ann::HNSW(a), Ann::HNSW(b)) => Ok(Ann::HNSW(a.merge(b)?)),
+            _ => todo!(),
+        }
+    }
 }
 
 pub trait Metric<P = Self> {
@@ -27,6 +98,12 @@ pub struct Neighbor {
     d: f32, //distance
 }
 
+impl Neighbor {
+    pub fn doc_id(&self) -> DocID {
+        self.id as DocID
+    }
+}
+
 impl Ord for Neighbor {
     fn cmp(&self, other: &Neighbor) -> Ordering {
         other.d.partial_cmp(&self.d).unwrap()
@@ -41,116 +118,24 @@ impl PartialOrd for Neighbor {
 
 impl Eq for Neighbor {}
 
-pub struct BoxedAnnIndex<V: BinarySerialize>(pub Box<dyn AnnIndex<V>>);
+// pub struct BoxedAnnIndex<V: BinarySerialize>(pub Box<dyn AnnIndex<V>>);
 
-impl<V: BinarySerialize> BoxedAnnIndex<V>
+// impl<V: BinarySerialize> BoxedAnnIndex<V>
+// where
+//     V: Metric<V>,
+// {
+//     pub fn insert(&mut self, q: V) -> GyResult<usize> {
+//         self.0.insert(q)
+//     }
+//     pub fn query(&self, q: &V, k: usize) -> GyResult<Vec<Neighbor>> {
+//         self.0.query(q, k)
+//     }
+// }
+
+pub trait AnnIndex<V: VectorSerialize>
 where
     V: Metric<V>,
 {
-    pub fn insert(&mut self, q: V) -> GyResult<usize> {
-        self.0.insert(q)
-    }
-    pub fn query(&self, q: &V, k: usize) -> GyResult<Vec<Neighbor>> {
-        self.0.query(q, k)
-    }
-}
-
-pub trait AnnIndex<V: BinarySerialize>
-where
-    V: Metric<V>,
-{
-    const AnnType: t;
     fn insert(&mut self, q: V) -> GyResult<usize>;
     fn query(&self, q: &V, k: usize) -> GyResult<Vec<Neighbor>>;
 }
-
-// struct ReadDisk<R: Read> {
-//     r: R,
-// }
-
-// impl<R: Read> ReadDisk<R> {
-//     fn new(r: R) -> ReadDisk<R> {
-//         Self { r: r }
-//     }
-
-//     fn read_usize(&mut self) -> GyResult<usize> {
-//         let x = self.r.read_u32::<Endian>()?;
-//         Ok(x as usize)
-//     }
-
-//     fn read_f32(&mut self) -> GyResult<f32> {
-//         let x = self.r.read_f32::<Endian>()?;
-//         Ok(x)
-//     }
-
-//     fn read_f64(&mut self) -> GyResult<f64> {
-//         let x = self.r.read_f64::<Endian>()?;
-//         Ok(x)
-//     }
-
-//     fn read_vec_f32(&mut self) -> GyResult<Vec<f32>> {
-//         let l = self.read_usize()?;
-//         let mut x: Vec<f32> = Vec::with_capacity(l);
-//         for _ in 0..l {
-//             x.push(self.read_f32()?);
-//         }
-//         Ok(x)
-//     }
-
-//     fn read_vec_usize(&mut self) -> GyResult<Vec<usize>> {
-//         let l = self.read_usize()?;
-//         let mut x: Vec<usize> = Vec::with_capacity(l);
-//         for _ in 0..l {
-//             x.push(self.read_usize()?);
-//         }
-//         Ok(x)
-//     }
-// }
-
-// struct WriteDisk<V: Write> {
-//     w: V,
-// }
-
-// impl<V: Write> WriteDisk<V> {
-//     fn new(w: V) -> WriteDisk<V> {
-//         Self { w: w }
-//     }
-
-//     fn write_usize(&mut self, x: usize) -> GyResult<()> {
-//         self.w.write_u32::<Endian>(x as u32)?;
-//         Ok(())
-//     }
-
-//     fn write_f32(&mut self, x: f32) -> GyResult<()> {
-//         self.w.write_f32::<Endian>(x)?;
-//         Ok(())
-//     }
-
-//     fn write_f64(&mut self, x: f64) -> GyResult<()> {
-//         self.w.write_f64::<Endian>(x)?;
-//         Ok(())
-//     }
-
-//     fn write_vec_f32(&mut self, x: &[f32]) -> GyResult<()> {
-//         let l = x.len();
-//         self.write_usize(l)?;
-//         for f in x {
-//             self.write_f32(*f)?;
-//         }
-//         Ok(())
-//     }
-
-//     fn write_vec_usize(&mut self, x: &[usize]) -> GyResult<()> {
-//         let l = x.len();
-//         self.write_usize(l)?;
-//         for u in x {
-//             self.write_usize(*u)?;
-//         }
-//         Ok(())
-//     }
-
-//     fn flush(&mut self) -> GyResult<()> {
-//         self.w.flush()?;
-//         Ok(())
-//     }
-// }
