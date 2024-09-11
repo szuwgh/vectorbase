@@ -32,10 +32,10 @@ impl RingBuffer {
         RingBuffer(UnsafeCell::from(ByteBlockPool::new()))
     }
 
-    pub(crate) fn borrow(&self) -> &ByteBlockPool {
+    pub(crate) fn get_borrow(&self) -> &ByteBlockPool {
         unsafe { &*self.0.get() }
     }
-    pub(crate) fn borrow_mut(&self) -> &mut ByteBlockPool {
+    pub(crate) fn get_borrow_mut(&self) -> &mut ByteBlockPool {
         unsafe { &mut *self.0.get() }
     }
     pub(crate) fn iter() {}
@@ -293,7 +293,7 @@ impl<'a> RingBufferReaderIter<'a> {
             self.level = LEVEL_CLASS[((16 | self.level) as u8 & 15u8) as usize];
             let next_addr = self
                 .pool
-                .borrow()
+                .get_borrow()
                 .get_next_addr(self.start_addr + self.limit);
             self.start_addr = next_addr;
             self.limit =
@@ -303,7 +303,10 @@ impl<'a> RingBufferReaderIter<'a> {
                     BLOCK_SIZE_CLASS[self.level] - POINTER_LEN
                 };
         }
-        let b: &[u8] = self.pool.borrow().get_bytes(self.start_addr, self.limit);
+        let b: &[u8] = self
+            .pool
+            .get_borrow()
+            .get_bytes(self.start_addr, self.limit);
         if self.start_addr + self.limit >= self.end_addr {
             self.eof = true;
         }
@@ -444,15 +447,15 @@ mod tests {
     fn test_write2() {
         let mut b = RingBuffer::new();
         // let x: [u8; 5] = [1, 2, 3, 4, 5];
-        let start = b.borrow_mut().alloc_bytes(0, None);
-        let mut end = b.borrow_mut().write_var_u64(start, 1).unwrap();
-        end = b.borrow_mut().write_var_u64(end, 3).unwrap();
-        end = b.borrow_mut().write_var_u64(end, 3).unwrap();
-        end = b.borrow_mut().write_var_u64(end, 3).unwrap();
-        end = b.borrow_mut().write_var_u64(end, 3).unwrap();
-        end = b.borrow_mut().write_var_u64(end, 3).unwrap();
+        let start = b.get_borrow_mut().alloc_bytes(0, None);
+        let mut end = b.get_borrow_mut().write_var_u64(start, 1).unwrap();
+        end = b.get_borrow_mut().write_var_u64(end, 3).unwrap();
+        end = b.get_borrow_mut().write_var_u64(end, 3).unwrap();
+        end = b.get_borrow_mut().write_var_u64(end, 3).unwrap();
+        end = b.get_borrow_mut().write_var_u64(end, 3).unwrap();
+        end = b.get_borrow_mut().write_var_u64(end, 3).unwrap();
 
-        println!("b:{:?}", b.borrow().buffers);
+        println!("b:{:?}", b.get_borrow().buffers);
         println!("start:{},end:{}", start, end);
         let pool = Arc::new(b);
         let reader = RingBufferReader::new(pool, start, end);
@@ -465,8 +468,8 @@ mod tests {
     fn test_write() {
         let mut b = RingBuffer::new();
         let x: [u8; 5] = [1, 2, 3, 4, 5];
-        let start = b.borrow_mut().alloc_bytes(0, None);
-        let mut end = b.borrow_mut().write_array(start, &x).unwrap();
+        let start = b.get_borrow_mut().alloc_bytes(0, None);
+        let mut end = b.get_borrow_mut().write_array(start, &x).unwrap();
         // end = b.borrow_mut().write_array(end, &x).unwrap();
         // end = b.borrow_mut().write_array(end, &x).unwrap();
         // end = b.borrow_mut().write_array(end, &x).unwrap();
@@ -478,7 +481,7 @@ mod tests {
         // end = b.borrow_mut().write_array(end, &x).unwrap();
         // end = b.borrow_mut().write_array(end, &x).unwrap();
 
-        println!("b:{:?}", b.borrow().buffers);
+        println!("b:{:?}", b.get_borrow().buffers);
         println!("start:{},end:{}", start, end);
         let pool = Arc::new(b);
         let reader = RingBufferReader::new(pool, start, end);
@@ -516,10 +519,10 @@ mod tests {
     #[test]
     fn test_read_Int() {
         let mut b = RingBuffer::new();
-        let start = b.borrow_mut().alloc_bytes(0, None);
-        let mut end = b.borrow_mut().write_var_u64(start, 0).unwrap();
+        let start = b.get_borrow_mut().alloc_bytes(0, None);
+        let mut end = b.get_borrow_mut().write_var_u64(start, 0).unwrap();
         for i in u64var_test {
-            end = b.borrow_mut().write_var_u64(end, i).unwrap();
+            end = b.get_borrow_mut().write_var_u64(end, i).unwrap();
         }
         let a = Arc::new(b);
         let reader = RingBufferReader::new(a, start, end);

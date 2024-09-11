@@ -3,13 +3,17 @@ use super::util::error::{GyError, GyResult};
 use super::util::fs::{FileIOSelector, IoSelector, MmapSelector};
 use crate::disk::GyRead;
 use crate::iocopy;
+use crate::schema::{TensorEntry, VectorSerialize};
 use crate::ValueSized;
+use crate::Vector;
 use core::arch::x86_64::*;
 use memmap2::{self, Mmap, MmapMut};
+use rand::seq::IteratorRandom;
 use serde::de::value;
 use std::fs::{self, File};
 use std::io::Read;
 use std::io::Write;
+use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock, Weak};
 pub(crate) const DEFAULT_WAL_FILE_SIZE: usize = 1 << 20; //512 << 20; //
@@ -25,13 +29,63 @@ const BLOCK_SIZE: usize = 1 << 15;
 unsafe impl Send for Wal {}
 unsafe impl Sync for Wal {}
 
+pub(crate) struct WalIter<'a, V: VectorSerialize> {
+    wal_reader: WalReader<'a>,
+    tensor_entry: TensorEntry,
+    _mark: PhantomData<V>,
+}
+
+impl<'a, V: VectorSerialize> WalIter<'a, V> {
+    pub fn new(wal_reader: WalReader<'a>, tensor_entry: TensorEntry) -> WalIter<'a, V> {
+        Self {
+            wal_reader: wal_reader,
+            tensor_entry: tensor_entry,
+            _mark: PhantomData::default(),
+        }
+    }
+
+    pub fn offset(&self) -> usize {
+        self.wal_reader.offset()
+    }
+
+    fn fsize(&self) -> usize {
+        self.wal_reader.wal.fsize
+    }
+}
+
+impl<'a, V: VectorSerialize> Iterator for WalIter<'a, V> {
+    type Item = (usize, V);
+    fn next(&mut self) -> Option<Self::Item> {
+        let offset = self.offset();
+        if (offset + 4 >= self.fsize()) {
+            return None;
+        }
+        match V::vector_deserialize(&mut self.wal_reader, &self.tensor_entry) {
+            Ok(v) => Some((offset, v)),
+            Err(_) => None,
+        }
+    }
+}
+
 pub(crate) struct WalReader<'a> {
     wal: &'a Wal,
     offset: usize,
 }
 
+impl<'a> Read for WalReader<'a> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let i = self
+            .wal
+            .io_selector
+            .read(buf, self.offset)
+            .map_err(|e| std::io::Error::from(std::io::ErrorKind::UnexpectedEof))?;
+        self.offset += i;
+        Ok(i)
+    }
+}
+
 impl<'a> WalReader<'a> {
-    pub(crate) fn from(wal: &'a Wal, offset: usize) -> WalReader<'a> {
+    pub(crate) fn new(wal: &'a Wal, offset: usize) -> WalReader<'a> {
         WalReader {
             wal: wal,
             offset: offset,
@@ -72,8 +126,22 @@ impl GyWrite for Wal {
 impl Wal {
     pub(crate) fn new(fname: &Path, fsize: usize, io_type: IOType) -> GyResult<Wal> {
         let io_selector: Box<dyn IoSelector> = match io_type {
-            IOType::FILEIO => Box::new(FileIOSelector::new(fname, fsize)?),
+            IOType::FILEIO => todo!(),
             IOType::MMAP => Box::new(MmapSelector::new(fname, fsize)?),
+        };
+        Ok(Self {
+            io_selector: io_selector,
+            i: 0,
+            j: 0,
+            fsize: fsize,
+            buffer: [0u8; BLOCK_SIZE],
+        })
+    }
+
+    pub(crate) fn open(fname: &Path, fsize: usize, io_type: IOType) -> GyResult<Wal> {
+        let io_selector: Box<dyn IoSelector> = match io_type {
+            IOType::FILEIO => todo!(),
+            IOType::MMAP => Box::new(MmapSelector::open(fname, fsize)?),
         };
         Ok(Self {
             io_selector: io_selector,
@@ -99,17 +167,13 @@ impl Wal {
     pub(crate) fn offset(&self) -> usize {
         self.i
     }
-}
 
-impl<'a> Read for WalReader<'a> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let i = self
-            .wal
-            .io_selector
-            .read(buf, self.offset)
-            .map_err(|e| std::io::Error::from(std::io::ErrorKind::UnexpectedEof))?;
-        self.offset += i;
-        Ok(i)
+    pub(crate) fn set_position(&mut self, pos: usize) {
+        self.i = pos;
+    }
+
+    pub(crate) fn iter<'a, V: VectorSerialize>(&'a self, entry: TensorEntry) -> WalIter<'a, V> {
+        WalIter::<V>::new(WalReader::new(self, 0), entry)
     }
 }
 
@@ -210,7 +274,7 @@ mod tests {
         doc1.binary_serialize(&mut wal).unwrap();
         wal.flush().unwrap();
 
-        let mut wal_read = WalReader::from(&mut wal, offset);
+        let mut wal_read = WalReader::new(&mut wal, offset);
         let doc2 = Document::binary_deserialize(&mut wal_read).unwrap();
         println!("doc2:{:?}", doc2);
         assert_eq!(doc1, doc2);

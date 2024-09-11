@@ -101,6 +101,10 @@ impl Schema {
         }
     }
 
+    pub fn tensor_entry(&self) -> &TensorEntry {
+        self.vector_field.tensor_entry()
+    }
+
     pub fn get_field(&self, field_name: &str) -> Option<FieldID> {
         self.fields_map.get(field_name).cloned()
     }
@@ -115,7 +119,7 @@ impl Schema {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Default)]
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
 pub enum VectorType {
     #[default]
     F32,
@@ -160,7 +164,7 @@ impl VectorEntry {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TensorEntry {
     n_dims: usize,
     dims: [usize; 4],
@@ -363,6 +367,10 @@ impl<V: VectorSerialize + ValueSized + VectorOps> ValueSized for VectorBase<V> {
 
 impl<V: VectorSerialize + ValueSized + VectorOps> VectorSerialize for VectorBase<V> {
     fn vector_deserialize<R: Read + GyRead>(reader: &mut R, entry: &TensorEntry) -> GyResult<Self> {
+        let size = usize::binary_deserialize(reader)?;
+        if size == 0 {
+            return Err(GyError::WalEOF);
+        }
         let v = V::vector_deserialize(reader, entry)?;
         let payload = Document::binary_deserialize(reader)?;
         Ok(Self {
@@ -371,6 +379,7 @@ impl<V: VectorSerialize + ValueSized + VectorOps> VectorSerialize for VectorBase
         })
     }
     fn vector_serialize<W: Write + GyWrite>(&self, writer: &mut W) -> GyResult<()> {
+        self.size().binary_serialize(writer)?;
         self.v.vector_serialize(writer)?;
         self.payload.binary_serialize(writer)?;
         Ok(())
