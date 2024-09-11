@@ -1,8 +1,9 @@
 use super::super::util::error::GyResult;
 use super::{AnnIndex, Metric, Neighbor};
-use crate::gypaetus::schema::BinarySerialize;
-use crate::gypaetus::TensorEntry;
-use crate::gypaetus::VectorSerialize;
+use crate::disk::{GyRead, GyWrite};
+use crate::schema::BinarySerialize;
+use crate::TensorEntry;
+use crate::VectorSerialize;
 use galois::Tensor;
 use rand::prelude::ThreadRng;
 use rand::Rng;
@@ -21,20 +22,15 @@ impl Metric<Vec<f32>> for Vec<f32> {
     }
 }
 
-// impl Zero for Vec<f32> {
-//     fn zeor() -> Self {
-//         Vec::new()
-//     }
-// }
+const GGUF_DEFAULT_ALIGNMENT: usize = 32;
 
 #[derive(Default)]
-struct Node<V: VectorSerialize + Clone> {
+struct Node {
     level: usize,
     neighbors: Vec<Vec<usize>>, //layer --> vec
-    p: V,
 }
 
-impl<V: VectorSerialize + Clone> Node<V> {
+impl Node {
     fn get_neighbors(&self, level: usize) -> Option<impl Iterator<Item = usize> + '_> {
         let x = self.neighbors.get(level)?;
         Some(x.iter().cloned())
@@ -51,12 +47,16 @@ pub struct HNSW<V: VectorSerialize + Clone> {
     n_items: usize,
     rng: ThreadRng,
     level_mut: f64,
-    nodes: Vec<Node<V>>,
+    nodes: Vec<Node>,
+    vectors: Vec<V>,
     current_id: usize,
 }
 
 impl<V: VectorSerialize + Clone> VectorSerialize for HNSW<V> {
-    fn vector_deserialize<R: std::io::Read>(reader: &mut R, entry: &TensorEntry) -> GyResult<Self> {
+    fn vector_deserialize<R: std::io::Read + GyRead>(
+        reader: &mut R,
+        entry: &TensorEntry,
+    ) -> GyResult<Self> {
         let M = usize::binary_deserialize(reader)?;
         let M0 = usize::binary_deserialize(reader)?;
         let ef_construction = usize::binary_deserialize(reader)?;
@@ -64,16 +64,25 @@ impl<V: VectorSerialize + Clone> VectorSerialize for HNSW<V> {
         let max_layer = usize::binary_deserialize(reader)?;
         let enter_point = usize::binary_deserialize(reader)?;
         let node_len = usize::binary_deserialize(reader)?;
-        let mut nodes: Vec<Node<V>> = Vec::with_capacity(node_len);
+        let mut nodes: Vec<Node> = Vec::with_capacity(node_len);
         for _ in 0..node_len {
-            let p = V::vector_deserialize(reader, entry)?;
+            // let p = V::vector_deserialize(reader, entry)?;
             let level = usize::binary_deserialize(reader)?;
             let neighbors: Vec<Vec<usize>> = Vec::<Vec<usize>>::binary_deserialize(reader)?;
             nodes.push(Node {
                 level: level,
                 neighbors: neighbors,
-                p: p,
+                //  p: p,
             });
+        }
+        let position = reader.offset();
+        let next_position = position - (position % GGUF_DEFAULT_ALIGNMENT) + GGUF_DEFAULT_ALIGNMENT;
+        println!("position:{},next_position:{}", position, next_position);
+        reader.read_bytes(next_position - position)?;
+        let mut vectors: Vec<V> = Vec::with_capacity(node_len);
+        for _ in 0..node_len {
+            let p = V::vector_deserialize(reader, entry)?;
+            vectors.push(p)
         }
         Ok(HNSW {
             enter_point: enter_point,
@@ -85,11 +94,12 @@ impl<V: VectorSerialize + Clone> VectorSerialize for HNSW<V> {
             rng: rand::thread_rng(),
             level_mut: level_mut,
             nodes: nodes,
+            vectors: vectors,
             current_id: 0,
         })
     }
 
-    fn vector_serialize<W: std::io::Write>(&self, writer: &mut W) -> GyResult<()> {
+    fn vector_serialize<W: std::io::Write + GyWrite>(&self, writer: &mut W) -> GyResult<()> {
         self.M.binary_serialize(writer)?;
         self.M0.binary_serialize(writer)?;
         self.ef_construction.binary_serialize(writer)?;
@@ -98,9 +108,17 @@ impl<V: VectorSerialize + Clone> VectorSerialize for HNSW<V> {
         self.enter_point.binary_serialize(writer)?;
         self.nodes.len().binary_serialize(writer)?;
         for n in self.nodes.iter() {
-            n.p.vector_serialize(writer)?;
+            // n.p.vector_serialize(writer)?;
             n.level.binary_serialize(writer)?;
             n.neighbors.binary_serialize(writer)?;
+        }
+        let position = writer.get_pos()?;
+        let next_position = position - (position % GGUF_DEFAULT_ALIGNMENT) + GGUF_DEFAULT_ALIGNMENT;
+        println!("position:{},next_position:{}", position, next_position);
+        writer.write(&vec![0u8; next_position - position])?;
+        //self.vectors.len().binary_serialize(writer)?;
+        for v in self.vectors.iter() {
+            v.vector_serialize(writer)?;
         }
         Ok(())
     }
@@ -117,9 +135,10 @@ where
             let new_node = Node {
                 level: cur_level,
                 neighbors: vec![Vec::new(); cur_level],
-                p: q,
+                // p: q,
             };
             self.nodes.push(new_node);
+            self.vectors.push(q);
             self.enter_point = self.current_id;
             self.current_id += 1;
             return Ok(self.enter_point);
@@ -132,7 +151,7 @@ where
             //起始点
             let mut ep = Neighbor {
                 id: self.enter_point,
-                d: self.get_node(ep_id).p.borrow().distance(&q),
+                d: self.get_vector(ep_id).distance(&q),
             };
             let mut changed = true;
             //那么从当前图的从最高层逐层往下寻找直至节点的层数+1停止，寻找到离data_point最近的节点，作为下面一层寻找的起始点
@@ -141,7 +160,7 @@ where
                 while changed {
                     changed = false;
                     for i in self.get_neighbors_nodes(ep.id, level).unwrap() {
-                        let d = self.get_node(ep_id).p.borrow().distance(&q); //distance(self.get_node(ep_id).p.borrow(), &q);
+                        let d = self.get_vector(ep_id).distance(&q); //distance(self.get_node(ep_id).p.borrow(), &q);
                         if d < ep.d {
                             ep.id = i;
                             ep.d = d;
@@ -154,13 +173,14 @@ where
             let new_node = Node {
                 level: cur_level,
                 neighbors: vec![Vec::new(); cur_level],
-                p: q,
+                //p: q,
             };
             self.nodes.push(new_node);
+            self.vectors.push(q);
             //从curlevel依次开始往下，每一层寻找离data_point最接近的ef_construction_（构建HNSW是可指定）个节点构成候选集
             for level in (0..core::cmp::min(cur_level, current_max_layer)).rev() {
                 //在每层选择data_point最接近的ef_construction_（构建HNSW是可指定）个节点构成候选集
-                let candidates = self.search_at_layer(self.get_node(new_id).p.borrow(), ep, level);
+                let candidates = self.search_at_layer(self.get_vector(new_id), ep, level);
                 //连接邻居?
                 self.connect_neighbor(new_id, candidates, level);
             }
@@ -180,7 +200,7 @@ where
         let current_max_layer = self.max_layer;
         let mut ep = Neighbor {
             id: self.enter_point,
-            d: self.get_node(self.enter_point).p.borrow().distance(&q), //distance(self.get_node(self.enter_point).p.borrow(), &q),
+            d: self.get_vector(self.enter_point).distance(&q), //distance(self.get_node(self.enter_point).p.borrow(), &q),
         };
         let mut changed = true;
         for level in (0..current_max_layer).rev() {
@@ -189,7 +209,7 @@ where
                 changed = false;
                 if let Some(x) = self.get_neighbors_nodes(ep.id, level) {
                     for i in x {
-                        let d = self.get_node(self.enter_point).p.borrow().distance(&q); // distance(self.get_node(self.enter_point).p.borrow(), &q);
+                        let d = self.get_vector(self.enter_point).distance(&q); // distance(self.get_node(self.enter_point).p.borrow(), &q);
                         if d < ep.d {
                             ep.id = i;
                             ep.d = d;
@@ -213,11 +233,11 @@ where
 {
     pub fn merge(&self, other: &Self) -> GyResult<HNSW<V>> {
         let mut new_hnsw = HNSW::<V>::new(self.M);
-        for n in self.nodes.iter() {
-            new_hnsw.insert(n.p.clone())?;
+        for n in self.vectors.iter() {
+            new_hnsw.insert(n.clone())?;
         }
-        for n in other.nodes.iter() {
-            new_hnsw.insert(n.p.clone())?;
+        for n in other.vectors.iter() {
+            new_hnsw.insert(n.clone())?;
         }
         Ok(new_hnsw)
     }
@@ -229,7 +249,8 @@ where
             ef_construction: 400,
             rng: rand::thread_rng(),
             level_mut: 1f64 / ((M as f64).ln()),
-            nodes: vec![],
+            nodes: Vec::with_capacity(256),
+            vectors: Vec::with_capacity(256),
             M: M,
             M0: M * 2,
             current_id: 0,
@@ -238,7 +259,7 @@ where
     }
 
     fn print(&self) {
-        for x in self.nodes.iter() {
+        for (i, x) in self.nodes.iter().enumerate() {
             println!("level:{:?},{:?}", x.level, x.neighbors);
         }
     }
@@ -248,11 +269,15 @@ where
         ((-(x * self.level_mut).ln()).floor()) as usize
     }
 
-    fn get_node(&self, x: usize) -> &Node<V> {
+    fn get_vector(&self, x: usize) -> &V {
+        self.vectors.get(x).expect("get vector fail")
+    }
+
+    fn get_node(&self, x: usize) -> &Node {
         self.nodes.get(x).expect("get node fail")
     }
 
-    fn get_node_mut(&mut self, x: usize) -> &mut Node<V> {
+    fn get_node_mut(&mut self, x: usize) -> &mut Node {
         self.nodes.get_mut(x).expect("get mut node fail")
     }
 
@@ -283,13 +308,13 @@ where
             if l > maxl {
                 let mut result_set: BinaryHeap<Neighbor> = BinaryHeap::with_capacity(maxl);
 
-                let p = self.get_node(n.id).p.borrow();
+                let p = self.get_vector(n.id);
                 self.get_neighbors_nodes(n.id, level)
                     .unwrap()
                     .for_each(|x| {
                         result_set.push(Neighbor {
                             id: x,
-                            d: -p.distance(self.get_node(x).p.borrow()), //distance(p, self.get_node(x).p.borrow()),
+                            d: -p.distance(self.get_vector(x)), //distance(p, self.get_node(x).p.borrow()),
                         });
                     });
 
@@ -350,7 +375,7 @@ where
                     }
                     //不存在则加入visitedset
                     visited_set.insert(n);
-                    let dist = q.distance(self.nodes.get(n).unwrap().p.borrow()); //   distance(q, self.nodes.get(n).unwrap().p.borrow());
+                    let dist = q.distance(self.get_vector(n)); //   distance(q, self.nodes.get(n).unwrap().p.borrow());
                     let top_d = results.peek().unwrap();
                     //如果results未满，则把所有的e都加入candidates、results
 
@@ -384,7 +409,7 @@ where
             //如果e和q的距离比e和R中的其中一个元素的距离更小，就把e加入到result中
             if result
                 .iter()
-                .map(|r| self.nodes[r.id].p.borrow().distance(&self.nodes[e.id].p)) //distance(self.nodes[r.id].p.borrow(), &self.nodes[e.id].p)
+                .map(|r| self.get_vector(r.id).distance(self.get_vector(e.id))) //distance(self.nodes[r.id].p.borrow(), &self.nodes[e.id].p)
                 .any(|x| dist < x)
             {
                 result.push(e);
@@ -434,7 +459,7 @@ where
             //如果e和q的距离比e和R中的其中一个元素的距离更小，就把e加入到result中
             if result
                 .iter()
-                .map(|r| self.nodes[r.id].p.borrow().distance(&self.nodes[e.id].p)) //distance(self.nodes[r.id].p.borrow(), &self.nodes[e.id].p)
+                .map(|r| self.get_vector(r.id).distance(self.get_vector(e.id))) //distance(self.nodes[r.id].p.borrow(), &self.nodes[e.id].p)
                 .any(|x| dist < x)
             {
                 result.push(e);
@@ -460,7 +485,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::gypaetus::schema::VectorType;
+    use crate::schema::VectorType;
 
     use super::*;
     use galois::Shape;
@@ -512,7 +537,7 @@ mod tests {
         ];
 
         for &feature in &features {
-            hnsw1.insert(feature.to_vec());
+            hnsw1.insert(feature.to_vec()).unwrap();
             // i += 1;
         }
 
@@ -525,7 +550,7 @@ mod tests {
         ];
 
         for &feature in &features {
-            hnsw2.insert(feature.to_vec());
+            hnsw2.insert(feature.to_vec()).unwrap();
             // i += 1;
         }
 
@@ -538,17 +563,6 @@ mod tests {
         let mut file = File::create("./data.hnsw").unwrap();
         hnsw.vector_serialize(&mut file).unwrap();
         file.flush();
-    }
-
-    #[test]
-    fn test_reader() {
-        let mut file = File::open("./data.hnsw").unwrap();
-        let hnsw =
-            HNSW::<Vec<f32>>::vector_deserialize(&mut file, &TensorEntry::default()).unwrap();
-        hnsw.print();
-
-        let neighbors = hnsw.query(&[0.0f32, 0.0, 1.0, 0.0][..].to_vec(), 4);
-        println!("{:?}", neighbors);
     }
 
     #[test]
@@ -577,20 +591,42 @@ mod tests {
         println!("{:?}", neighbors);
         let mut file = File::create("./data.hnsw").unwrap();
         hnsw.vector_serialize(&mut file).unwrap();
-        file.flush();
+        file.flush().unwrap();
     }
-
+    use crate::disk::MmapReader;
+    use memmap2::Mmap;
+    use std::fs::OpenOptions;
+    use std::os::unix::fs::MetadataExt;
     #[test]
     fn test_tensor_reader() {
-        let mut file = File::open("./data.hnsw").unwrap();
+        let mut file = OpenOptions::new().read(true).open("./data.hnsw").unwrap();
+        let file_size = file.metadata().unwrap().size() as usize;
+        let mmap: Mmap = unsafe { memmap2::MmapOptions::new().map(&file).unwrap() };
+        let mut mmap_reader = MmapReader::new(&mmap, 0, file_size);
         let entry = TensorEntry::new(1, [4], VectorType::F32);
-        let hnsw = HNSW::<Tensor>::vector_deserialize(&mut file, &entry).unwrap();
+        let hnsw = HNSW::<Tensor>::vector_deserialize(&mut mmap_reader, &entry).unwrap();
         hnsw.print();
+        for v in hnsw.vectors.iter() {
+            println!(
+                "v:{:?},dtype:{:?},slice:{:?}",
+                v.as_bytes(),
+                v.dtype(),
+                unsafe { v.as_slice::<f32>() }
+            );
+        }
 
         let neighbors = hnsw.query(
             &Tensor::from_vec(vec![0.0f32, 0.0, 1.0, 0.0], 1, Shape::from_array([4])),
             4,
         );
         println!("xxx{:?}", neighbors);
+    }
+    #[test]
+    fn test_slice() {
+        let v = vec![0u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 63];
+        let vv = &v[..];
+        let len = v.len() / std::mem::size_of::<f32>();
+        let s = unsafe { std::slice::from_raw_parts(v.as_ptr() as *const f32, len) };
+        println!("{:?}", s);
     }
 }

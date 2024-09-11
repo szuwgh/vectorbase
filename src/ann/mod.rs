@@ -4,14 +4,15 @@ pub use self::hnsw::HNSW;
 use super::schema::BinarySerialize;
 use super::schema::DocID;
 use super::util::error::GyResult;
-use crate::gypaetus::TensorEntry;
-use crate::gypaetus::VectorSerialize;
+use crate::disk::GyRead;
+use crate::disk::GyWrite;
+use crate::TensorEntry;
+use crate::VectorSerialize;
 use byteorder::LittleEndian;
 use core::cmp::Ordering;
 use serde::Deserialize;
 use serde::Serialize;
 use std::io::{Read, Write};
-
 type Endian = LittleEndian;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
@@ -39,7 +40,7 @@ pub enum Ann<V: VectorSerialize + Clone> {
 }
 
 impl<V: VectorSerialize + Clone> VectorSerialize for Ann<V> {
-    fn vector_deserialize<R: Read>(reader: &mut R, entry: &TensorEntry) -> GyResult<Self> {
+    fn vector_deserialize<R: Read + GyRead>(reader: &mut R, entry: &TensorEntry) -> GyResult<Self> {
         let n = usize::binary_deserialize(reader)?;
         let ann_type = AnnType::from_usize(n);
         match ann_type {
@@ -47,7 +48,7 @@ impl<V: VectorSerialize + Clone> VectorSerialize for Ann<V> {
             _ => todo!(),
         }
     }
-    fn vector_serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
+    fn vector_serialize<W: Write + GyWrite>(&self, writer: &mut W) -> GyResult<()> {
         match self {
             Ann::HNSW(v) => {
                 AnnType::HNSW.to_usize().binary_serialize(writer)?;

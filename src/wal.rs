@@ -1,7 +1,9 @@
+use super::disk::GyWrite;
 use super::util::error::{GyError, GyResult};
 use super::util::fs::{FileIOSelector, IoSelector, MmapSelector};
-use crate::gypaetus::ValueSized;
+use crate::disk::GyRead;
 use crate::iocopy;
+use crate::ValueSized;
 use core::arch::x86_64::*;
 use memmap2::{self, Mmap, MmapMut};
 use serde::de::value;
@@ -37,12 +39,34 @@ impl<'a> WalReader<'a> {
     }
 }
 
+impl<'a> GyRead for WalReader<'a> {
+    fn read_bytes(&mut self, n: usize) -> GyResult<&[u8]> {
+        let v = self.wal.io_selector.read_bytes(self.offset, n)?;
+        self.offset += n;
+        Ok(v)
+    }
+
+    fn cursor(&self) -> &[u8] {
+        todo!()
+    }
+
+    fn offset(&self) -> usize {
+        self.offset
+    }
+}
+
 pub(crate) struct Wal {
     io_selector: Box<dyn IoSelector>,
     i: usize,
     j: usize,
     fsize: usize,
     buffer: [u8; BLOCK_SIZE],
+}
+
+impl GyWrite for Wal {
+    fn get_pos(&mut self) -> GyResult<usize> {
+        Ok(self.i)
+    }
 }
 
 impl Wal {
@@ -61,7 +85,7 @@ impl Wal {
     }
 
     pub(crate) fn check_rotate<T: ValueSized>(&self, t: &T) -> GyResult<()> {
-        if self.i + t.size() > self.fsize {
+        if self.i + t.bytes_size() > self.fsize {
             return Err(GyError::ErrWalOverflow);
         }
         Ok(())

@@ -4,16 +4,16 @@ use super::util::error::{GyError, GyResult};
 use super::util::fs::{self, from_json_file};
 use super::util::fst::{FstBuilder, FstReader, FstReaderIter};
 use super::{CollectionReader, IndexReader, Meta, DATA_FILE, META_FILE};
-use crate::gypaetus::schema::VUInt;
-use crate::gypaetus::schema::VarIntSerialize;
-use crate::gypaetus::Ann;
-use crate::gypaetus::DocFreq;
-use crate::gypaetus::FieldEntry;
-use crate::gypaetus::Neighbor;
-use crate::gypaetus::Term;
-use crate::gypaetus::Vector;
-use crate::gypaetus::VectorIndexBase;
 use crate::iocopy;
+use crate::schema::VUInt;
+use crate::schema::VarIntSerialize;
+use crate::util::bloom::GyBloom;
+use crate::Ann;
+use crate::DocFreq;
+use crate::FieldEntry;
+use crate::Neighbor;
+use crate::Term;
+use crate::Vector;
 use art_tree::Key;
 use bytes::{Buf, BufMut};
 use bytes::{Bytes, BytesMut};
@@ -88,6 +88,13 @@ enum CompressionType {
     LowercaseAscii,
     Zstandard,
     Snappy,
+}
+
+impl GyWrite for File {
+    fn get_pos(&mut self) -> GyResult<usize> {
+        let pos = self.seek(SeekFrom::Current(0))?;
+        Ok(pos as usize)
+    }
 }
 
 struct CompactionMerger<T: Iterator> {
@@ -171,6 +178,8 @@ pub fn merge(a: &DiskStoreReader, b: &DiskStoreReader, new_fname: &Path) -> GyRe
                 println!("field:{}", r1.get_field_name());
                 let field_merger =
                     CompactionMerger::new(r1.iter().peekable(), r2.iter().peekable());
+                let mut bloom = GyBloom::new(r1.get_term_count() + r2.get_term_count());
+                let mut term_count: usize = 0;
                 field_merger.merge().try_for_each(|e1| -> GyResult<()> {
                     let mut disk_poting_writer = DiskPostingWriter::new(&mut bytes);
                     match (e1.0, e1.1) {
@@ -196,6 +205,7 @@ pub fn merge(a: &DiskStoreReader, b: &DiskStoreReader, new_fname: &Path) -> GyRe
                                 bytes.get_ref()
                             );
                             writer.add_term(item1.term(), offset)?;
+                            term_count += 1;
                         }
                         (Some(item1), None) => {
                             let p1 = item1.posting_reader();
@@ -206,6 +216,7 @@ pub fn merge(a: &DiskStoreReader, b: &DiskStoreReader, new_fname: &Path) -> GyRe
                             let offset =
                                 writer.write_posting(p1.get_doc_count(), bytes.get_ref())?;
                             writer.add_term(item1.term(), offset)?;
+                            term_count += 1;
                         }
                         (None, Some(item2)) => {
                             let p2 = item2.posting_reader();
@@ -218,15 +229,19 @@ pub fn merge(a: &DiskStoreReader, b: &DiskStoreReader, new_fname: &Path) -> GyRe
                             let offset =
                                 writer.write_posting(p2.get_doc_count(), bytes.get_ref())?;
                             writer.add_term(item2.term(), offset)?;
+                            term_count += 1;
                         }
                         (None, None) => {
                             println!("none")
                         }
                     }
+
                     bytes.get_mut().clear();
                     Ok(())
                 })?;
-                writer.finish_field()?;
+                let bh1 = writer.write_bloom(&bloom)?;
+                let bh2 = writer.write_fst()?;
+                writer.finish_field(term_count, bh1, bh2)?;
             }
             (None, Some(r2)) => println!("a:{},b{}", "none", r2.get_field_name()),
             (Some(r1), None) => {
@@ -245,63 +260,63 @@ pub fn merge(a: &DiskStoreReader, b: &DiskStoreReader, new_fname: &Path) -> GyRe
     Ok(())
 }
 
-//持久化索引
-pub fn persist_index(index_reader: &IndexReader) -> GyResult<()> {
-    let fname = index_reader.get_index_config().get_wal_path();
-    let doc_end = index_reader.offset()?;
-    let mut writer = DiskStoreWriter::with_offset(
-        &fname,
-        doc_end,
-        index_reader.get_index_base().doc_offset.read()?.len(),
-    )?;
+// //持久化索引
+// pub fn persist_index(index_reader: &IndexReader) -> GyResult<()> {
+//     let fname = index_reader.get_index_config().get_wal_path();
+//     let doc_end = index_reader.offset()?;
+//     let mut writer = DiskStoreWriter::with_offset(
+//         &fname,
+//         doc_end,
+//         index_reader.get_index_base().doc_offset.read()?.len(),
+//     )?;
 
-    let mut buf = Vec::with_capacity(4 * KB);
-    // write field
-    for field in index_reader.iter() {
-        let mut term_offset_cache: HashMap<Vec<u8>, usize> = HashMap::new();
-        for (b, p) in field.indexs.read()?.iter() {
-            let (doc_count, start_addr, end_addr) = {
-                let posting = (*p).read()?;
-                (
-                    posting.doc_count,
-                    posting.byte_addr.clone(),
-                    posting.doc_freq_addr.clone(),
-                )
-            };
-            // write posting
-            let posting_buffer = field.posting_buffer(start_addr, end_addr)?;
-            for rb in posting_buffer.iter() {
-                buf.write(rb)?;
-            }
-            let offset = writer.write_posting(doc_count, buf.as_slice())?;
-            term_offset_cache.insert(b.to_bytes(), offset);
-            buf.clear();
-        }
-        // write bloom todo
+//     let mut buf = Vec::with_capacity(4 * KB);
+//     // write field
+//     for field in index_reader.iter() {
+//         let mut term_offset_cache: HashMap<Vec<u8>, usize> = HashMap::new();
+//         for (b, p) in field.indexs.read()?.iter() {
+//             let (doc_count, start_addr, end_addr) = {
+//                 let posting = (*p).read()?;
+//                 (
+//                     posting.doc_count,
+//                     posting.byte_addr.clone(),
+//                     posting.doc_freq_addr.clone(),
+//                 )
+//             };
+//             // write posting
+//             let posting_buffer = field.posting_buffer(start_addr, end_addr)?;
+//             for rb in posting_buffer.iter() {
+//                 buf.write(rb)?;
+//             }
+//             let offset = writer.write_posting(doc_count, buf.as_slice())?;
+//             term_offset_cache.insert(b.to_bytes(), offset);
+//             buf.clear();
+//         }
+//         // write bloom todo
 
-        // write fst
-        for (b, _) in field.indexs.read()?.iter() {
-            let v: &[u8] = b.borrow();
-            let offset = term_offset_cache.get(v).unwrap();
-            writer.add_term(v, *offset)?;
-        }
-        writer.finish_field()?;
-    }
-    // 写入文档和偏移量关系 meta
-    writer.write_doc_meta(&index_reader.get_doc_offset().read()?)?;
-    // 写入每个域的 meta
-    writer.write_field_meta()?;
-    writer.close()?;
-    drop(writer);
-    if let Some(dir_path) = fname.parent() {
-        std::fs::rename(&fname, dir_path.join(DATA_FILE))?;
-        crate::gypaetus::fs::to_json_file(
-            index_reader.get_index_base().get_meta(),
-            dir_path.join(META_FILE),
-        )?;
-    }
-    Ok(())
-}
+//         // write fst
+//         for (b, _) in field.indexs.read()?.iter() {
+//             let v: &[u8] = b.borrow();
+//             let offset = term_offset_cache.get(v).unwrap();
+//             writer.add_term(v, *offset)?;
+//         }
+//         writer.finish_field()?;
+//     }
+//     // 写入文档和偏移量关系 meta
+//     writer.write_doc_meta(&index_reader.get_doc_offset().read()?)?;
+//     // 写入每个域的 meta
+//     writer.write_field_meta()?;
+//     writer.close()?;
+//     drop(writer);
+//     if let Some(dir_path) = fname.parent() {
+//         std::fs::rename(&fname, dir_path.join(DATA_FILE))?;
+//         crate::fs::to_json_file(
+//             index_reader.get_index_base().get_meta(),
+//             dir_path.join(META_FILE),
+//         )?;
+//     }
+//     Ok(())
+// }
 
 //合并索引
 pub fn persist_collection(reader: &CollectionReader) -> GyResult<()> {
@@ -339,15 +354,20 @@ pub fn persist_collection(reader: &CollectionReader) -> GyResult<()> {
             buf.clear();
         }
         // write bloom todo
-
+        println!("term_count:{}", field.get_term_count());
+        let mut bloom = GyBloom::new(field.get_term_count().max(1));
         // write fst
         for (b, _) in field.indexs.read()?.iter() {
             let v: &[u8] = b.borrow();
+            bloom.set(v);
             let offset = term_offset_cache.get(v).unwrap();
             writer.add_term(v, *offset)?;
         }
-        writer.finish_field()?;
+        let bh1 = writer.write_bloom(&bloom)?;
+        let bh2 = writer.write_fst()?;
+        writer.finish_field(field.get_term_count(), bh1, bh2)?;
     }
+
     // 写入文档和偏移量关系 meta
     writer.write_doc_meta(&index_reader.get_doc_offset().read()?)?;
     // 写入每个域的 meta
@@ -356,7 +376,7 @@ pub fn persist_collection(reader: &CollectionReader) -> GyResult<()> {
     drop(writer);
     if let Some(dir_path) = fname.parent() {
         std::fs::rename(&fname, dir_path.join(DATA_FILE))?;
-        crate::gypaetus::fs::to_json_file(
+        crate::fs::to_json_file(
             index_reader.get_index_base().get_meta(),
             dir_path.join(META_FILE),
         )?;
@@ -368,9 +388,11 @@ pub struct DiskStoreReader {
     meta: Meta,
     vector_field: Arc<Ann<Tensor>>,
     fields_meta: Vec<FieldHandle>,
+    blooms: Vec<Arc<GyBloom>>,
     doc_meta: Vec<usize>,
     doc_end: usize,
     file: File,
+    fsize: usize,
     mmap: Arc<Mmap>,
 }
 
@@ -381,7 +403,10 @@ impl DiskStoreReader {
         let meta: Meta = from_json_file(&meta_path)?;
         let file = OpenOptions::new().read(true).open(data_path)?;
         let file_size = file.metadata()?.size();
-        if file_size < FOOTER_LEN {}
+        if file_size < FOOTER_LEN {
+            return Err(GyError::ErrFooter);
+        }
+        println!("file_size:{}", file_size);
         let footer_pos = file_size - FOOTER_LEN;
         let mut footer = [0u8; FOOTER_LEN as usize];
         file.read_at(&mut footer, footer_pos)?;
@@ -402,28 +427,38 @@ impl DiskStoreReader {
 
         let fields_meta = Self::read_at_bh::<Vec<FieldHandle>>(&mmap, field_meta_bh)?;
         let doc_meta = Self::read_at_bh::<Vec<usize>>(&mmap, doc_meta_bh)?;
+        println!("finish read fields_meta");
+        let mut blooms: Vec<Arc<GyBloom>> = Vec::with_capacity(fields_meta.len());
+        for meta in fields_meta.iter() {
+            println!(" meta.bloom_bh:{:?}", meta.bloom_bh);
+            let bloom = Self::read_at_bh::<GyBloom>(&mmap, meta.bloom_bh)?;
+            blooms.push(Arc::new(bloom));
+        }
+
+        let mut mmap_reader = MmapReader::new(&mmap, vector_meta_bh.start(), vector_meta_bh.end());
         let vector_index =
-            Self::read_vector_index::<Ann<Tensor>>(&mmap, vector_meta_bh, meta.tensor_entry())?;
+            Self::read_vector_index::<Ann<Tensor>>(&mut mmap_reader, meta.tensor_entry())?;
 
         assert!(fields_meta.len() == meta.get_fields().len());
         Ok(Self {
             meta: meta,
             vector_field: Arc::new(vector_index),
             fields_meta: fields_meta,
+            blooms: blooms,
             doc_meta: doc_meta,
             doc_end: doc_end,
             file: file,
+            fsize: file_size as usize,
             mmap: Arc::new(mmap),
         })
     }
 
     fn read_vector_index<T: VectorSerialize>(
-        mmap: &Mmap,
-        bh: BlockHandle,
+        r: &mut MmapReader,
         entry: &TensorEntry,
     ) -> GyResult<T> {
-        let mut r = mmap[bh.start()..bh.end()].reader();
-        let v = T::vector_deserialize(&mut r, entry)?;
+        //let mut r = mmap[bh.start()..bh.end()].reader();
+        let v = T::vector_deserialize(r, entry)?;
         Ok(v)
     }
 
@@ -440,17 +475,18 @@ impl DiskStoreReader {
     }
 
     fn read_vector<T: VectorSerialize>(&self, offset: usize) -> GyResult<T> {
-        let mut r = self.mmap[offset..].reader();
-        let v = T::vector_deserialize(&mut r, self.meta.tensor_entry())?;
+        //  let mut r = self.mmap[offset..].reader();
+        let mut mmap_reader = MmapReader::new(&self.mmap, offset, self.fsize);
+        let v = T::vector_deserialize(&mut mmap_reader, self.meta.tensor_entry())?;
         Ok(v)
     }
 
     pub fn field_reader<'a>(&'a self, field_id: u32) -> GyResult<DiskFieldReader<'a>> {
-        let field_id = field_id as usize;
-        assert!(field_id < self.fields_meta.len());
-        assert!(field_id < self.meta.schema.fields.len());
-        let field_handle = &self.fields_meta[field_id as usize];
+        assert!((field_id as usize) < self.fields_meta.len());
+        assert!((field_id as usize) < self.meta.schema.fields.len());
         let field_entry = self.meta.schema.fields[field_id as usize].clone();
+        assert!(field_id == field_entry.get_field_id().id());
+        let field_handle = &self.fields_meta[field_id as usize];
         self.get_field_reader(field_entry, field_handle)
     }
 
@@ -462,7 +498,9 @@ impl DiskStoreReader {
         let fst =
             FstReader::load(&self.mmap[field_handle.fst_bh.start()..field_handle.fst_bh.end()]);
         Ok(DiskFieldReader {
+            term_count: field_handle.term_count,
             fst: fst,
+            bloom: self.blooms[field_entry.get_field_id().id() as usize].clone(),
             mmap: self.mmap.clone(),
             field_entry: field_entry,
         })
@@ -473,7 +511,7 @@ impl DiskStoreReader {
     }
 
     pub fn search(&self, term: Term) -> GyResult<DiskPostingReader> {
-        let field_id = term.field_id().0;
+        let field_id = term.field_id().id();
         let field_reader = self.field_reader(field_id)?;
         field_reader.find(term.bytes_value())
     }
@@ -571,13 +609,20 @@ impl<'a> Iterator for DiskDocReaderIter<'a> {
 }
 
 pub struct DiskFieldReader<'a> {
+    term_count: usize,
     fst: FstReader<'a>,
+    bloom: Arc<GyBloom>,
     mmap: Arc<Mmap>,
     field_entry: FieldEntry,
 }
 
 impl<'a> DiskFieldReader<'a> {
     pub fn find(&self, term: &[u8]) -> GyResult<DiskPostingReader> {
+        if !self.bloom.check(term) {
+            return Err(GyError::ErrNotFoundTermFromBloom(
+                std::str::from_utf8(term).unwrap().to_string(),
+            ));
+        }
         let offset = self.fst.get(term)?;
         self.get(offset as usize)
     }
@@ -595,6 +640,10 @@ impl<'a> DiskFieldReader<'a> {
 
     pub fn get_field_id(&self) -> &FieldID {
         &self.field_entry.get_field_id()
+    }
+
+    pub fn get_term_count(&self) -> usize {
+        self.term_count
     }
 
     fn get(&self, offset: usize) -> GyResult<DiskPostingReader> {
@@ -781,29 +830,40 @@ pub struct DiskStoreWriter {
 
 #[derive(Debug)]
 struct FieldHandle {
+    term_count: usize,
     fst_bh: BlockHandle,
-    filter_bh: BlockHandle,
+    bloom_bh: BlockHandle,
 }
 
 impl BinarySerialize for FieldHandle {
     fn binary_serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
+        self.term_count.binary_serialize(writer)?;
         self.fst_bh.binary_serialize(writer)?;
-        self.filter_bh.binary_serialize(writer)
+        self.bloom_bh.binary_serialize(writer)
     }
 
     fn binary_deserialize<R: Read>(reader: &mut R) -> GyResult<Self> {
+        let term_count = usize::binary_deserialize(reader)?;
         let fst_bh = BlockHandle::binary_deserialize(reader)?;
-        let filter_bh = BlockHandle::binary_deserialize(reader)?;
-        Ok(FieldHandle { fst_bh, filter_bh })
+        let bloom_bh = BlockHandle::binary_deserialize(reader)?;
+        Ok(FieldHandle {
+            term_count,
+            fst_bh,
+            bloom_bh,
+        })
     }
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone, Copy)]
 struct BlockHandle(usize, usize);
 
 impl BlockHandle {
     fn start(&self) -> usize {
         self.0
+    }
+
+    fn size(&self) -> usize {
+        self.1
     }
 
     fn end(&self) -> usize {
@@ -896,11 +956,28 @@ impl DiskStoreWriter {
         Ok(())
     }
 
-    fn finish_field(&mut self) -> GyResult<()> {
-        let bh = self.finish_index_block()?;
+    fn write_bloom(&mut self, bloom: &GyBloom) -> GyResult<BlockHandle> {
+        let offset = self.offset;
+        bloom.binary_serialize(&mut self.file)?;
+        self.flush()?;
+        self.offset = self.get_cursor()? as usize;
+        Ok(BlockHandle(offset, self.offset - offset))
+    }
+
+    fn write_fst(&mut self) -> GyResult<BlockHandle> {
+        self.finish_index_block()
+    }
+
+    fn finish_field(
+        &mut self,
+        term_count: usize,
+        bloom_bh: BlockHandle,
+        fst_bh: BlockHandle,
+    ) -> GyResult<()> {
         self.field_bhs.push(FieldHandle {
-            fst_bh: bh,
-            filter_bh: BlockHandle::default(),
+            term_count: term_count,
+            fst_bh: fst_bh,
+            bloom_bh: bloom_bh,
         });
         Ok(())
     }
@@ -1051,6 +1128,67 @@ impl DataBlock {
     fn write(&mut self, key: &[u8]) -> GyResult<()> {
         self.buf.write(key)?;
         Ok(())
+    }
+}
+
+pub trait GyRead {
+    fn read_bytes(&mut self, n: usize) -> GyResult<&[u8]>;
+
+    // // 返回当前 offset
+    fn offset(&self) -> usize;
+
+    fn cursor(&self) -> &[u8];
+}
+
+pub trait GyWrite {
+    // 返回当前 offset
+    fn get_pos(&mut self) -> GyResult<usize>;
+}
+
+pub(crate) struct MmapReader<'a> {
+    mmap: &'a Mmap,
+    offset: usize,
+    file_size: usize,
+}
+
+impl<'a> GyRead for MmapReader<'a> {
+    fn read_bytes(&mut self, n: usize) -> GyResult<&[u8]> {
+        if self.offset + n > self.file_size {
+            return Err(GyError::EOF);
+        }
+        let v = &self.mmap[self.offset..self.offset + n];
+        self.offset += n;
+        Ok(v)
+    }
+
+    fn cursor(&self) -> &[u8] {
+        &self.mmap[self.offset..]
+    }
+
+    fn offset(&self) -> usize {
+        self.offset
+    }
+}
+
+impl<'a> MmapReader<'a> {
+    pub(crate) fn new(mmap: &'a Mmap, offset: usize, file_size: usize) -> MmapReader {
+        Self {
+            mmap: mmap,
+            offset: offset,
+            file_size: file_size,
+        }
+    }
+}
+
+impl<'a> Read for MmapReader<'a> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let buf_len = buf.len();
+        if self.offset + buf_len > self.file_size {
+            return Err(std::io::ErrorKind::UnexpectedEof.into());
+        }
+        buf.copy_from_slice(&self.mmap[self.offset..self.offset + buf_len]);
+        self.offset += buf_len;
+        Ok(buf_len)
     }
 }
 

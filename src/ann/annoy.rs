@@ -1,6 +1,6 @@
 use super::AnnIndex;
-use crate::gypaetus::BinarySerialize;
-use crate::gypaetus::Metric;
+use crate::BinarySerialize;
+use crate::Metric;
 struct Annoy<V> {
     v: V,
 }
@@ -8,14 +8,14 @@ struct Annoy<V> {
 // impl<V> BinarySerialize for Annoy<V> {
 //     fn binary_deserialize<R: std::io::Read>(
 //         reader: &mut R,
-//     ) -> crate::gypaetus::util::error::GyResult<Self> {
+//     ) -> crate::util::error::GyResult<Self> {
 //         todo!()
 //     }
 
 //     fn binary_serialize<W: std::io::Write>(
 //         &self,
 //         writer: &mut W,
-//     ) -> crate::gypaetus::util::error::GyResult<()> {
+//     ) -> crate::util::error::GyResult<()> {
 //         todo!()
 //     }
 // }
@@ -24,7 +24,7 @@ struct Annoy<V> {
 // where
 //     V: Metric<V>,
 // {
-//     fn insert(&mut self, q: V) -> crate::gypaetus::util::error::GyResult<usize> {
+//     fn insert(&mut self, q: V) -> crate::util::error::GyResult<usize> {
 //         todo!()
 //     }
 
@@ -32,14 +32,14 @@ struct Annoy<V> {
 //         &self,
 //         q: &V,
 //         k: usize,
-//     ) -> crate::gypaetus::util::error::GyResult<Vec<super::Neighbor>> {
+//     ) -> crate::util::error::GyResult<Vec<super::Neighbor>> {
 //         todo!()
 //     }
 
 //     fn serialize<W: std::io::Write>(
 //         &self,
 //         writer: &mut W,
-//     ) -> crate::gypaetus::util::error::GyResult<()> {
+//     ) -> crate::util::error::GyResult<()> {
 //         todo!()
 //     }
 // }

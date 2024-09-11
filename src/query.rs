@@ -44,7 +44,7 @@ impl Term {
         if self.0.len() < 4 {
             self.0.resize(4, 0u8);
         }
-        BigEndian::write_u32(&mut self.0[0..4], field.0);
+        BigEndian::write_u32(&mut self.0[0..4], field.id());
     }
 
     pub fn set_u64(&mut self, val: u64) {

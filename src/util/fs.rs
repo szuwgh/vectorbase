@@ -1,6 +1,7 @@
 use super::error::GyResult;
 
 use crate::iocopy;
+use crate::GyError;
 use fs2::FileExt;
 use memmap2::{self, MmapMut};
 use serde::de::DeserializeOwned;
@@ -47,6 +48,8 @@ pub(crate) trait IoSelector {
 
     fn read(&self, data: &mut [u8], offset: usize) -> GyResult<usize>;
 
+    fn read_bytes(&self, offset: usize, n: usize) -> GyResult<&[u8]>;
+
     fn sync(&mut self) -> GyResult<()>;
 
     fn close(&mut self) -> GyResult<()>;
@@ -57,6 +60,7 @@ pub(crate) trait IoSelector {
 pub(crate) struct MmapSelector {
     file: File,
     mmap: MmapMut,
+    fsize: usize,
 }
 
 impl MmapSelector {
@@ -77,6 +81,7 @@ impl MmapSelector {
         Ok(Self {
             file: file,
             mmap: nmmap,
+            fsize: fsize,
         })
     }
 }
@@ -90,6 +95,14 @@ impl IoSelector for MmapSelector {
     fn read(&self, data: &mut [u8], offset: usize) -> GyResult<usize> {
         let i = iocopy!(data, &self.mmap[offset..]);
         Ok(i)
+    }
+
+    fn read_bytes(&self, offset: usize, n: usize) -> GyResult<&[u8]> {
+        if offset + n > self.fsize {
+            return Err(GyError::EOF);
+        }
+        let v = &self.mmap[offset..offset + n];
+        Ok(v)
     }
 
     fn sync(&mut self) -> GyResult<()> {
@@ -136,6 +149,10 @@ impl IoSelector for FileIOSelector {
     }
 
     fn delete(&self) -> GyResult<()> {
+        todo!()
+    }
+
+    fn read_bytes(&self, offset: usize, n: usize) -> GyResult<&[u8]> {
         todo!()
     }
 }

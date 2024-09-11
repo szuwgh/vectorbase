@@ -1,7 +1,7 @@
 #[macro_export]
 macro_rules! iocopy {
     ($des:expr, $src:expr) => {
-        crate::gypaetus::macros::copy_slice($des, $src)
+        crate::macros::copy_slice($des, $src)
     };
 }
 

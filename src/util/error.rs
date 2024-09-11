@@ -18,6 +18,8 @@ pub enum GyError {
     DBOpenFail(io::Error),
     #[error("invalid database")]
     ErrInvalid,
+    #[error("invalid database footer")]
+    ErrFooter,
     #[error("version mismatch")]
     ErrVersionMismatch,
     #[error("checksum error")]
@@ -40,6 +42,8 @@ pub enum GyError {
     ErrBadMagicNumber,
     #[error("serde json err: {0}")]
     ErrSerdeJson(serde_json::Error),
+    #[error("not found from bloom {0}")]
+    ErrNotFoundTermFromBloom(String),
 }
 
 impl From<&str> for GyError {

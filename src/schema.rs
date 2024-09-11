@@ -1,5 +1,6 @@
 // 每一行数据
 use super::ann::{AnnType, Metric};
+use super::disk::{GyRead, GyWrite};
 use super::util::error::{GyError, GyResult};
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use chrono::{TimeZone, Utc};
@@ -15,13 +16,13 @@ pub type DateTime = chrono::DateTime<chrono::Utc>;
 
 pub trait VectorSerialize: Sized {
     /// Serialize
-    fn vector_serialize<W: Write>(&self, writer: &mut W) -> GyResult<()>;
+    fn vector_serialize<W: Write + GyWrite>(&self, writer: &mut W) -> GyResult<()>;
     /// Deserialize
-    fn vector_deserialize<R: Read>(reader: &mut R, entry: &TensorEntry) -> GyResult<Self>;
+    fn vector_deserialize<R: Read + GyRead>(reader: &mut R, entry: &TensorEntry) -> GyResult<Self>;
 }
 
 pub trait ValueSized {
-    fn size(&self) -> usize;
+    fn bytes_size(&self) -> usize;
 }
 
 pub trait VectorOps {
@@ -300,18 +301,28 @@ pub enum FieldType {
 
 impl VectorSerialize for Tensor {
     fn vector_serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
-        self.as_bytes().binary_serialize(writer)?;
+        writer.write(self.as_bytes())?;
+        //self.as_bytes().binary_serialize(writer)?;
+        //  println!("nbytes:{:?}", self.as_bytes());
         Ok(())
     }
 
-    fn vector_deserialize<R: Read>(reader: &mut R, entry: &TensorEntry) -> GyResult<Self> {
-        let v = Vec::<u8>::binary_deserialize(reader)?;
-        Ok(Tensor::from_raw(
-            v,
-            entry.n_dims(),
-            Shape::from_slice(entry.dims()),
-            entry.vector_type().to_ggml_type(),
-        ))
+    fn vector_deserialize<R: Read + GyRead>(reader: &mut R, entry: &TensorEntry) -> GyResult<Self> {
+        //  println!("nbytes:{}", entry.nbytes());
+        let v = reader.read_bytes(entry.nbytes())?; //Vec::<u8>::binary_deserialize(reader)?;
+                                                    //  println!("v:{:?}", v);
+                                                    //  let v = Vec::<u8>::binary_deserialize(reader)?;
+        let t = unsafe {
+            Tensor::from_bytes(
+                v,
+                entry.n_dims(),
+                Shape::from_slice(entry.dims()),
+                entry.vector_type().to_ggml_type(),
+            )
+        };
+
+        //  println!("t:{:?}", unsafe { t.as_slice::<f32>() });
+        Ok(t)
     }
 }
 
@@ -322,9 +333,8 @@ impl Metric for Tensor {
 }
 
 impl ValueSized for Tensor {
-    fn size(&self) -> usize {
-        let n = std::mem::size_of::<usize>();
-        n + n + n * self.n_dims() + self.nbytes()
+    fn bytes_size(&self) -> usize {
+        self.nbytes()
     }
 }
 
@@ -346,13 +356,13 @@ pub struct VectorBase<V: VectorSerialize + ValueSized + VectorOps> {
 }
 
 impl<V: VectorSerialize + ValueSized + VectorOps> ValueSized for VectorBase<V> {
-    fn size(&self) -> usize {
-        self.v.size() + self.payload.size()
+    fn bytes_size(&self) -> usize {
+        self.v.bytes_size() + self.payload.bytes_size()
     }
 }
 
 impl<V: VectorSerialize + ValueSized + VectorOps> VectorSerialize for VectorBase<V> {
-    fn vector_deserialize<R: Read>(reader: &mut R, entry: &TensorEntry) -> GyResult<Self> {
+    fn vector_deserialize<R: Read + GyRead>(reader: &mut R, entry: &TensorEntry) -> GyResult<Self> {
         let v = V::vector_deserialize(reader, entry)?;
         let payload = Document::binary_deserialize(reader)?;
         Ok(Self {
@@ -360,7 +370,7 @@ impl<V: VectorSerialize + ValueSized + VectorOps> VectorSerialize for VectorBase
             payload: payload,
         })
     }
-    fn vector_serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
+    fn vector_serialize<W: Write + GyWrite>(&self, writer: &mut W) -> GyResult<()> {
         self.v.vector_serialize(writer)?;
         self.payload.binary_serialize(writer)?;
         Ok(())
@@ -390,7 +400,7 @@ impl<V: VectorSerialize + ValueSized + VectorOps> VectorBase<V> {
     }
 
     pub fn size(&self) -> usize {
-        self.v.size() + self.payload.size()
+        self.v.bytes_size() + self.payload.bytes_size()
     }
 
     pub fn into(self) -> V {
@@ -411,7 +421,7 @@ pub struct Document {
 }
 
 impl ValueSized for Document {
-    fn size(&self) -> usize {
+    fn bytes_size(&self) -> usize {
         std::mem::size_of::<u32>() + self.field_values.iter().map(|f| f.size()).sum::<usize>()
     }
 }
@@ -474,7 +484,7 @@ impl Document {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Ord, PartialOrd, Serialize, Deserialize, Default)]
-pub struct FieldID(pub u32);
+pub struct FieldID(u32);
 
 impl FieldID {
     pub(crate) fn from_field_id(field_id: u32) -> FieldID {
@@ -484,6 +494,10 @@ impl FieldID {
     #[inline]
     pub(crate) fn size(&self) -> usize {
         4
+    }
+
+    pub fn id(&self) -> u32 {
+        self.0
     }
 }
 
@@ -915,7 +929,7 @@ impl VInt {
 
 mod tests {
 
-    use crate::gypaetus::{util::fs::to_json_file, Meta};
+    use crate::{util::fs::to_json_file, Meta};
 
     use super::*;
     use std::io::Cursor;
@@ -924,6 +938,26 @@ mod tests {
         let u = Utc::now();
         let t = u.timestamp();
         println!("t:{}", t);
+    }
+
+    impl GyRead for Cursor<&Vec<u8>> {
+        fn cursor(&self) -> &[u8] {
+            todo!()
+        }
+        fn offset(&self) -> usize {
+            self.position() as usize
+        }
+        fn read_bytes(&mut self, n: usize) -> GyResult<&[u8]> {
+            self.set_position((self.offset() + n) as u64);
+            let v = &self.get_ref()[self.offset()..self.offset() + n];
+            Ok(v)
+        }
+    }
+
+    impl GyWrite for Cursor<&mut Vec<u8>> {
+        fn get_pos(&mut self) -> GyResult<usize> {
+            Ok(self.position() as usize)
+        }
     }
 
     #[test]
@@ -1077,7 +1111,7 @@ mod tests {
         let mut cursor1 = Cursor::new(&bytes);
         let d_doc1 = Document::binary_deserialize(&mut cursor1).unwrap();
         assert_eq!(doc1, d_doc1);
-        println!("doc size:{}", doc1.size());
+        println!("doc size:{}", doc1.bytes_size());
     }
 
     #[test]
@@ -1087,9 +1121,9 @@ mod tests {
         schema.add_field(FieldEntry::i32("title"));
         let meta = Meta::new(schema);
 
-        crate::gypaetus::fs::to_json_file(&meta, "./meta.json").unwrap();
+        crate::fs::to_json_file(&meta, "./meta.json").unwrap();
 
-        let meta1: Meta = crate::gypaetus::fs::from_json_file("./meta.json").unwrap();
+        let meta1: Meta = crate::fs::from_json_file("./meta.json").unwrap();
         println!("{:?}", meta1);
     }
 }

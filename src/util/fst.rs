@@ -2,8 +2,6 @@ use super::error::GyResult;
 use furze::fst::FstItem;
 use furze::{Builder, FstIterator, FST};
 
-pub(crate) fn new() {}
-
 pub(crate) struct FstBuilder(Builder<Vec<u8>>);
 
 impl FstBuilder {
