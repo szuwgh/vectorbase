@@ -50,11 +50,11 @@ pub type DocID = u64;
 pub struct DocFreq(pub(crate) DocID, pub(crate) u32);
 
 impl DocFreq {
-    pub(crate) fn doc_id(&self) -> DocID {
+    pub fn doc_id(&self) -> DocID {
         self.0
     }
 
-    pub(crate) fn freq(&self) -> u32 {
+    pub fn freq(&self) -> u32 {
         self.1
     }
 }
@@ -226,7 +226,7 @@ pub struct FieldEntry {
 }
 
 impl FieldEntry {
-    pub(crate) fn str(field_name: &str) -> FieldEntry {
+    pub fn str(field_name: &str) -> FieldEntry {
         FieldEntry {
             name: field_name.to_string(),
             field_id: FieldID::default(),
@@ -234,7 +234,7 @@ impl FieldEntry {
         }
     }
 
-    pub(crate) fn i64(field_name: &str) -> FieldEntry {
+    pub fn i64(field_name: &str) -> FieldEntry {
         FieldEntry {
             name: field_name.to_string(),
             field_id: FieldID::default(),
@@ -242,7 +242,7 @@ impl FieldEntry {
         }
     }
 
-    pub(crate) fn i32(field_name: &str) -> FieldEntry {
+    pub fn i32(field_name: &str) -> FieldEntry {
         FieldEntry {
             name: field_name.to_string(),
             field_id: FieldID::default(),
@@ -250,7 +250,7 @@ impl FieldEntry {
         }
     }
 
-    pub(crate) fn u64(field_name: &str) -> FieldEntry {
+    pub fn u64(field_name: &str) -> FieldEntry {
         FieldEntry {
             name: field_name.to_string(),
             field_id: FieldID::default(),
@@ -258,7 +258,7 @@ impl FieldEntry {
         }
     }
 
-    pub(crate) fn get_name(&self) -> &str {
+    pub fn get_name(&self) -> &str {
         &self.name
     }
 
@@ -392,6 +392,14 @@ impl<V: VectorSerialize + ValueSized + VectorOps> VectorBase<V> {
             v: v,
             payload: payload,
         }
+    }
+
+    pub fn doc(&self) -> &Document {
+        &self.payload
+    }
+
+    pub fn vector(&self) -> &V {
+        &self.v
     }
 
     pub fn from_array<T: TensorType, const N: usize>(xs: [T; N], payload: Document) -> Self {

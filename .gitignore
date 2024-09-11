@@ -23,8 +23,12 @@ Cargo.lock
 
 /example/target
 
+/example/simple/target
+
 /hnsw/target
 
 *.wal
 
 /data*
+
+

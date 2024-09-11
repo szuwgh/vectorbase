@@ -1,19 +1,3 @@
-# SearchLite
-A vector-based search engine, also supports ordinary text search
-
-Feature：
-1. Provide a low-level search library
-2. Support vector similarity search
-3. Support keyword search
-4. Simd optimizes similarity calculation
-5. Support index merging
-6. Support memory index
-7. Index persisted to disk and loaded
-
-## Getting started
-
-simple example
-```rust
 use galois::Shape;
 use galois::Tensor;
 use searchlite::ann::AnnType;
@@ -83,6 +67,3 @@ fn main() {
         println!("id:{},doc:{:?}", n.doc_id(), doc.doc(),);
     }
 }
-```
-
-
