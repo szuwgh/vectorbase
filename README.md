@@ -12,7 +12,7 @@ Feature：
 
 ## Getting started
 
-simple example
+[simple example](https://github.com/szuwgh/searchlite/blob/main/example/simple/src/main.rs)
 ```rust
 use galois::Shape;
 use galois::Tensor;
