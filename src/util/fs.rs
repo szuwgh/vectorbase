@@ -3,15 +3,53 @@ use super::error::GyResult;
 use crate::iocopy;
 use crate::GyError;
 use fs2::FileExt;
+use memmap2::MmapAsRawDesc;
 use memmap2::{self, MmapMut};
 use serde::de::DeserializeOwned;
 use serde::ser::Serialize;
 use std::fs;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter};
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::{FileExt, MetadataExt};
+#[cfg(target_os = "windows")]
+use std::os::windows::fs::{FileExt as windowsFileExt, MetadataExt};
 use std::path::{Path, PathBuf};
-
 pub struct GyFile(File);
+
+impl GyFile {
+    pub fn open<P: AsRef<Path>>(path: P) -> GyResult<GyFile> {
+        let file = OpenOptions::new().read(true).open(path)?;
+        Ok(GyFile(file))
+    }
+
+    pub fn file(&self) -> &File {
+        &self.0
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn fsize(&self) -> GyResult<usize> {
+        self.0.metadata()?.size();
+    }
+
+    #[cfg(target_os = "windows")]
+    pub fn fsize(&self) -> GyResult<usize> {
+        let s = self.0.metadata()?.file_size();
+        Ok(s as usize)
+    }
+
+    #[cfg(target_os = "windows")]
+    pub(crate) fn read_at(&self, buf: &mut [u8], offset: u64) -> GyResult<usize> {
+        let u = self.0.seek_read(buf, offset)?;
+        Ok(u)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn read_at(&self, buf: &mut [u8], offset: u64) -> GyResult<usize> {
+        let u = self.0.read_at(buf, offset)?;
+        Ok(u)
+    }
+}
 
 // 保存结构体到文件
 pub fn to_json_file<T: Serialize, P: AsRef<Path>>(data: &T, filename: P) -> GyResult<()> {

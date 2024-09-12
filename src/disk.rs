@@ -8,6 +8,7 @@ use crate::iocopy;
 use crate::schema::VUInt;
 use crate::schema::VarIntSerialize;
 use crate::util::bloom::GyBloom;
+use crate::util::fs::GyFile;
 use crate::Ann;
 use crate::DocFreq;
 use crate::FieldEntry;
@@ -24,8 +25,8 @@ use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufWriter, Read};
-use std::os::unix::fs::FileExt;
-use std::os::unix::fs::MetadataExt;
+
+use std::os::windows::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::{
@@ -77,7 +78,7 @@ use std::iter::Peekable;
 const KB: usize = 1 << 10;
 const MB: usize = KB * KB;
 const DEFAULT_BLOCK_SIZE: usize = 4 * KB + KB;
-const FOOTER_LEN: u64 = 64;
+const FOOTER_LEN: usize = 64;
 
 const MAGIC: &'static [u8] = b"\xD4\x56\x3F\x35\xE0\xEF\x09\x7A";
 
@@ -391,7 +392,7 @@ pub struct DiskStoreReader {
     blooms: Vec<Arc<GyBloom>>,
     doc_meta: Vec<usize>,
     doc_end: usize,
-    file: File,
+    file: GyFile,
     fsize: usize,
     mmap: Arc<Mmap>,
 }
@@ -401,15 +402,15 @@ impl DiskStoreReader {
         let data_path = index_path.join(DATA_FILE);
         let meta_path = index_path.join(META_FILE);
         let meta: Meta = from_json_file(&meta_path)?;
-        let file = OpenOptions::new().read(true).open(data_path)?;
-        let file_size = file.metadata()?.size();
+        let file = GyFile::open(data_path)?; //OpenOptions::new().read(true).open(data_path)?;
+        let file_size = file.fsize()?;
         if file_size < FOOTER_LEN {
             return Err(GyError::ErrFooter);
         }
         println!("file_size:{}", file_size);
         let footer_pos = file_size - FOOTER_LEN;
         let mut footer = [0u8; FOOTER_LEN as usize];
-        file.read_at(&mut footer, footer_pos)?;
+        file.read_at(&mut footer, footer_pos as u64)?;
         //判断魔数是否正确
         if &footer[FOOTER_LEN as usize - MAGIC.len()..FOOTER_LEN as usize] != MAGIC {
             return Err(GyError::ErrBadMagicNumber);
@@ -421,7 +422,7 @@ impl DiskStoreReader {
         let vector_meta_bh = BlockHandle::binary_deserialize(&mut c)?;
         let mmap: Mmap = unsafe {
             memmap2::MmapOptions::new()
-                .map(&file)
+                .map(file.file())
                 .map_err(|e| format!("mmap failed: {}", e))?
         };
 
@@ -1145,7 +1146,7 @@ pub trait GyWrite {
     fn get_pos(&mut self) -> GyResult<usize>;
 }
 
-pub(crate) struct MmapReader<'a> {
+pub struct MmapReader<'a> {
     mmap: &'a Mmap,
     offset: usize,
     file_size: usize,
@@ -1171,7 +1172,7 @@ impl<'a> GyRead for MmapReader<'a> {
 }
 
 impl<'a> MmapReader<'a> {
-    pub(crate) fn new(mmap: &'a Mmap, offset: usize, file_size: usize) -> MmapReader {
+    pub fn new(mmap: &'a Mmap, offset: usize, file_size: usize) -> MmapReader {
         Self {
             mmap: mmap,
             offset: offset,

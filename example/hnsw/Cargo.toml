@@ -1,0 +1,10 @@
+[package]
+name = "hnsw"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+searchlite = {path = "../../", version = "0.0.1"}
+galois = {path = "../../../galois", version = "0.1.0"}
+rand = "0.8.5"
+memmap2 = "0.9.0"
