@@ -28,13 +28,14 @@ use std::io::{BufWriter, Read};
 
 use std::os::windows::fs::FileExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::{
     fs::OpenOptions,
     io::{Seek, SeekFrom, Write},
 };
 
-use std::cmp::Ordering;
+use std::cmp::Ordering as CmpOrdering;
 use std::iter::Peekable;
 
 //  +---------------------+
@@ -117,9 +118,9 @@ where
     {
         std::iter::from_fn(move || match (self.a.peek(), self.b.peek()) {
             (Some(v1), Some(v2)) => match v1.cmp(v2) {
-                Ordering::Less => Some((self.a.next(), None)),
-                Ordering::Greater => Some((None, self.b.next())),
-                Ordering::Equal => Some((self.a.next(), self.b.next())),
+                CmpOrdering::Less => Some((self.a.next(), None)),
+                CmpOrdering::Greater => Some((None, self.b.next())),
+                CmpOrdering::Equal => Some((self.a.next(), self.b.next())),
             },
             (Some(_), None) => Some((self.a.next(), None)),
             (None, Some(_)) => Some((None, self.b.next())),
@@ -329,7 +330,7 @@ pub fn persist_collection(reader: &CollectionReader) -> GyResult<()> {
         doc_end,
         index_reader.get_index_base().doc_offset.read()?.len(),
     )?;
-
+    println!("fail");
     writer.write_vector(reader.vector_field.0.read()?.borrow())?;
 
     let mut buf = Vec::with_capacity(4 * KB);
@@ -341,8 +342,8 @@ pub fn persist_collection(reader: &CollectionReader) -> GyResult<()> {
                 let posting = (*p).read()?;
                 (
                     posting.doc_count,
-                    posting.byte_addr.clone(),
-                    posting.doc_freq_addr.clone(),
+                    posting.byte_addr.load(Ordering::SeqCst),
+                    posting.doc_freq_addr.load(Ordering::SeqCst),
                 )
             };
             // write posting
@@ -373,8 +374,10 @@ pub fn persist_collection(reader: &CollectionReader) -> GyResult<()> {
     writer.write_doc_meta(&index_reader.get_doc_offset().read()?)?;
     // 写入每个域的 meta
     writer.write_field_meta()?;
-    writer.close()?;
+    let newfsize = writer.close()?;
+    println!("newfsize:{}", newfsize);
     drop(writer);
+    index_reader.reopen_wal(newfsize as usize)?;
     if let Some(dir_path) = fname.parent() {
         std::fs::rename(&fname, dir_path.join(DATA_FILE))?;
         crate::fs::to_json_file(
@@ -983,7 +986,7 @@ impl DiskStoreWriter {
         Ok(())
     }
 
-    fn close(&mut self) -> GyResult<()> {
+    fn close(&mut self) -> GyResult<u64> {
         let mut footer = [0u8; FOOTER_LEN as usize];
         let mut c = std::io::Cursor::new(&mut footer[..]);
         self.doc_end.binary_serialize(&mut c)?;
@@ -993,8 +996,8 @@ impl DiskStoreWriter {
         iocopy!(&mut footer[FOOTER_LEN as usize - MAGIC.len()..], MAGIC);
         self.write(&footer)?;
         self.flush()?;
-        self.truncate()?;
-        Ok(())
+        //self.truncate()?;
+        Ok(self.get_cursor()?)
     }
 
     fn truncate(&mut self) -> GyResult<()> {

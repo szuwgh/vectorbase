@@ -1,5 +1,6 @@
 use std::borrow::BorrowMut;
 use std::io::{Read, Write};
+use std::sync::atomic::AtomicUsize;
 use std::sync::RwLock;
 
 use super::util::error::GyResult;
@@ -17,6 +18,9 @@ const LEVEL_CLASS: [usize; 10] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 9];
 const BYTE_BLOCK_SIZE: usize = 32; //1 << 15; //64 KB
 const POINTER_LEN: usize = 4;
 pub(super) type Addr = usize;
+
+pub(crate) type SafeAddr = AtomicUsize;
+
 pub(super) trait TextIndex {
     fn insert(&mut self, k: Vec<u8>, v: u64);
 }

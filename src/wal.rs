@@ -115,6 +115,7 @@ pub(crate) struct Wal {
     j: usize,
     fsize: usize,
     buffer: [u8; BLOCK_SIZE],
+    fname: PathBuf,
 }
 
 impl GyWrite for Wal {
@@ -135,7 +136,12 @@ impl Wal {
             j: 0,
             fsize: fsize,
             buffer: [0u8; BLOCK_SIZE],
+            fname: fname.to_path_buf(),
         })
+    }
+
+    pub(crate) fn reopen(&mut self, fsize: usize) -> GyResult<()> {
+        self.io_selector.reopen(&self.fname, fsize)
     }
 
     pub(crate) fn open(fname: &Path, fsize: usize, io_type: IOType) -> GyResult<Wal> {
@@ -149,6 +155,7 @@ impl Wal {
             j: 0,
             fsize: fsize,
             buffer: [0u8; BLOCK_SIZE],
+            fname: fname.to_path_buf(),
         })
     }
 

@@ -16,6 +16,7 @@ use schema::ValueSized;
 use std::sync::RwLockWriteGuard;
 use util::error::{GyError, GyResult};
 mod macros;
+use crate::buffer::SafeAddr;
 use crate::schema::VectorBase;
 pub mod wal;
 use crate::ann::Ann;
@@ -219,7 +220,7 @@ impl CollectionReader {
 pub struct Collection(Arc<VectorCollection<Tensor>>);
 
 impl Collection {
-    fn reader(&self) -> CollectionReader {
+    pub fn reader(&self) -> CollectionReader {
         CollectionReader {
             vector_field: self.0.vector_field.clone(),
             index_reader: IndexReader {
@@ -229,17 +230,17 @@ impl Collection {
         }
     }
 
-    fn new(schema: Schema, config: IndexConfig) -> GyResult<Collection> {
+    pub fn new(schema: Schema, config: IndexConfig) -> GyResult<Collection> {
         Ok(Collection(Arc::new(VectorCollection::new(schema, config)?)))
     }
 
-    fn open(schema: Schema, config: IndexConfig) -> GyResult<Collection> {
+    pub fn open(schema: Schema, config: IndexConfig) -> GyResult<Collection> {
         Ok(Collection(Arc::new(VectorCollection::open(
             schema, config,
         )?)))
     }
 
-    fn add(&self, v: Vector) -> GyResult<()> {
+    pub fn add(&self, v: Vector) -> GyResult<()> {
         self.0.add(v)
     }
 }
@@ -463,7 +464,7 @@ impl IndexBase {
 
     fn inner_add(&self, doc_id: DocID, doc: &Document) -> GyResult<()> {
         for field in doc.field_values.iter() {
-            println!("field.field_id().0:{}", field.field_id().id());
+            // println!("field.field_id().0:{}", field.field_id().id());
             let fw = self.fields.get(field.field_id().id() as usize).unwrap();
             fw.add(doc_id, field.value())?;
         }
@@ -546,8 +547,8 @@ type Posting = Arc<RwLock<_Posting>>;
 pub struct _Posting {
     last_doc_id: DocID,
     doc_delta: DocID,
-    byte_addr: Addr,
-    doc_freq_addr: Addr,
+    byte_addr: SafeAddr,
+    doc_freq_addr: SafeAddr,
     doc_count: usize,
     freq: u32,
     add_commit: bool,
@@ -558,8 +559,8 @@ impl _Posting {
         Self {
             last_doc_id: 0,
             doc_delta: 0,
-            byte_addr: doc_freq_addr,
-            doc_freq_addr: doc_freq_addr,
+            byte_addr: SafeAddr::new(doc_freq_addr),
+            doc_freq_addr: SafeAddr::new(doc_freq_addr),
             doc_count: 0,
             add_commit: false,
             freq: 0,
@@ -702,9 +703,11 @@ impl FieldCache {
     }
 
     fn write_doc_freq(posting: &mut _Posting, block_pool: &mut ByteBlockPool) -> GyResult<()> {
-        block_pool.set_pos(posting.doc_freq_addr);
+        block_pool.set_pos(posting.doc_freq_addr.load(Ordering::SeqCst));
         DocFreq(posting.doc_delta, posting.freq).binary_serialize(block_pool)?;
-        posting.doc_freq_addr = block_pool.get_pos();
+        posting
+            .doc_freq_addr
+            .store(block_pool.get_pos(), Ordering::SeqCst);
         Ok(())
     }
 
@@ -759,8 +762,8 @@ impl FieldReader {
             let index = self.indexs.read()?;
             let posting = index.get(term).unwrap();
             let (start_addr, end_addr) = (
-                (*posting).read()?.byte_addr.clone(),
-                (*posting).read()?.doc_freq_addr.clone(),
+                (*posting).read()?.byte_addr.load(Ordering::SeqCst),
+                (*posting).read()?.doc_freq_addr.load(Ordering::SeqCst),
             );
             (start_addr, end_addr)
         };
@@ -846,6 +849,10 @@ impl IndexReader {
             index_base: index_base,
             wal: wal,
         }
+    }
+
+    fn reopen_wal(&self, fsize: usize) -> GyResult<()> {
+        self.wal.write()?.reopen(fsize)
     }
 
     pub(crate) fn get_index_base(&self) -> &IndexBase {
@@ -981,7 +988,7 @@ mod tests {
     #[test]
     fn test_add_vector1() {
         let mut schema = Schema::with_vector(VectorEntry::new(
-            "vector1",
+            "vector",
             AnnType::HNSW,
             TensorEntry::new(1, [4], schema::VectorType::F32),
         ));

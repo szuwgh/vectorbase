@@ -68,11 +68,7 @@ pub fn from_json_file<T: DeserializeOwned, P: AsRef<Path>>(filename: P) -> GyRes
 }
 
 pub(crate) fn open_file(fname: &Path, read: bool, write: bool) -> GyResult<File> {
-    let file = OpenOptions::new()
-        .create(true)
-        .read(read)
-        .write(write)
-        .open(fname)?;
+    let file = OpenOptions::new().read(read).write(write).open(fname)?;
     Ok(file)
 }
 
@@ -88,6 +84,8 @@ pub(crate) trait IoSelector {
 
     fn read_bytes(&self, offset: usize, n: usize) -> GyResult<&[u8]>;
 
+    fn reopen(&mut self, fname: &Path, fsize: usize) -> GyResult<()>;
+
     fn sync(&mut self) -> GyResult<()>;
 
     fn close(&mut self) -> GyResult<()>;
@@ -97,7 +95,7 @@ pub(crate) trait IoSelector {
 
 pub(crate) struct MmapSelector {
     file: File,
-    mmap: MmapMut,
+    mmap: Option<MmapMut>,
     fsize: usize,
 }
 
@@ -108,6 +106,7 @@ impl MmapSelector {
             .read(true)
             .write(true)
             .open(fname)?;
+        println!("fsize:{}", fsize);
         file.allocate(fsize as u64)?;
         let nmmap = unsafe {
             memmap2::MmapOptions::new()
@@ -118,7 +117,7 @@ impl MmapSelector {
         };
         Ok(Self {
             file: file,
-            mmap: nmmap,
+            mmap: Some(nmmap),
             fsize: fsize,
         })
     }
@@ -135,20 +134,28 @@ impl MmapSelector {
         };
         Ok(Self {
             file: file,
-            mmap: nmmap,
+            mmap: Some(nmmap),
             fsize: fsize,
         })
+    }
+
+    fn get_mmap_mut(&mut self) -> &mut MmapMut {
+        self.mmap.as_mut().unwrap()
+    }
+
+    fn get_mmap(&self) -> &MmapMut {
+        self.mmap.as_ref().unwrap()
     }
 }
 
 impl IoSelector for MmapSelector {
     fn write(&mut self, data: &[u8], offset: usize) -> GyResult<usize> {
-        let i = iocopy!(&mut self.mmap[offset..], data);
+        let i = iocopy!(&mut self.get_mmap_mut()[offset..], data);
         Ok(i)
     }
 
     fn read(&self, data: &mut [u8], offset: usize) -> GyResult<usize> {
-        let i = iocopy!(data, &self.mmap[offset..]);
+        let i = iocopy!(data, &self.get_mmap()[offset..]);
         Ok(i)
     }
 
@@ -156,12 +163,32 @@ impl IoSelector for MmapSelector {
         if offset + n > self.fsize {
             return Err(GyError::EOF);
         }
-        let v = &self.mmap[offset..offset + n];
+        let v = &self.get_mmap()[offset..offset + n];
         Ok(v)
     }
 
+    fn reopen(&mut self, fname: &Path, fsize: usize) -> GyResult<()> {
+        if let Some(mmap) = self.mmap.take() {
+            drop(mmap);
+        }
+        drop(&self.file);
+        let file = OpenOptions::new().read(true).write(true).open(fname)?;
+        println!("reopen");
+        file.set_len(fsize as u64)?;
+        let nmmap = unsafe {
+            memmap2::MmapOptions::new()
+                .offset(0)
+                .len(fsize)
+                .map_mut(&file)
+                .map_err(|e| format!("mmap failed: {}", e))?
+        };
+        self.file = file;
+        self.mmap = Some(nmmap);
+        Ok(())
+    }
+
     fn sync(&mut self) -> GyResult<()> {
-        self.mmap.flush()?;
+        self.get_mmap_mut().flush()?;
         Ok(())
     }
 
@@ -192,6 +219,10 @@ impl IoSelector for FileIOSelector {
     }
 
     fn read(&self, data: &mut [u8], offset: usize) -> GyResult<usize> {
+        todo!()
+    }
+
+    fn reopen(&mut self, fname: &Path, fsize: usize) -> GyResult<()> {
         todo!()
     }
 
