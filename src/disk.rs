@@ -25,8 +25,6 @@ use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufWriter, Read};
-
-use std::os::windows::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -328,7 +326,7 @@ pub fn persist_collection(reader: &CollectionReader) -> GyResult<()> {
     let mut writer = DiskStoreWriter::with_offset(
         &fname,
         doc_end,
-        index_reader.get_index_base().doc_offset.read()?.len(),
+        index_reader.get_index_base().doc_offset.get_borrow().len(),
     )?;
     println!("fail");
     writer.write_vector(reader.vector_field.0.read()?.borrow())?;
@@ -371,7 +369,7 @@ pub fn persist_collection(reader: &CollectionReader) -> GyResult<()> {
     }
 
     // 写入文档和偏移量关系 meta
-    writer.write_doc_meta(&index_reader.get_doc_offset().read()?)?;
+    writer.write_doc_meta(&index_reader.get_doc_offset())?;
     // 写入每个域的 meta
     writer.write_field_meta()?;
     let newfsize = writer.close()?;

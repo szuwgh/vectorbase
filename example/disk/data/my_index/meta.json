@@ -1,1 +1,0 @@
-{"schema":{"vector_field":{"name":"vector","index_type":"HNSW","tensor_entry":{"n_dims":1,"dims":[4,1,1,1],"vector_type":"F32"}},"fields":[{"name":"color","field_id":0,"field_type":"Str"}],"fields_map":{"color":0}},"create_time":1726138214,"update_time":0}

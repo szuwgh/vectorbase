@@ -8,13 +8,17 @@ mod tokenize;
 pub mod util;
 use ann::Neighbor;
 use art_tree::{Art, ByteString};
+use core::cell::UnsafeCell;
 use disk::GyRead;
 use galois::Tensor;
 use query::Term;
 use schema::TensorEntry;
 use schema::ValueSized;
+use std::borrow::Borrow;
+use std::sync::atomic::AtomicU64;
 use std::sync::RwLockWriteGuard;
 use util::error::{GyError, GyResult};
+use wal::ThreadWal;
 mod macros;
 use crate::buffer::SafeAddr;
 use crate::schema::VectorBase;
@@ -41,9 +45,8 @@ use crate::util::time::Time;
 use crate::wal::WalReader;
 use lock_api::RawMutex;
 use parking_lot::Mutex;
-use std::borrow::BorrowMut;
 use std::cell::RefCell;
-use std::io::{Cursor, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock, Weak};
@@ -204,8 +207,8 @@ impl CollectionReader {
     pub fn vector(&self, doc_id: DocID) -> GyResult<Vector> {
         let doc_offset = self.index_reader.index_base.doc_offset(doc_id)?;
         let v: Vector = {
-            let mut wal = self.index_reader.wal.read()?;
-            let mut wal_read = WalReader::new(&mut wal, doc_offset);
+            let wal = self.index_reader.wal.get_borrow();
+            let mut wal_read = WalReader::new(wal, doc_offset, wal.offset());
             Vector::vector_deserialize(&mut wal_read, self.tensor_entry())?
         };
         Ok(v)
@@ -223,10 +226,7 @@ impl Collection {
     pub fn reader(&self) -> CollectionReader {
         CollectionReader {
             vector_field: self.0.vector_field.clone(),
-            index_reader: IndexReader {
-                index_base: self.0.index_base.clone(),
-                wal: self.0.index_base.wal.clone(),
-            },
+            index_reader: IndexReader::new(self.0.index_base.clone()),
         }
     }
 
@@ -307,11 +307,11 @@ where
             rw_lock: Mutex::new(()),
         };
         {
-            let mut wal = colletion.index_base.get_wal_mut()?;
+            let wal = colletion.index_base.get_wal_mut();
             let offset = {
                 let mut wal_iter = wal.iter::<VectorBase<V>>(tensor_entry);
                 while let Some((doc_offset, v)) = wal_iter.next() {
-                    colletion.recover(doc_offset, v)?;
+                    colletion.quick_add(doc_offset, v)?;
                 }
                 wal_iter.offset() - 4
             };
@@ -321,11 +321,17 @@ where
         Ok(colletion)
     }
 
-    fn recover(&self, doc_offset: usize, v: VectorBase<V>) -> GyResult<()> {
+    fn quick_add(&self, doc_offset: usize, v: VectorBase<V>) -> GyResult<()> {
+        let doc_id = self.index_base.doc_id.load(Ordering::SeqCst);
         {
-            self.index_base.doc_offset.write()?.push(doc_offset);
+            self.index_base.doc_offset.get_borrow_mut()[doc_id as usize] = doc_offset;
         }
+        self.index_base
+            .last_offset
+            .store(doc_offset, Ordering::SeqCst);
         let id = self.vector_field.insert(v.v)? as DocID;
+        assert!(id == doc_id);
+        self.index_base.doc_id.fetch_add(1, Ordering::SeqCst);
         self.index_base.inner_add(id, &v.payload)?;
         self.index_base.commit()?;
         Ok(())
@@ -336,12 +342,20 @@ where
             self.rw_lock.raw().lock();
         }
         let doc_offset = self.write_vector_to_wal(&v)?;
-        {
-            self.index_base.doc_offset.write()?.push(doc_offset);
-        }
-        let id = self.vector_field.insert(v.v)? as DocID;
-        self.index_base.inner_add(id, &v.payload)?;
-        self.index_base.commit()?;
+        self.quick_add(doc_offset, v)?;
+
+        // let doc_id = self.index_base.doc_id.load(Ordering::SeqCst);
+        // {
+        //     self.index_base.doc_offset.get_borrow_mut()[doc_id as usize] = doc_offset;
+        // }
+        // self.index_base
+        //     .last_offset
+        //     .store(doc_offset, Ordering::SeqCst);
+        // let id = self.vector_field.insert(v.v)? as DocID;
+        // assert!(id == doc_id);
+        // self.index_base.doc_id.fetch_add(1, Ordering::SeqCst);
+        // self.index_base.inner_add(id, &v.payload)?;
+        // self.index_base.commit()?;
         unsafe {
             self.rw_lock.raw().unlock();
         }
@@ -350,14 +364,13 @@ where
 
     fn write_vector_to_wal(&self, v: &VectorBase<V>) -> GyResult<usize> {
         {
-            self.index_base.wal.read()?.check_rotate(v)?;
+            self.index_base.wal.get_borrow().check_rotate(v)?;
         }
         let offset = {
-            let mut w = self.index_base.wal.write()?;
+            let mut w = self.index_base.wal.get_borrow_mut();
             let offset = w.offset();
             v.vector_serialize(&mut *w)?;
             w.flush()?;
-            drop(w);
             offset
         };
         Ok(offset)
@@ -367,15 +380,34 @@ where
 unsafe impl Send for IndexBase {}
 unsafe impl Sync for IndexBase {}
 
+unsafe impl Send for ThreadVec {}
+unsafe impl Sync for ThreadVec {}
+
+#[derive(Default)]
+struct ThreadVec(UnsafeCell<Vec<usize>>);
+
+impl ThreadVec {
+    pub(crate) fn new(w: Vec<usize>) -> ThreadVec {
+        Self(UnsafeCell::new(w))
+    }
+    pub(crate) fn get_borrow(&self) -> &Vec<usize> {
+        unsafe { &*self.0.get() }
+    }
+    pub(crate) fn get_borrow_mut(&self) -> &mut Vec<usize> {
+        unsafe { &mut *self.0.get() }
+    }
+}
+
 pub struct IndexBase {
     meta: Meta,
     fields: Vec<FieldCache>,
-    //doc_id: RefCell<DocID>,
+    doc_id: AtomicU64,
     buffer: Arc<RingBuffer>,
-    wal: Arc<RwLock<Wal>>,
-    doc_offset: RwLock<Vec<usize>>,
+    wal: Arc<ThreadWal>,
+    doc_offset: ThreadVec,
     rw_lock: Mutex<()>,
     config: IndexConfig,
+    last_offset: AtomicUsize,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -415,16 +447,17 @@ impl IndexBase {
         Ok(Self {
             meta: Meta::new(schema),
             fields: field_cache,
-            // doc_id: RefCell::new(0),
+            doc_id: AtomicU64::new(0),
             buffer: buffer_pool,
             rw_lock: Mutex::new(()),
-            wal: Arc::new(RwLock::new(Wal::new(
+            wal: Arc::new(ThreadWal::new(Wal::new(
                 &config.get_wal_path(), //&index_path.join(&config.wal_fname),
                 config.fsize,
                 config.io_type,
             )?)),
-            doc_offset: RwLock::new(Vec::with_capacity(1024)), // Max memory doc
+            doc_offset: ThreadVec::new(vec![0; 1024]), // Max memory doc
             config: config,
+            last_offset: AtomicUsize::new(0),
         })
     }
 
@@ -446,11 +479,13 @@ impl IndexBase {
         Ok(Self {
             meta: Meta::new(schema),
             fields: field_cache,
+            doc_id: AtomicU64::new(0),
             buffer: buffer_pool,
             rw_lock: Mutex::new(()),
-            wal: Arc::new(RwLock::new(wal)),
-            doc_offset: RwLock::new(Vec::with_capacity(1024)), // Max memory doc
+            wal: Arc::new(ThreadWal::new(wal)),
+            doc_offset: ThreadVec::new(vec![0; 1024]), // Max memory doc
             config: config,
+            last_offset: AtomicUsize::new(0),
         })
     }
 
@@ -473,27 +508,26 @@ impl IndexBase {
 
     pub fn write_doc_to_wal(&self, doc: &Document) -> GyResult<usize> {
         {
-            self.wal.read()?.check_rotate(doc)?;
+            self.wal.get_borrow().check_rotate(doc)?;
         }
         let offset = {
-            let mut w = self.wal.write()?;
+            let mut w = self.wal.get_borrow_mut();
             let offset = w.offset();
             doc.binary_serialize(&mut *w)?;
             w.flush()?;
-            drop(w);
             offset
         };
         Ok(offset)
     }
 
-    //add vector
+    //add doc
     pub fn add(&self, doc_id: DocID, doc: &Document) -> GyResult<()> {
         unsafe {
             self.rw_lock.raw().lock();
         }
         let doc_offset = self.write_doc_to_wal(doc)?;
         {
-            self.doc_offset.write()?.push(doc_offset);
+            self.doc_offset.get_borrow_mut().push(doc_offset);
         }
         self.inner_add(doc_id, doc)?;
         self.commit()?;
@@ -522,19 +556,18 @@ impl IndexBase {
 
     fn doc_offset(&self, doc_id: DocID) -> GyResult<usize> {
         let offset = {
-            let doc_offset = self.doc_offset.read()?;
-            if doc_id as usize >= doc_offset.len() {
-                return Err(GyError::ErrDocumentNotFound);
-            }
+            let doc_offset = self.doc_offset.get_borrow();
+            // if doc_id as usize >= doc_offset.len() {
+            //     return Err(GyError::ErrDocumentNotFound);
+            // }
             let offset = doc_offset.get(doc_id as usize).unwrap().clone();
-            drop(doc_offset);
             offset
         };
         Ok(offset)
     }
 
-    fn get_wal_mut(&self) -> LockResult<RwLockWriteGuard<'_, Wal>> {
-        self.wal.write()
+    fn get_wal_mut(&self) -> &mut Wal {
+        self.wal.get_borrow_mut()
     }
 
     // 手动flush到磁盘中
@@ -839,20 +872,26 @@ impl Iterator for IndexReaderIter {
 
 pub struct IndexReader {
     pub(crate) index_base: Arc<IndexBase>,
-    pub(crate) wal: Arc<RwLock<Wal>>,
+    pub(crate) wal: Arc<ThreadWal>,
+    pub(crate) last_doc_offset: usize,
+    pub(crate) doc_count: u64,
 }
 
 impl IndexReader {
     fn new(index_base: Arc<IndexBase>) -> IndexReader {
         let wal = index_base.wal.clone();
+        let last_doc_offset = index_base.last_offset.load(Ordering::SeqCst);
+        let doc_count = index_base.doc_id.load(Ordering::SeqCst);
         IndexReader {
             index_base: index_base,
             wal: wal,
+            last_doc_offset: last_doc_offset,
+            doc_count: doc_count,
         }
     }
 
     fn reopen_wal(&self, fsize: usize) -> GyResult<()> {
-        self.wal.write()?.reopen(fsize)
+        self.wal.reopen(fsize)
     }
 
     pub(crate) fn get_index_base(&self) -> &IndexBase {
@@ -874,22 +913,23 @@ impl IndexReader {
     }
 
     pub fn doc(&self, doc_id: DocID) -> GyResult<Document> {
+        assert!(doc_id < self.doc_count);
         let doc_offset = self.index_base.doc_offset(doc_id)?;
         let doc: Document = {
-            let mut wal = self.wal.read()?;
-            let mut wal_read = WalReader::new(&mut wal, doc_offset);
+            let wal = self.wal.get_borrow();
+            let mut wal_read = WalReader::new(wal, doc_offset, self.last_doc_offset);
             Document::binary_deserialize(&mut wal_read)?
         };
         Ok(doc)
     }
 
     pub(crate) fn offset(&self) -> GyResult<usize> {
-        let i = self.wal.read()?.offset();
+        let i = self.wal.get_borrow().offset();
         Ok(i)
     }
 
-    pub(crate) fn get_doc_offset(&self) -> &RwLock<Vec<usize>> {
-        &self.index_base.doc_offset
+    pub(crate) fn get_doc_offset(&self) -> &Vec<usize> {
+        self.index_base.doc_offset.get_borrow()
     }
 }
 
@@ -972,7 +1012,7 @@ mod tests {
             let doc = reader.doc(doc_freq.doc_id()).unwrap();
             println!("docid:{},doc{:?}", doc_freq.doc_id(), doc);
         }
-        println!("doc vec:{:?}", reader.get_doc_offset().read().unwrap());
+        //  println!("doc vec:{:?}", reader.get_doc_offset().read().unwrap());
         //  disk::flush_index(&reader).unwrap();
     }
 
@@ -1267,7 +1307,7 @@ mod tests {
             let doc = reader.doc(doc_freq.doc_id()).unwrap();
             println!("docid:{},doc{:?}", doc_freq.doc_id(), doc);
         }
-        println!("doc vec:{:?}", reader.get_doc_offset().read().unwrap());
+        println!("doc vec:{:?}", reader.get_doc_offset());
         //  disk::persist_index(&reader).unwrap();
     }
 
@@ -1560,7 +1600,7 @@ mod tests {
         }
         println!(
             "offset:{}",
-            collect.0.index_base.wal.read().unwrap().offset() // offset:128
+            collect.0.index_base.wal.get_borrow().offset() // offset:128
         );
     }
 

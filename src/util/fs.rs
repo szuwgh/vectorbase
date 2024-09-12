@@ -11,7 +11,7 @@ use std::fs;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter};
 #[cfg(target_os = "linux")]
-use std::os::unix::fs::{FileExt, MetadataExt};
+use std::os::unix::fs::{FileExt as linuxFileExt, MetadataExt};
 #[cfg(target_os = "windows")]
 use std::os::windows::fs::{FileExt as windowsFileExt, MetadataExt};
 use std::path::{Path, PathBuf};
@@ -29,7 +29,8 @@ impl GyFile {
 
     #[cfg(target_os = "linux")]
     pub(crate) fn fsize(&self) -> GyResult<usize> {
-        self.0.metadata()?.size();
+        let s = self.0.metadata()?.size() as usize;
+        Ok(s as usize)
     }
 
     #[cfg(target_os = "windows")]

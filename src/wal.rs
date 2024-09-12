@@ -7,6 +7,7 @@ use crate::schema::{TensorEntry, VectorSerialize};
 use crate::ValueSized;
 use crate::Vector;
 use core::arch::x86_64::*;
+use core::cell::UnsafeCell;
 use memmap2::{self, Mmap, MmapMut};
 use rand::seq::IteratorRandom;
 use serde::de::value;
@@ -70,10 +71,14 @@ impl<'a, V: VectorSerialize> Iterator for WalIter<'a, V> {
 pub(crate) struct WalReader<'a> {
     wal: &'a Wal,
     offset: usize,
+    end: usize,
 }
 
 impl<'a> Read for WalReader<'a> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.offset > self.end {
+            return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof));
+        }
         let i = self
             .wal
             .io_selector
@@ -85,10 +90,11 @@ impl<'a> Read for WalReader<'a> {
 }
 
 impl<'a> WalReader<'a> {
-    pub(crate) fn new(wal: &'a Wal, offset: usize) -> WalReader<'a> {
+    pub(crate) fn new(wal: &'a Wal, offset: usize, end: usize) -> WalReader<'a> {
         WalReader {
             wal: wal,
             offset: offset,
+            end: end,
         }
     }
 }
@@ -106,6 +112,38 @@ impl<'a> GyRead for WalReader<'a> {
 
     fn offset(&self) -> usize {
         self.offset
+    }
+}
+
+pub struct ThreadWal {
+    wal: UnsafeCell<Wal>,
+    rw_lock: RwLock<()>,
+}
+
+impl ThreadWal {
+    pub(crate) fn new(w: Wal) -> ThreadWal {
+        Self {
+            wal: UnsafeCell::new(w),
+            rw_lock: RwLock::new(()),
+        }
+    }
+
+    pub(crate) fn get_borrow(&self) -> &Wal {
+        let _unused = self.rw_lock.read().unwrap();
+        unsafe { &*self.wal.get() }
+    }
+
+    pub(crate) fn get_borrow_mut(&self) -> &mut Wal {
+        let _unused = self.rw_lock.read().unwrap();
+        unsafe { &mut *self.wal.get() }
+    }
+
+    pub(crate) fn reopen(&self, fsize: usize) -> GyResult<()> {
+        let used = self.rw_lock.write()?;
+        let w = unsafe { &mut *self.wal.get() };
+        w.reopen(fsize)?;
+        drop(used);
+        Ok(())
     }
 }
 
@@ -180,7 +218,7 @@ impl Wal {
     }
 
     pub(crate) fn iter<'a, V: VectorSerialize>(&'a self, entry: TensorEntry) -> WalIter<'a, V> {
-        WalIter::<V>::new(WalReader::new(self, 0), entry)
+        WalIter::<V>::new(WalReader::new(self, 0, self.i), entry)
     }
 }
 
@@ -281,7 +319,7 @@ mod tests {
         doc1.binary_serialize(&mut wal).unwrap();
         wal.flush().unwrap();
 
-        let mut wal_read = WalReader::new(&mut wal, offset);
+        let mut wal_read = WalReader::new(&wal, offset, wal.offset());
         let doc2 = Document::binary_deserialize(&mut wal_read).unwrap();
         println!("doc2:{:?}", doc2);
         assert_eq!(doc1, doc2);
