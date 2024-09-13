@@ -125,7 +125,7 @@ impl MmapSelector {
 
     pub(crate) fn open(fname: &Path, fsize: usize) -> GyResult<MmapSelector> {
         let file = OpenOptions::new().read(true).write(true).open(fname)?;
-        file.allocate(fsize as u64)?;
+        //  file.allocate(fsize as u64)?;
         let nmmap = unsafe {
             memmap2::MmapOptions::new()
                 .offset(0)

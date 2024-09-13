@@ -19,6 +19,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::RwLockWriteGuard;
 use util::error::{GyError, GyResult};
 use wal::ThreadWal;
+use wal::WalIter;
 mod macros;
 use crate::buffer::SafeAddr;
 use crate::schema::VectorBase;
@@ -200,6 +201,19 @@ impl CollectionReader {
         self.index_reader.search(term)
     }
 
+    pub fn vector_iter<'a>(&'a self) -> WalIter<'a, Vector> {
+        let entry = self
+            .index_reader
+            .get_index_base()
+            .get_meta()
+            .tensor_entry()
+            .clone();
+        self.index_reader
+            .get_index_base()
+            .get_wal_mut()
+            .iter::<Vector>(entry)
+    }
+
     fn tensor_entry(&self) -> &TensorEntry {
         self.index_reader.get_index_base().get_meta().tensor_entry()
     }
@@ -316,7 +330,6 @@ where
                 wal_iter.offset() - 4
             };
             wal.set_position(offset);
-            drop(wal);
         }
         Ok(colletion)
     }
@@ -691,7 +704,7 @@ impl FieldCache {
             );
 
             self.term_count.fetch_add(1, Ordering::Acquire);
-            println!("get term_count:{}", self.term_count.load(Ordering::Acquire))
+            // println!("get term_count:{}", self.term_count.load(Ordering::Acquire))
         }
         // 获取词典的倒排表
         let p: Posting = self
@@ -1102,7 +1115,7 @@ mod tests {
             });
         }
         //  println!("doc vec:{:?}", reader.get_doc_offset().read().unwrap());
-        disk::persist_collection(&reader).unwrap();
+        // disk::persist_collection(&reader).unwrap();
     }
 
     #[test]

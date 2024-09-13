@@ -355,8 +355,8 @@ impl VectorOps for Tensor {
 pub type Vector = VectorBase<Tensor>;
 
 pub struct VectorBase<V: VectorSerialize + ValueSized + VectorOps> {
-    pub v: V,
-    pub payload: Document,
+    pub(crate) v: V,
+    pub(crate) payload: Document,
 }
 
 impl<V: VectorSerialize + ValueSized + VectorOps> ValueSized for VectorBase<V> {

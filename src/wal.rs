@@ -30,7 +30,7 @@ const BLOCK_SIZE: usize = 1 << 15;
 unsafe impl Send for Wal {}
 unsafe impl Sync for Wal {}
 
-pub(crate) struct WalIter<'a, V: VectorSerialize> {
+pub struct WalIter<'a, V: VectorSerialize> {
     wal_reader: WalReader<'a>,
     tensor_entry: TensorEntry,
     _mark: PhantomData<V>,
@@ -58,9 +58,9 @@ impl<'a, V: VectorSerialize> Iterator for WalIter<'a, V> {
     type Item = (usize, V);
     fn next(&mut self) -> Option<Self::Item> {
         let offset = self.offset();
-        if (offset + 4 >= self.fsize()) {
-            return None;
-        }
+        // if (offset + 4 >= self.fsize()) {
+        //     return None;
+        // }
         match V::vector_deserialize(&mut self.wal_reader, &self.tensor_entry) {
             Ok(v) => Some((offset, v)),
             Err(_) => None,
@@ -68,7 +68,7 @@ impl<'a, V: VectorSerialize> Iterator for WalIter<'a, V> {
     }
 }
 
-pub(crate) struct WalReader<'a> {
+pub struct WalReader<'a> {
     wal: &'a Wal,
     offset: usize,
     end: usize,
@@ -76,9 +76,9 @@ pub(crate) struct WalReader<'a> {
 
 impl<'a> Read for WalReader<'a> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        if self.offset > self.end {
-            return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof));
-        }
+        // if self.offset > self.end {
+        //     return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof));
+        // }
         let i = self
             .wal
             .io_selector
@@ -218,7 +218,7 @@ impl Wal {
     }
 
     pub(crate) fn iter<'a, V: VectorSerialize>(&'a self, entry: TensorEntry) -> WalIter<'a, V> {
-        WalIter::<V>::new(WalReader::new(self, 0, self.i), entry)
+        WalIter::<V>::new(WalReader::new(self, 0, self.offset()), entry)
     }
 }
 
