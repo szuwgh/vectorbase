@@ -1,10 +1,12 @@
 use super::error::GyResult;
 
+use crate::config::WAL_FILE;
 use crate::iocopy;
 use crate::GyError;
 use fs2::FileExt;
 use memmap2::MmapAsRawDesc;
 use memmap2::{self, MmapMut};
+use regex::Regex;
 use serde::de::DeserializeOwned;
 use serde::ser::Serialize;
 use std::fs;
@@ -15,6 +17,7 @@ use std::os::unix::fs::{FileExt as linuxFileExt, MetadataExt};
 #[cfg(target_os = "windows")]
 use std::os::windows::fs::{FileExt as windowsFileExt, MetadataExt};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 pub struct GyFile(File);
 
 impl GyFile {
@@ -52,30 +55,127 @@ impl GyFile {
     }
 }
 
-// 保存结构体到文件
-pub fn to_json_file<T: Serialize, P: AsRef<Path>>(data: &T, filename: P) -> GyResult<()> {
-    let file = File::create(filename)?;
-    let writer = BufWriter::new(file);
-    serde_json::to_writer(writer, data)?;
-    Ok(())
-}
+pub struct FileManager;
 
-// 从文件读取并反序列化结构体
-pub fn from_json_file<T: DeserializeOwned, P: AsRef<Path>>(filename: P) -> GyResult<T> {
-    let file = File::open(filename)?;
-    let reader = BufReader::new(file);
-    let data = serde_json::from_reader(reader)?;
-    Ok(data)
-}
+impl FileManager {
+    pub(crate) fn get_next_wal_name<P: AsRef<Path>>(dir: P) -> GyResult<PathBuf> {
+        let list = Self::get_files_with_extension(dir.as_ref(), "wal")?;
+        if list.len() == 0 {
+            return Ok(PathBuf::new()
+                .join(dir.as_ref())
+                .join(format!("{:0>20}{}", 0, WAL_FILE)));
+        } else {
+            let last_name = list.first().unwrap().file_name().unwrap();
+            if let Some(name_str) = last_name.to_str() {
+                // 去掉文件扩展名
+                let base_name = name_str
+                    .strip_suffix(".wal")
+                    .expect("File name format is incorrect");
+                // 将字符串转换为数字
+                println!("base_name:{}", base_name);
+                let number: u64 = base_name
+                    .parse()
+                    .expect("Unable to parse string into number");
+                // 打印结果
+                return Ok(PathBuf::new().join(dir.as_ref()).join(format!(
+                    "{:0>20}{}",
+                    number + 1,
+                    WAL_FILE
+                )));
+            }
+        }
+        return Err(GyError::EOF);
+    }
 
-pub(crate) fn open_file(fname: &Path, read: bool, write: bool) -> GyResult<File> {
-    let file = OpenOptions::new().read(read).write(write).open(fname)?;
-    Ok(file)
-}
+    pub(crate) fn get_2wal_file_name<P: AsRef<Path>>(
+        dir: P,
+        extension: &str,
+    ) -> GyResult<(Option<PathBuf>, Option<PathBuf>)> {
+        let list = Self::get_files_with_extension(dir, extension)?;
+        match list.len() {
+            0 => return Ok((None, None)),
+            1 => return Ok((Some(list[0].clone()), None)),
+            2 => return Ok((Some(list[0].clone()), Some(list[1].clone()))),
+            _ => return Err(GyError::ErrCollectionWalInvalid),
+        }
+    }
 
-pub(crate) fn mkdir(path: &Path) -> GyResult<()> {
-    fs::create_dir_all(path)?;
-    Ok(())
+    pub(crate) fn get_table_directories<P: AsRef<Path>>(dir: P) -> GyResult<Vec<PathBuf>> {
+        let mut directories = Vec::new();
+        let re = Regex::new(r"^\d{20}$").unwrap(); // 匹配20个数字
+                                                   // 读取目录条目
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            // 仅检查文件夹
+            if path.is_dir() {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    // 检查文件夹名是否匹配正则表达式
+                    if re.is_match(name) {
+                        directories.push(path);
+                    }
+                }
+            }
+        }
+        // 按文件名正序排序
+        directories.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
+        Ok(directories)
+    }
+
+    // 查找某个目录下具有指定后缀的文件
+    pub(crate) fn get_files_with_extension<P: AsRef<Path>>(
+        dir: P,
+        extension: &str,
+    ) -> GyResult<Vec<PathBuf>> {
+        let mut files_with_extension = Vec::new();
+
+        // 读取目录条目
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            // 仅检查文件，不递归子目录
+            if path.is_file() {
+                if let Some(ext) = path.extension() {
+                    // 检查文件的后缀是否匹配
+                    if ext == extension {
+                        files_with_extension.push(path);
+                    }
+                }
+            }
+        }
+        // 按文件名倒序排序
+        files_with_extension
+            .sort_by(|a, b| b.file_name().cmp(&a.file_name()).then_with(|| a.cmp(b)));
+        Ok(files_with_extension)
+    }
+
+    // 保存结构体到文件
+    pub fn to_json_file<T: Serialize, P: AsRef<Path>>(data: &T, filename: P) -> GyResult<()> {
+        let file = File::create(filename)?;
+        let writer = BufWriter::new(file);
+        serde_json::to_writer(writer, data)?;
+        Ok(())
+    }
+
+    // 从文件读取并反序列化结构体
+    pub fn from_json_file<T: DeserializeOwned, P: AsRef<Path>>(filename: P) -> GyResult<T> {
+        let file = File::open(filename)?;
+        let reader = BufReader::new(file);
+        let data = serde_json::from_reader(reader)?;
+        Ok(data)
+    }
+
+    pub(crate) fn open_file(fname: &Path, read: bool, write: bool) -> GyResult<File> {
+        let file = OpenOptions::new().read(read).write(write).open(fname)?;
+        Ok(file)
+    }
+
+    pub(crate) fn mkdir(path: &Path) -> GyResult<()> {
+        fs::create_dir_all(path)?;
+        Ok(())
+    }
 }
 
 pub(crate) trait IoSelector {
@@ -304,5 +404,26 @@ mod tests {
         let data_dir = PathBuf::from("/opt/rsproject/gptgrep/searchlite/data");
         let file = next_sequence_ext_file(&data_dir, "wal").unwrap();
         println!("file:{:?}", file);
+    }
+
+    #[test]
+    fn test_get_2wal_file_name() {
+        let (a, b) =
+            FileManager::get_2wal_file_name("/opt/rsproject/chappie/searchlite/data", "wal")
+                .unwrap();
+        println!("{:?},{:?}", a, b);
+    }
+
+    #[test]
+    fn test_get_table_directories() {
+        let l =
+            FileManager::get_table_directories("/opt/rsproject/chappie/searchlite/data").unwrap();
+        println!("{:?}", l);
+    }
+
+    #[test]
+    fn test_get_next_wal_name() {
+        let l = FileManager::get_next_wal_name("/opt/rsproject/chappie/searchlite/data1").unwrap();
+        println!("{:?}", l);
     }
 }

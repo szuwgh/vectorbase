@@ -19,6 +19,8 @@ pub enum GyError {
     Unexpected(String),
     #[error("db open fail: {0}")]
     DBOpenFail(io::Error),
+    #[error("data path is not dir: {0}")]
+    DataPathNotDir(PathBuf),
     #[error("index not found: {0}")]
     IndexDirNotExist(PathBuf),
     #[error("invalid database")]
@@ -49,6 +51,8 @@ pub enum GyError {
     ErrSerdeJson(serde_json::Error),
     #[error("not found from bloom {0}")]
     ErrNotFoundTermFromBloom(String),
+    #[error("collection wal invalid")]
+    ErrCollectionWalInvalid,
 }
 
 impl From<&str> for GyError {

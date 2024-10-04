@@ -4,14 +4,10 @@ use crate::disk::{GyRead, GyWrite};
 use crate::schema::BinarySerialize;
 use crate::TensorEntry;
 use crate::VectorSerialize;
-use galois::Tensor;
 use rand::prelude::ThreadRng;
 use rand::Rng;
-use serde_json::map::Iter;
-use std::borrow::Borrow;
 use std::collections::BinaryHeap;
 use std::collections::HashSet;
-use std::path::Path;
 
 impl Metric<Vec<f32>> for Vec<f32> {
     fn distance(&self, b: &Vec<f32>) -> f32 {
@@ -490,11 +486,11 @@ where
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::schema::{VectorOps, VectorType};
     use crate::util::fs::GyFile;
-
-    use super::*;
     use galois::Shape;
+    use galois::Tensor;
     use rand::{thread_rng, Rng};
     use std::fs::File;
     use std::{collections::HashMap, io::Write};

@@ -1,11 +1,15 @@
 pub mod ann;
 mod buffer;
+pub mod collection;
+pub mod config;
 pub mod disk;
 pub mod query;
 pub mod schema;
 mod searcher;
 mod tokenize;
 pub mod util;
+use crate::config::Config;
+use crate::config::EngineConfig;
 use ann::Neighbor;
 use art_tree::{Art, ByteString};
 use core::cell::UnsafeCell;
@@ -14,10 +18,9 @@ use galois::Tensor;
 use query::Term;
 use schema::TensorEntry;
 use schema::ValueSized;
-use std::borrow::Borrow;
 use std::sync::atomic::AtomicU64;
-use std::sync::RwLockWriteGuard;
 use util::error::{GyError, GyResult};
+use util::fs::FileManager;
 use wal::ThreadWal;
 use wal::WalIter;
 mod macros;
@@ -36,7 +39,6 @@ use buffer::{
 };
 use schema::{BinarySerialize, DocID, Document, Schema, Value};
 use serde::{Deserialize, Serialize};
-use std::sync::LockResult;
 //use jiebars::Jieba;
 use self::schema::DocFreq;
 use self::util::fs;
@@ -45,106 +47,23 @@ use crate::schema::Vector;
 use crate::util::time::Time;
 use crate::wal::WalReader;
 use lock_api::RawMutex;
+use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use std::cell::RefCell;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock, Weak};
+use tokio::runtime::Builder;
 use wal::{IOType, Wal, DEFAULT_WAL_FILE_SIZE};
 
-const WAL_FILE: &'static str = "data.wal"; // 数据
-const DATA_FILE: &'static str = "data.gy"; // 数据
-const META_FILE: &'static str = "meta.json"; // index 元数据
-const DELETE_FILE: &'static str = "ids.del"; // 被删除的id
-
-pub struct IndexConfigBuilder {
-    index_name: String,
-    io_type: IOType,
-    data_path: PathBuf,
-    wal_fname: PathBuf,
-    fsize: usize,
-}
-
-impl Default for IndexConfigBuilder {
-    fn default() -> IndexConfigBuilder {
-        IndexConfigBuilder {
-            index_name: "my_index".to_string(),
-            io_type: IOType::MMAP,
-            data_path: PathBuf::from("./"),
-            wal_fname: PathBuf::from(WAL_FILE),
-            fsize: DEFAULT_WAL_FILE_SIZE,
-        }
-    }
-}
-
-impl IndexConfigBuilder {
-    pub fn index_name(mut self, index_name: String) -> IndexConfigBuilder {
-        self.index_name = index_name;
-        self
-    }
-
-    pub fn io_type(mut self, io_type: IOType) -> IndexConfigBuilder {
-        self.io_type = io_type;
-        self
-    }
-
-    pub fn data_path(mut self, index_path: PathBuf) -> IndexConfigBuilder {
-        self.data_path = index_path;
-        self
-    }
-
-    pub fn fsize(mut self, fsize: usize) -> IndexConfigBuilder {
-        self.fsize = fsize;
-        self
-    }
-
-    pub fn build(self) -> IndexConfig {
-        IndexConfig {
-            index_name: self.index_name,
-            io_type: self.io_type,
-            data_path: self.data_path,
-            wal_fname: self.wal_fname,
-            fsize: self.fsize,
-        }
-    }
-}
-
-pub struct IndexConfig {
-    index_name: String,
-    io_type: IOType,
-    data_path: PathBuf,
-    wal_fname: PathBuf,
-    fsize: usize,
-}
-
-impl IndexConfig {
-    pub fn get_index_name(&self) -> &str {
-        &self.index_name
-    }
-
-    pub fn get_io_type(&self) -> &IOType {
-        &self.io_type
-    }
-
-    pub fn get_data_path(&self) -> &Path {
-        &self.data_path
-    }
-
-    pub fn get_wal_fname(&self) -> &Path {
-        &self.wal_fname
-    }
-
-    pub fn get_wal_path(&self) -> PathBuf {
-        self.get_data_path()
-            .join(self.get_index_name())
-            .join(self.get_wal_fname())
-    }
-
-    pub fn get_fsize(&self) -> usize {
-        self.fsize
-    }
-}
+// 单例的 Tokio runtime
+pub(crate) static RUNTIME: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
+    Builder::new_multi_thread()
+        .worker_threads(4)
+        .build()
+        .expect("Failed to create runtime")
+});
 
 unsafe impl Send for Index {}
 unsafe impl Sync for Index {}
@@ -154,7 +73,7 @@ unsafe impl Sync for Index {}
 pub struct Index(Arc<IndexBase>);
 
 impl Index {
-    pub fn new(schema: Schema, config: IndexConfig) -> GyResult<Index> {
+    pub fn new(schema: &Schema, config: EngineConfig) -> GyResult<Index> {
         Ok(Self(Arc::new(IndexBase::new(schema, config)?)))
     }
 
@@ -173,26 +92,23 @@ impl Index {
     pub fn close() {}
 }
 
-unsafe impl<V: VectorSerialize + ValueSized + VectorOps + Clone + 'static> Send
-    for VectorCollection<V>
-where
-    V: Metric<V>,
+unsafe impl<V: VectorSerialize + ValueSized + VectorOps + Clone + 'static> Send for VectorEngine<V> where
+    V: Metric<V>
 {
 }
 
-unsafe impl<V: VectorSerialize + ValueSized + VectorOps + Clone + 'static> Sync
-    for VectorCollection<V>
-where
-    V: Metric<V>,
+unsafe impl<V: VectorSerialize + ValueSized + VectorOps + Clone + 'static> Sync for VectorEngine<V> where
+    V: Metric<V>
 {
 }
 
-pub struct CollectionReader {
+pub struct EngineReader {
     pub(crate) vector_field: Arc<VectorIndexBase<Tensor>>,
     index_reader: IndexReader,
+    entry: TensorEntry,
 }
 
-impl CollectionReader {
+impl EngineReader {
     pub fn query(&self, v: &Tensor, k: usize) -> GyResult<Vec<Neighbor>> {
         self.vector_field.query(v, k)
     }
@@ -201,13 +117,13 @@ impl CollectionReader {
         self.index_reader.search(term)
     }
 
-    pub fn vector_iter<'a>(&'a self) -> WalIter<'a, Vector> {
-        let entry = self
-            .index_reader
-            .get_index_base()
-            .get_meta()
-            .tensor_entry()
-            .clone();
+    pub fn vector_iter<'a>(&'a self, entry: TensorEntry) -> WalIter<'a, Vector> {
+        // let entry = self
+        //     .index_reader
+        //     .get_index_base()
+        //     .get_meta()
+        //     .tensor_entry()
+        //     .clone();
         self.index_reader
             .get_index_base()
             .get_wal_mut()
@@ -215,7 +131,7 @@ impl CollectionReader {
     }
 
     fn tensor_entry(&self) -> &TensorEntry {
-        self.index_reader.get_index_base().get_meta().tensor_entry()
+        &self.entry
     }
 
     pub fn vector(&self, doc_id: DocID) -> GyResult<Vector> {
@@ -234,28 +150,31 @@ impl CollectionReader {
 }
 
 #[derive(Clone)]
-pub struct Collection(Arc<VectorCollection<Tensor>>);
+pub struct Engine(Arc<VectorEngine<Tensor>>);
 
-impl Collection {
-    pub fn reader(&self) -> CollectionReader {
-        CollectionReader {
+impl Engine {
+    pub fn reader(&self) -> EngineReader {
+        EngineReader {
             vector_field: self.0.vector_field.clone(),
             index_reader: IndexReader::new(self.0.index_base.clone()),
+            entry: self.0.entry.clone(),
         }
     }
 
-    pub fn new(schema: Schema, config: IndexConfig) -> GyResult<Collection> {
-        Ok(Collection(Arc::new(VectorCollection::new(schema, config)?)))
+    pub fn new(schema: &Schema, config: EngineConfig) -> GyResult<Engine> {
+        Ok(Engine(Arc::new(VectorEngine::new(schema, config)?)))
     }
 
-    pub fn open(schema: Schema, config: IndexConfig) -> GyResult<Collection> {
-        Ok(Collection(Arc::new(VectorCollection::open(
-            schema, config,
-        )?)))
+    pub fn open(schema: &Schema, config: EngineConfig) -> GyResult<Engine> {
+        Ok(Engine(Arc::new(VectorEngine::open(schema, config)?)))
     }
 
-    pub fn add(&self, v: Vector) -> GyResult<()> {
+    pub fn add(&self, v: Vector) -> GyResult<DocID> {
         self.0.add(v)
+    }
+
+    pub(crate) fn check_room_for_write(&self, size: usize) -> bool {
+        self.0.check_room_for_write(size)
     }
 }
 
@@ -292,32 +211,35 @@ impl<V: VectorSerialize + Clone> VectorSerialize for VectorIndexBase<V> {
 }
 
 //向量搜索
-pub struct VectorCollection<V: VectorSerialize + ValueSized + VectorOps + Clone + 'static>
+pub struct VectorEngine<V: VectorSerialize + ValueSized + VectorOps + Clone + 'static>
 where
     V: Metric<V>,
 {
     vector_field: Arc<VectorIndexBase<V>>,
     index_base: Arc<IndexBase>,
+    entry: TensorEntry,
     rw_lock: Mutex<()>,
 }
 
-impl<V: VectorSerialize + ValueSized + VectorOps + Clone + 'static> VectorCollection<V>
+impl<V: VectorSerialize + ValueSized + VectorOps + Clone + 'static> VectorEngine<V>
 where
     V: Metric<V>,
 {
-    fn new(schema: Schema, config: IndexConfig) -> GyResult<VectorCollection<V>> {
+    fn new(schema: &Schema, config: EngineConfig) -> GyResult<VectorEngine<V>> {
         Ok(Self {
             vector_field: Arc::new(VectorIndexBase(RwLock::new(Ann::HNSW(HNSW::<V>::new(32))))),
             index_base: Arc::new(IndexBase::new(schema, config)?),
+            entry: schema.tensor_entry().clone(),
             rw_lock: Mutex::new(()),
         })
     }
 
-    pub fn open(schema: Schema, config: IndexConfig) -> GyResult<VectorCollection<V>> {
+    pub fn open(schema: &Schema, config: EngineConfig) -> GyResult<VectorEngine<V>> {
         let tensor_entry = schema.tensor_entry().clone();
         let colletion = Self {
             vector_field: Arc::new(VectorIndexBase(RwLock::new(Ann::HNSW(HNSW::<V>::new(32))))),
             index_base: Arc::new(IndexBase::open(schema, config)?),
+            entry: schema.tensor_entry().clone(),
             rw_lock: Mutex::new(()),
         };
         {
@@ -334,7 +256,7 @@ where
         Ok(colletion)
     }
 
-    fn quick_add(&self, doc_offset: usize, v: VectorBase<V>) -> GyResult<()> {
+    fn quick_add(&self, doc_offset: usize, v: VectorBase<V>) -> GyResult<DocID> {
         let doc_id = self.index_base.doc_id.load(Ordering::SeqCst);
         {
             self.index_base.doc_offset.get_borrow_mut()[doc_id as usize] = doc_offset;
@@ -347,10 +269,10 @@ where
         self.index_base.doc_id.fetch_add(1, Ordering::SeqCst);
         self.index_base.inner_add(id, &v.payload)?;
         self.index_base.commit()?;
-        Ok(())
+        Ok(doc_id)
     }
 
-    pub fn add(&self, v: VectorBase<V>) -> GyResult<()> {
+    pub fn batch_add(&self, v: VectorBase<V>) -> GyResult<()> {
         unsafe {
             self.rw_lock.raw().lock();
         }
@@ -375,14 +297,30 @@ where
         Ok(())
     }
 
-    fn write_vector_to_wal(&self, v: &VectorBase<V>) -> GyResult<usize> {
-        {
-            self.index_base.wal.get_borrow().check_rotate(v)?;
+    pub fn add(&self, v: VectorBase<V>) -> GyResult<DocID> {
+        unsafe {
+            self.rw_lock.raw().lock();
         }
+        let doc_offset = self.write_vector_to_wal(&v)?;
+        let doc_id = self.quick_add(doc_offset, v)?;
+        unsafe {
+            self.rw_lock.raw().unlock();
+        }
+        Ok(doc_id)
+    }
+
+    async fn compaction() {}
+
+    fn check_room_for_write(&self, size: usize) -> bool {
+        self.index_base.wal.get_borrow().check_room(size)
+    }
+
+    fn write_vector_to_wal(&self, v: &VectorBase<V>) -> GyResult<usize> {
+        assert!(self.index_base.wal.get_borrow().check_rotate(v));
         let offset = {
-            let mut w = self.index_base.wal.get_borrow_mut();
+            let w = self.index_base.wal.get_borrow_mut();
             let offset = w.offset();
-            v.vector_serialize(&mut *w)?;
+            v.vector_serialize(w)?;
             w.flush()?;
             offset
         };
@@ -412,14 +350,12 @@ impl ThreadVec {
 }
 
 pub struct IndexBase {
-    meta: Meta,
     fields: Vec<FieldCache>,
     doc_id: AtomicU64,
     buffer: Arc<RingBuffer>,
     wal: Arc<ThreadWal>,
     doc_offset: ThreadVec,
     rw_lock: Mutex<()>,
-    config: IndexConfig,
     last_offset: AtomicUsize,
 }
 
@@ -427,7 +363,6 @@ pub struct IndexBase {
 pub(crate) struct Meta {
     schema: Schema,
     create_time: i64,
-    update_time: i64,
 }
 
 impl Meta {
@@ -435,7 +370,6 @@ impl Meta {
         Self {
             schema: schema,
             create_time: Time::now(),
-            update_time: 0,
         }
     }
 
@@ -449,35 +383,36 @@ impl Meta {
 }
 
 impl IndexBase {
-    fn new(schema: Schema, config: IndexConfig) -> GyResult<IndexBase> {
-        let index_path = config.get_data_path().join(config.get_index_name());
-        fs::mkdir(&index_path)?;
+    fn new(schema: &Schema, config: EngineConfig) -> GyResult<IndexBase> {
+        // let index_path = config.get_data_path().join(config.get_index_name());
+        // fs::mkdir(&index_path)?;
+        // FileManager::to_json_file(schema, config.get_schema_path())?;
+
         let buffer_pool = Arc::new(RingBuffer::new());
         let mut field_cache: Vec<FieldCache> = Vec::new();
         for _ in 0..schema.fields.len() {
             field_cache.push(FieldCache::new(Arc::downgrade(&buffer_pool)));
         }
         Ok(Self {
-            meta: Meta::new(schema),
             fields: field_cache,
             doc_id: AtomicU64::new(0),
             buffer: buffer_pool,
             rw_lock: Mutex::new(()),
             wal: Arc::new(ThreadWal::new(Wal::new(
                 &config.get_wal_path(), //&index_path.join(&config.wal_fname),
-                config.fsize,
-                config.io_type,
+                config.get_fsize(),
+                config.get_io_type(),
             )?)),
             doc_offset: ThreadVec::new(vec![0; 1024]), // Max memory doc
-            config: config,
+            //config: config,
             last_offset: AtomicUsize::new(0),
         })
     }
 
-    fn open(schema: Schema, config: IndexConfig) -> GyResult<IndexBase> {
-        let index_path = config.get_data_path().join(config.get_index_name());
+    fn open(schema: &Schema, config: EngineConfig) -> GyResult<IndexBase> {
+        let index_path = config.get_wal_path();
         if !(index_path.exists() && index_path.is_dir()) {
-            return Err(GyError::IndexDirNotExist(index_path));
+            return Err(GyError::IndexDirNotExist(index_path.to_path_buf()));
         }
         let buffer_pool = Arc::new(RingBuffer::new());
         let mut field_cache: Vec<FieldCache> = Vec::new();
@@ -486,29 +421,29 @@ impl IndexBase {
         }
         let wal = Wal::open(
             &config.get_wal_path(), //&index_path.join(&config.wal_fname),
-            config.fsize,
-            config.io_type,
+            config.get_fsize(),
+            config.get_io_type(),
         )?;
         Ok(Self {
-            meta: Meta::new(schema),
+            //meta: Meta::new(schema),
             fields: field_cache,
             doc_id: AtomicU64::new(0),
             buffer: buffer_pool,
             rw_lock: Mutex::new(()),
             wal: Arc::new(ThreadWal::new(wal)),
             doc_offset: ThreadVec::new(vec![0; 1024]), // Max memory doc
-            config: config,
+            //config: config,
             last_offset: AtomicUsize::new(0),
         })
     }
 
-    pub(crate) fn get_meta(&self) -> &Meta {
-        &self.meta
-    }
+    // pub(crate) fn get_meta(&self) -> &Meta {
+    //     &self.meta
+    // }
 
-    fn get_config(&self) -> &IndexConfig {
-        &self.config
-    }
+    // fn get_config(&self) -> &Config {
+    //     &self.config
+    // }
 
     fn inner_add(&self, doc_id: DocID, doc: &Document) -> GyResult<()> {
         for field in doc.field_values.iter() {
@@ -520,9 +455,7 @@ impl IndexBase {
     }
 
     pub fn write_doc_to_wal(&self, doc: &Document) -> GyResult<usize> {
-        {
-            self.wal.get_borrow().check_rotate(doc)?;
-        }
+        assert!(self.wal.get_borrow().check_rotate(doc));
         let offset = {
             let mut w = self.wal.get_borrow_mut();
             let offset = w.offset();
@@ -911,8 +844,8 @@ impl IndexReader {
         &self.index_base
     }
 
-    pub fn get_index_config(&self) -> &IndexConfig {
-        self.index_base.get_config()
+    pub fn get_wal_path(&self) -> &Path {
+        self.wal.get_borrow().get_fname()
     }
 
     pub fn iter(&self) -> IndexReaderIter {
@@ -968,6 +901,7 @@ impl IndexWriter {
 mod tests {
 
     use super::{schema::FieldEntry, *};
+    use crate::config::ConfigBuilder;
     use galois::Shape;
     use schema::{BinarySerialize, VectorEntry};
     use std::thread;
@@ -979,10 +913,10 @@ mod tests {
         schema.add_field(FieldEntry::str("body"));
         schema.add_field(FieldEntry::i32("title"));
         let field_id_title = schema.get_field("title").unwrap();
-        let config = IndexConfigBuilder::default()
+        let config = ConfigBuilder::default()
             .data_path(PathBuf::from("/opt/rsproject/chappie/searchlite/data2"))
             .build();
-        let mut index = Index::new(schema, config).unwrap();
+        let mut index = Index::new(&schema, config.get_engine_config(PathBuf::from(""))).unwrap();
         let mut writer1 = index.writer().unwrap();
         {
             let mut d = Document::new();
@@ -1049,10 +983,11 @@ mod tests {
         schema.add_field(FieldEntry::i32("title"));
 
         let field_id_title = schema.get_field("title").unwrap();
-        let config = IndexConfigBuilder::default()
+        let config = ConfigBuilder::default()
             .data_path(PathBuf::from("./data1"))
             .build();
-        let mut collect = Collection::new(schema, config).unwrap();
+        let mut collect =
+            Engine::new(&schema, config.get_engine_config(PathBuf::from(""))).unwrap();
         //let mut writer1 = index.writer().unwrap();
         {
             //writer1.add(1, &d).unwrap();
@@ -1110,9 +1045,7 @@ mod tests {
 
         for n in p.iter() {
             let doc = reader.vector(n.doc_id()).unwrap();
-            println!("docid:{},doc{:?}", n.doc_id(), unsafe {
-                doc.v.as_slice::<f32>()
-            });
+            println!("docid:{},doc{:?}", n.doc_id(), doc.v.to_vec::<f32>());
         }
         //  println!("doc vec:{:?}", reader.get_doc_offset().read().unwrap());
         // disk::persist_collection(&reader).unwrap();
@@ -1129,10 +1062,11 @@ mod tests {
         schema.add_field(FieldEntry::i32("title"));
 
         let field_id_title = schema.get_field("title").unwrap();
-        let config = IndexConfigBuilder::default()
+        let config = ConfigBuilder::default()
             .data_path(PathBuf::from("./data2"))
             .build();
-        let mut collect = Collection::new(schema, config).unwrap();
+        let mut collect =
+            Engine::new(&schema, config.get_engine_config(PathBuf::from(""))).unwrap();
         //let mut writer1 = index.writer().unwrap();
         {
             //writer1.add(1, &d).unwrap();
@@ -1200,7 +1134,7 @@ mod tests {
             });
         }
         //  println!("doc vec:{:?}", reader.get_doc_offset().read().unwrap());
-        disk::persist_collection(&reader).unwrap();
+        //  disk::persist_collection(&reader).unwrap();
     }
 
     #[test]
@@ -1274,10 +1208,10 @@ mod tests {
         schema.add_field(FieldEntry::str("body"));
         schema.add_field(FieldEntry::i32("title"));
         let field_id_title = schema.get_field("title").unwrap();
-        let config = IndexConfigBuilder::default()
+        let config = ConfigBuilder::default()
             .data_path(PathBuf::from("/opt/rsproject/chappie/searchlite/data2"))
             .build();
-        let mut index = Index::new(schema, config).unwrap();
+        let mut index = Index::new(&schema, config.get_engine_config(PathBuf::from(""))).unwrap();
         let mut writer1 = index.writer().unwrap();
         {
             let mut d = Document::new();
@@ -1323,7 +1257,7 @@ mod tests {
         println!("doc vec:{:?}", reader.get_doc_offset());
         //  disk::persist_index(&reader).unwrap();
     }
-
+    use crate::fs::FileManager;
     #[test]
     fn test_merge_store() {
         let disk_reader1 = DiskStoreReader::open(PathBuf::from(
@@ -1335,7 +1269,7 @@ mod tests {
             "/opt/rsproject/chappie/searchlite/data2/my_index",
         ))
         .unwrap();
-        fs::mkdir(&PathBuf::from(
+        FileManager::mkdir(&PathBuf::from(
             "/opt/rsproject/chappie/searchlite/data3/my_index",
         ))
         .unwrap();
@@ -1400,8 +1334,8 @@ mod tests {
         schema.add_field(FieldEntry::str("body"));
         schema.add_field(FieldEntry::i32("title"));
         let field_id_title = schema.get_field("title").unwrap();
-        let config = IndexConfigBuilder::default().build();
-        let mut index = Index::new(schema, config).unwrap();
+        let config = ConfigBuilder::default().build();
+        let mut index = Index::new(&schema, config.get_engine_config(PathBuf::from(""))).unwrap();
         let mut writer1 = index.writer().unwrap();
 
         let mut d = Document::new();
@@ -1430,8 +1364,8 @@ mod tests {
         schema.add_field(FieldEntry::i32("title"));
         let field_id_title = schema.get_field("title").unwrap();
         println!("field_id_title:{:?}", field_id_title.clone());
-        let config = IndexConfigBuilder::default().build();
-        let mut index = Index::new(schema, config).unwrap();
+        let config = ConfigBuilder::default().build();
+        let mut index = Index::new(&schema, config.get_engine_config(PathBuf::from(""))).unwrap();
         let mut writer1 = index.writer().unwrap();
         let t1 = thread::spawn(move || loop {
             let mut d = Document::new();
@@ -1578,10 +1512,11 @@ mod tests {
         schema.add_field(FieldEntry::i32("title"));
 
         let field_id_title = schema.get_field("title").unwrap();
-        let config = IndexConfigBuilder::default()
+        let config = ConfigBuilder::default()
             .data_path(PathBuf::from("./data_wal"))
             .build();
-        let mut collect = Collection::new(schema, config).unwrap();
+        let mut collect =
+            Engine::new(&schema, config.get_engine_config(PathBuf::from(""))).unwrap();
         //let mut writer1 = index.writer().unwrap();
         {
             //writer1.add(1, &d).unwrap();
@@ -1627,7 +1562,7 @@ mod tests {
         schema.add_field(FieldEntry::str("body"));
         schema.add_field(FieldEntry::i32("title"));
         let p = PathBuf::from("./data_wal/my_index/data.wal");
-        let wal = Wal::open(&p, DEFAULT_WAL_FILE_SIZE, IOType::MMAP).unwrap();
+        let wal = Wal::open(&p, DEFAULT_WAL_FILE_SIZE, &IOType::MMAP).unwrap();
 
         let mut wal_iter = wal.iter::<Vector>(TensorEntry::new(1, [4], schema::VectorType::F32));
         while let Some((doc_offset, v)) = wal_iter.next() {
@@ -1648,10 +1583,10 @@ mod tests {
         //  let p = PathBuf::from("./data_wal/my_index/data.wal");
         let field_id_title = schema.get_field("title").unwrap();
 
-        let config = IndexConfigBuilder::default()
+        let config = ConfigBuilder::default()
             .data_path(PathBuf::from("./data_wal"))
             .build();
-        let collect = Collection::open(schema, config).unwrap();
+        let collect = Engine::open(&schema, config.get_engine_config(PathBuf::from(""))).unwrap();
         let reader = collect.reader();
         let p = reader
             .query(

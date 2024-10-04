@@ -87,7 +87,7 @@ mod tests {
     use std::io::Cursor;
     #[test]
     fn TestBloom() {
-        let mut bloom: GyBloom = GyBloom::new(100);
+        let mut bloom: GyBloom = GyBloom::new(2);
         bloom.set("a".as_bytes());
         bloom.set("b".as_bytes());
         bloom.set("uu".as_bytes());

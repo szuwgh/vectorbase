@@ -1,9 +1,13 @@
 use super::schema::{BinarySerialize, FieldID, Schema, TensorEntry, VectorSerialize};
 use super::schema::{DocID, Document};
 use super::util::error::{GyError, GyResult};
-use super::util::fs::{self, from_json_file};
+use super::util::fs::{self};
 use super::util::fst::{FstBuilder, FstReader, FstReaderIter};
-use super::{CollectionReader, IndexReader, Meta, DATA_FILE, META_FILE};
+use super::{EngineReader, IndexReader, Meta};
+use crate::config::DiskFileMeta;
+use crate::config::DATA_FILE;
+use crate::config::META_FILE;
+use crate::fs::FileManager;
 use crate::iocopy;
 use crate::schema::VUInt;
 use crate::schema::VarIntSerialize;
@@ -16,8 +20,8 @@ use crate::Neighbor;
 use crate::Term;
 use crate::Vector;
 use art_tree::Key;
+use bytes::BytesMut;
 use bytes::{Buf, BufMut};
-use bytes::{Bytes, BytesMut};
 use furze::fst::Cow;
 use galois::Tensor;
 use memmap2::Mmap;
@@ -25,13 +29,10 @@ use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufWriter, Read};
+use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::{
-    fs::OpenOptions,
-    io::{Seek, SeekFrom, Write},
-};
 
 use std::cmp::Ordering as CmpOrdering;
 use std::iter::Peekable;
@@ -127,26 +128,26 @@ where
     }
 }
 
-struct TmpBufWriter(Vec<u8>);
+// struct TmpBufWriter(Vec<u8>);
 
-impl TmpBufWriter {
-    fn new(size: usize) -> TmpBufWriter {
-        TmpBufWriter(Vec::with_capacity(size))
-    }
+// impl TmpBufWriter {
+//     fn new(size: usize) -> TmpBufWriter {
+//         TmpBufWriter(Vec::with_capacity(size))
+//     }
 
-    fn clear(&mut self) {
-        self.0.clear();
-    }
-}
+//     fn clear(&mut self) {
+//         self.0.clear();
+//     }
+// }
 
-impl Write for TmpBufWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.write(buf)
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.0.flush()
-    }
-}
+// impl Write for TmpBufWriter {
+//     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+//         self.0.write(buf)
+//     }
+//     fn flush(&mut self) -> std::io::Result<()> {
+//         self.0.flush()
+//     }
+// }
 
 fn open_file_stream(fname: &str) -> GyResult<BufWriter<File>> {
     let file = File::open(fname)?;
@@ -175,7 +176,6 @@ pub fn merge(a: &DiskStoreReader, b: &DiskStoreReader, new_fname: &Path) -> GyRe
         match (e0.0, e0.1) {
             (Some(r1), Some(r2)) => {
                 assert!(r1.get_field_name() == r2.get_field_name());
-                println!("field:{}", r1.get_field_name());
                 let field_merger =
                     CompactionMerger::new(r1.iter().peekable(), r2.iter().peekable());
                 let mut bloom = GyBloom::new(r1.get_term_count() + r2.get_term_count());
@@ -260,77 +260,17 @@ pub fn merge(a: &DiskStoreReader, b: &DiskStoreReader, new_fname: &Path) -> GyRe
     Ok(())
 }
 
-// //持久化索引
-// pub fn persist_index(index_reader: &IndexReader) -> GyResult<()> {
-//     let fname = index_reader.get_index_config().get_wal_path();
-//     let doc_end = index_reader.offset()?;
-//     let mut writer = DiskStoreWriter::with_offset(
-//         &fname,
-//         doc_end,
-//         index_reader.get_index_base().doc_offset.read()?.len(),
-//     )?;
-
-//     let mut buf = Vec::with_capacity(4 * KB);
-//     // write field
-//     for field in index_reader.iter() {
-//         let mut term_offset_cache: HashMap<Vec<u8>, usize> = HashMap::new();
-//         for (b, p) in field.indexs.read()?.iter() {
-//             let (doc_count, start_addr, end_addr) = {
-//                 let posting = (*p).read()?;
-//                 (
-//                     posting.doc_count,
-//                     posting.byte_addr.clone(),
-//                     posting.doc_freq_addr.clone(),
-//                 )
-//             };
-//             // write posting
-//             let posting_buffer = field.posting_buffer(start_addr, end_addr)?;
-//             for rb in posting_buffer.iter() {
-//                 buf.write(rb)?;
-//             }
-//             let offset = writer.write_posting(doc_count, buf.as_slice())?;
-//             term_offset_cache.insert(b.to_bytes(), offset);
-//             buf.clear();
-//         }
-//         // write bloom todo
-
-//         // write fst
-//         for (b, _) in field.indexs.read()?.iter() {
-//             let v: &[u8] = b.borrow();
-//             let offset = term_offset_cache.get(v).unwrap();
-//             writer.add_term(v, *offset)?;
-//         }
-//         writer.finish_field()?;
-//     }
-//     // 写入文档和偏移量关系 meta
-//     writer.write_doc_meta(&index_reader.get_doc_offset().read()?)?;
-//     // 写入每个域的 meta
-//     writer.write_field_meta()?;
-//     writer.close()?;
-//     drop(writer);
-//     if let Some(dir_path) = fname.parent() {
-//         std::fs::rename(&fname, dir_path.join(DATA_FILE))?;
-//         crate::fs::to_json_file(
-//             index_reader.get_index_base().get_meta(),
-//             dir_path.join(META_FILE),
-//         )?;
-//     }
-//     Ok(())
-// }
-
 //合并索引
-pub fn persist_collection(reader: &CollectionReader) -> GyResult<()> {
+pub fn persist_collection(reader: &EngineReader, refname: PathBuf) -> GyResult<()> {
     let index_reader = reader.index_reader();
-    let fname = index_reader.get_index_config().get_wal_path();
+    let fname = index_reader.get_wal_path();
     let doc_end = index_reader.offset()?;
     let mut writer = DiskStoreWriter::with_offset(
         &fname,
         doc_end,
         index_reader.get_index_base().doc_offset.get_borrow().len(),
     )?;
-    println!("fail");
     writer.write_vector(reader.vector_field.0.read()?.borrow())?;
-
     let mut buf = Vec::with_capacity(4 * KB);
     // write field
     for field in index_reader.iter() {
@@ -354,7 +294,6 @@ pub fn persist_collection(reader: &CollectionReader) -> GyResult<()> {
             buf.clear();
         }
         // write bloom todo
-        println!("term_count:{}", field.get_term_count());
         let mut bloom = GyBloom::new(field.get_term_count().max(1));
         // write fst
         for (b, _) in field.indexs.read()?.iter() {
@@ -375,19 +314,20 @@ pub fn persist_collection(reader: &CollectionReader) -> GyResult<()> {
     let newfsize = writer.close()?;
     println!("newfsize:{}", newfsize);
     drop(writer);
-    index_reader.reopen_wal(newfsize as usize)?;
+    // index_reader.reopen_wal(newfsize as usize)?;
     if let Some(dir_path) = fname.parent() {
-        std::fs::rename(&fname, dir_path.join(DATA_FILE))?;
-        crate::fs::to_json_file(
-            index_reader.get_index_base().get_meta(),
-            dir_path.join(META_FILE),
-        )?;
+        std::fs::rename(&fname, refname)?;
+        // std::fs::rename(&fname, dir_path.join(DATA_FILE))?;
+        // crate::fs::to_json_file(
+        //     index_reader.get_index_base().get_meta(),
+        //     dir_path.join(META_FILE),
+        // )?;
     }
     Ok(())
 }
 
 pub struct DiskStoreReader {
-    meta: Meta,
+    meta: DiskFileMeta,
     vector_field: Arc<Ann<Tensor>>,
     fields_meta: Vec<FieldHandle>,
     blooms: Vec<Arc<GyBloom>>,
@@ -399,10 +339,10 @@ pub struct DiskStoreReader {
 }
 
 impl DiskStoreReader {
-    pub fn open(index_path: PathBuf) -> GyResult<DiskStoreReader> {
-        let data_path = index_path.join(DATA_FILE);
-        let meta_path = index_path.join(META_FILE);
-        let meta: Meta = from_json_file(&meta_path)?;
+    pub fn open<P: AsRef<Path>>(path: P) -> GyResult<DiskStoreReader> {
+        let data_path = PathBuf::new().join(path.as_ref()).join(DATA_FILE);
+        let meta_path = PathBuf::new().join(path).join(META_FILE);
+        let meta: DiskFileMeta = FileManager::from_json_file(&meta_path)?;
         let file = GyFile::open(data_path)?; //OpenOptions::new().read(true).open(data_path)?;
         let file_size = file.fsize()?;
         if file_size < FOOTER_LEN {
@@ -485,8 +425,8 @@ impl DiskStoreReader {
 
     pub fn field_reader<'a>(&'a self, field_id: u32) -> GyResult<DiskFieldReader<'a>> {
         assert!((field_id as usize) < self.fields_meta.len());
-        assert!((field_id as usize) < self.meta.schema.fields.len());
-        let field_entry = self.meta.schema.fields[field_id as usize].clone();
+        assert!((field_id as usize) < self.meta.get_fields().len());
+        let field_entry = self.meta.get_fields()[field_id as usize].clone();
         assert!(field_id == field_entry.get_field_id().id());
         let field_handle = &self.fields_meta[field_id as usize];
         self.get_field_reader(field_entry, field_handle)
@@ -889,7 +829,7 @@ impl BinarySerialize for BlockHandle {
 
 impl DiskStoreWriter {
     fn new(fname: &Path) -> GyResult<DiskStoreWriter> {
-        let file = fs::open_file(fname, true, true)?;
+        let file = FileManager::open_file(fname, true, true)?;
         let w = DiskStoreWriter {
             offset: 0,
             filter_block: FilterBlock::new(),

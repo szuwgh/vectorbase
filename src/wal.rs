@@ -17,6 +17,7 @@ use std::io::Write;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock, Weak};
+
 pub(crate) const DEFAULT_WAL_FILE_SIZE: usize = 1 << 20; //512 << 20; //
 
 #[derive(Copy, Clone)]
@@ -25,7 +26,7 @@ pub enum IOType {
     MMAP,
 }
 
-const BLOCK_SIZE: usize = 1 << 15;
+const BLOCK_SIZE: usize = 1 << 15; //32KB
 
 unsafe impl Send for Wal {}
 unsafe impl Sync for Wal {}
@@ -163,7 +164,7 @@ impl GyWrite for Wal {
 }
 
 impl Wal {
-    pub(crate) fn new(fname: &Path, fsize: usize, io_type: IOType) -> GyResult<Wal> {
+    pub(crate) fn new(fname: &Path, fsize: usize, io_type: &IOType) -> GyResult<Wal> {
         let io_selector: Box<dyn IoSelector> = match io_type {
             IOType::FILEIO => todo!(),
             IOType::MMAP => Box::new(MmapSelector::new(fname, fsize)?),
@@ -182,7 +183,7 @@ impl Wal {
         self.io_selector.reopen(&self.fname, fsize)
     }
 
-    pub(crate) fn open(fname: &Path, fsize: usize, io_type: IOType) -> GyResult<Wal> {
+    pub(crate) fn open(fname: &Path, fsize: usize, io_type: &IOType) -> GyResult<Wal> {
         let io_selector: Box<dyn IoSelector> = match io_type {
             IOType::FILEIO => todo!(),
             IOType::MMAP => Box::new(MmapSelector::open(fname, fsize)?),
@@ -197,11 +198,18 @@ impl Wal {
         })
     }
 
-    pub(crate) fn check_rotate<T: ValueSized>(&self, t: &T) -> GyResult<()> {
-        if self.i + t.bytes_size() > self.fsize {
-            return Err(GyError::ErrWalOverflow);
+    pub(crate) fn check_room(&self, t: usize) -> bool {
+        if self.i + t > self.fsize {
+            return false;
         }
-        Ok(())
+        true
+    }
+
+    pub(crate) fn check_rotate<T: ValueSized>(&self, t: &T) -> bool {
+        if self.i + t.bytes_size() > self.fsize {
+            return false;
+        }
+        true
     }
 
     pub(crate) fn write_bytes(&mut self, content: &[u8]) -> GyResult<()> {
@@ -219,6 +227,10 @@ impl Wal {
 
     pub(crate) fn iter<'a, V: VectorSerialize>(&'a self, entry: TensorEntry) -> WalIter<'a, V> {
         WalIter::<V>::new(WalReader::new(self, 0, self.offset()), entry)
+    }
+
+    pub(crate) fn get_fname(&self) -> &Path {
+        &self.fname
     }
 }
 
@@ -276,7 +288,7 @@ mod tests {
         let mut wal = Wal::new(
             &PathBuf::from("/opt/rsproject/gptgrep/searchlite/00.wal"),
             1 * 1024 * 1024, //512MB
-            IOType::MMAP,
+            &IOType::MMAP,
         )
         .unwrap();
         let buf = "abcdeee";
@@ -291,7 +303,7 @@ mod tests {
         let mut wal = Wal::new(
             &PathBuf::from("/opt/rsproject/gptgrep/searchlite/00.wal"),
             1 * 1024 * 1024, //512MB
-            IOType::MMAP,
+            &IOType::MMAP,
         )
         .unwrap();
 

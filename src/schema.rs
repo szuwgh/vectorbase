@@ -946,7 +946,7 @@ impl VInt {
 
 mod tests {
 
-    use crate::{util::fs::to_json_file, Meta};
+    use crate::{util::fs, Meta};
 
     use super::*;
     use std::io::Cursor;
@@ -1130,7 +1130,7 @@ mod tests {
         assert_eq!(doc1, d_doc1);
         println!("doc size:{}", doc1.bytes_size());
     }
-
+    use crate::fs::FileManager;
     #[test]
     fn test_meta() {
         let mut schema = Schema::new();
@@ -1138,9 +1138,9 @@ mod tests {
         schema.add_field(FieldEntry::i32("title"));
         let meta = Meta::new(schema);
 
-        crate::fs::to_json_file(&meta, "./meta.json").unwrap();
+        FileManager::to_json_file(&meta, "./meta.json").unwrap();
 
-        let meta1: Meta = crate::fs::from_json_file("./meta.json").unwrap();
+        let meta1: Meta = FileManager::from_json_file("./meta.json").unwrap();
         println!("{:?}", meta1);
     }
 }
