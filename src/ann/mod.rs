@@ -35,6 +35,7 @@ impl AnnType {
     }
 }
 
+#[derive(Debug)]
 pub enum Ann<V: VectorSerialize + Clone> {
     HNSW(HNSW<V>),
 }
@@ -102,6 +103,10 @@ pub struct Neighbor {
 impl Neighbor {
     pub fn doc_id(&self) -> DocID {
         self.id as DocID
+    }
+
+    pub fn distance(&self) -> f32 {
+        self.d
     }
 }
 

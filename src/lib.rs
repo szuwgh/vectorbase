@@ -1,6 +1,7 @@
 pub mod ann;
 mod buffer;
 pub mod collection;
+mod compaction;
 pub mod config;
 pub mod disk;
 pub mod query;
@@ -18,9 +19,10 @@ use galois::Tensor;
 use query::Term;
 use schema::TensorEntry;
 use schema::ValueSized;
+use searcher::BlockReader;
+use std::io::{Cursor, Write};
 use std::sync::atomic::AtomicU64;
 use util::error::{GyError, GyResult};
-use util::fs::FileManager;
 use wal::ThreadWal;
 use wal::WalIter;
 mod macros;
@@ -50,7 +52,6 @@ use lock_api::RawMutex;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use std::cell::RefCell;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock, Weak};
@@ -108,9 +109,25 @@ pub struct EngineReader {
     entry: TensorEntry,
 }
 
-impl EngineReader {
-    pub fn query(&self, v: &Tensor, k: usize) -> GyResult<Vec<Neighbor>> {
+impl BlockReader for EngineReader {
+    fn query(&self, v: &Tensor, k: usize) -> GyResult<Vec<Neighbor>> {
         self.vector_field.query(v, k)
+    }
+
+    fn vector(&self, doc_id: DocID) -> GyResult<Vector> {
+        let doc_offset = self.index_reader.index_base.doc_offset(doc_id)?;
+        let v: Vector = {
+            let wal = self.index_reader.wal.get_borrow();
+            let mut wal_read = WalReader::new(wal, doc_offset, wal.offset());
+            Vector::vector_deserialize(&mut wal_read, self.tensor_entry())?
+        };
+        Ok(v)
+    }
+}
+
+impl EngineReader {
+    pub fn doc_num(&self) -> usize {
+        self.index_reader.doc_num()
     }
 
     pub fn search(&self, term: Term) -> GyResult<PostingReader> {
@@ -118,12 +135,6 @@ impl EngineReader {
     }
 
     pub fn vector_iter<'a>(&'a self, entry: TensorEntry) -> WalIter<'a, Vector> {
-        // let entry = self
-        //     .index_reader
-        //     .get_index_base()
-        //     .get_meta()
-        //     .tensor_entry()
-        //     .clone();
         self.index_reader
             .get_index_base()
             .get_wal_mut()
@@ -132,16 +143,6 @@ impl EngineReader {
 
     fn tensor_entry(&self) -> &TensorEntry {
         &self.entry
-    }
-
-    pub fn vector(&self, doc_id: DocID) -> GyResult<Vector> {
-        let doc_offset = self.index_reader.index_base.doc_offset(doc_id)?;
-        let v: Vector = {
-            let wal = self.index_reader.wal.get_borrow();
-            let mut wal_read = WalReader::new(wal, doc_offset, wal.offset());
-            Vector::vector_deserialize(&mut wal_read, self.tensor_entry())?
-        };
-        Ok(v)
     }
 
     pub fn index_reader(&self) -> &IndexReader {
@@ -171,6 +172,10 @@ impl Engine {
 
     pub fn add(&self, v: Vector) -> GyResult<DocID> {
         self.0.add(v)
+    }
+
+    fn get_wal_fname(&self) -> &Path {
+        self.0.index_base.wal.get_borrow().get_fname()
     }
 
     pub(crate) fn check_room_for_write(&self, size: usize) -> bool {
@@ -205,6 +210,7 @@ impl<V: VectorSerialize + Clone> VectorSerialize for VectorIndexBase<V> {
         let a = Ann::<V>::vector_deserialize(reader, entry)?;
         Ok(VectorIndexBase(RwLock::new(a)))
     }
+
     fn vector_serialize<W: Write + GyWrite>(&self, writer: &mut W) -> GyResult<()> {
         self.0.read()?.vector_serialize(writer)
     }
@@ -259,7 +265,7 @@ where
     fn quick_add(&self, doc_offset: usize, v: VectorBase<V>) -> GyResult<DocID> {
         let doc_id = self.index_base.doc_id.load(Ordering::SeqCst);
         {
-            self.index_base.doc_offset.get_borrow_mut()[doc_id as usize] = doc_offset;
+            self.index_base.doc_offset.get_borrow_mut().push(doc_offset)
         }
         self.index_base
             .last_offset
@@ -278,19 +284,6 @@ where
         }
         let doc_offset = self.write_vector_to_wal(&v)?;
         self.quick_add(doc_offset, v)?;
-
-        // let doc_id = self.index_base.doc_id.load(Ordering::SeqCst);
-        // {
-        //     self.index_base.doc_offset.get_borrow_mut()[doc_id as usize] = doc_offset;
-        // }
-        // self.index_base
-        //     .last_offset
-        //     .store(doc_offset, Ordering::SeqCst);
-        // let id = self.vector_field.insert(v.v)? as DocID;
-        // assert!(id == doc_id);
-        // self.index_base.doc_id.fetch_add(1, Ordering::SeqCst);
-        // self.index_base.inner_add(id, &v.payload)?;
-        // self.index_base.commit()?;
         unsafe {
             self.rw_lock.raw().unlock();
         }
@@ -373,6 +366,10 @@ impl Meta {
         }
     }
 
+    pub fn vector_name(&self) -> &str {
+        self.schema.vector_field.name()
+    }
+
     pub fn get_fields(&self) -> &[FieldEntry] {
         &self.schema.fields
     }
@@ -403,7 +400,7 @@ impl IndexBase {
                 config.get_fsize(),
                 config.get_io_type(),
             )?)),
-            doc_offset: ThreadVec::new(vec![0; 1024]), // Max memory doc
+            doc_offset: ThreadVec::new(Vec::with_capacity(1024)), // Max memory doc
             //config: config,
             last_offset: AtomicUsize::new(0),
         })
@@ -425,14 +422,12 @@ impl IndexBase {
             config.get_io_type(),
         )?;
         Ok(Self {
-            //meta: Meta::new(schema),
             fields: field_cache,
             doc_id: AtomicU64::new(0),
             buffer: buffer_pool,
             rw_lock: Mutex::new(()),
             wal: Arc::new(ThreadWal::new(wal)),
-            doc_offset: ThreadVec::new(vec![0; 1024]), // Max memory doc
-            //config: config,
+            doc_offset: ThreadVec::new(Vec::with_capacity(1024)), // Max memory doc
             last_offset: AtomicUsize::new(0),
         })
     }
@@ -570,8 +565,8 @@ impl ArtCache {
         }
     }
 
-    fn insert(&mut self, k: Vec<u8>, v: Posting) -> Option<Posting> {
-        self.cache.upsert(ByteString::new(&k), v.clone());
+    fn insert(&mut self, k: &[u8], v: Posting) -> Option<Posting> {
+        self.cache.upsert(ByteString::new(k), v.clone());
         Some(v)
     }
 
@@ -627,12 +622,13 @@ impl FieldCache {
 
     //添加 token 单词
     pub fn add(&self, doc_id: DocID, value: &Value) -> GyResult<()> {
-        let v = value.to_vec()?;
-        if !self.indexs.read()?.contains_key(&v) {
+        let mut share_bytes = Cursor::new([0u8; 8]);
+        let v = value.to_slice(&mut share_bytes)?;
+        if !self.indexs.read()?.contains_key(v) {
             let pool = self.share_bytes_block.upgrade().unwrap();
             let pos = (*pool).get_borrow_mut().alloc_bytes(0, None);
             self.indexs.write()?.insert(
-                v.clone(),
+                v,
                 Arc::new(RwLock::new(_Posting::new(pos, pos + BLOCK_SIZE_CLASS[1]))),
             );
 
@@ -836,6 +832,10 @@ impl IndexReader {
         }
     }
 
+    fn doc_num(&self) -> usize {
+        self.doc_count as usize
+    }
+
     fn reopen_wal(&self, fsize: usize) -> GyResult<()> {
         self.wal.reopen(fsize)
     }
@@ -902,6 +902,7 @@ mod tests {
 
     use super::{schema::FieldEntry, *};
     use crate::config::ConfigBuilder;
+    use config::{DATA_FILE, WAL_FILE};
     use galois::Shape;
     use schema::{BinarySerialize, VectorEntry};
     use std::thread;
@@ -914,7 +915,7 @@ mod tests {
         schema.add_field(FieldEntry::i32("title"));
         let field_id_title = schema.get_field("title").unwrap();
         let config = ConfigBuilder::default()
-            .data_path(PathBuf::from("/opt/rsproject/chappie/searchlite/data2"))
+            .data_path(PathBuf::from("/opt/rsproject/chappie/vectorvase/data2"))
             .build();
         let mut index = Index::new(&schema, config.get_engine_config(PathBuf::from(""))).unwrap();
         let mut writer1 = index.writer().unwrap();
@@ -960,7 +961,7 @@ mod tests {
             println!("docid:{},doc{:?}", doc_freq.doc_id(), doc);
         }
         //  println!("doc vec:{:?}", reader.get_doc_offset().read().unwrap());
-        //  disk::flush_index(&reader).unwrap();
+        //disk::persist_collection(&reader).unwrap();
     }
 
     // &[0.0, 0.0, 0.0, 1.0],
@@ -975,7 +976,7 @@ mod tests {
     #[test]
     fn test_add_vector1() {
         let mut schema = Schema::with_vector(VectorEntry::new(
-            "vector",
+            "vector1",
             AnnType::HNSW,
             TensorEntry::new(1, [4], schema::VectorType::F32),
         ));
@@ -986,8 +987,11 @@ mod tests {
         let config = ConfigBuilder::default()
             .data_path(PathBuf::from("./data1"))
             .build();
-        let mut collect =
-            Engine::new(&schema, config.get_engine_config(PathBuf::from(""))).unwrap();
+        let mut collect = Engine::new(
+            &schema,
+            config.get_engine_config(PathBuf::from("./data1").join(WAL_FILE)),
+        )
+        .unwrap();
         //let mut writer1 = index.writer().unwrap();
         {
             //writer1.add(1, &d).unwrap();
@@ -1048,7 +1052,8 @@ mod tests {
             println!("docid:{},doc{:?}", n.doc_id(), doc.v.to_vec::<f32>());
         }
         //  println!("doc vec:{:?}", reader.get_doc_offset().read().unwrap());
-        // disk::persist_collection(&reader).unwrap();
+        disk::persist_collection(reader, &schema, &PathBuf::from("./data1").join(DATA_FILE))
+            .unwrap();
     }
 
     #[test]
@@ -1065,8 +1070,11 @@ mod tests {
         let config = ConfigBuilder::default()
             .data_path(PathBuf::from("./data2"))
             .build();
-        let mut collect =
-            Engine::new(&schema, config.get_engine_config(PathBuf::from(""))).unwrap();
+        let mut collect = Engine::new(
+            &schema,
+            config.get_engine_config(PathBuf::from("./data2").join(WAL_FILE)),
+        )
+        .unwrap();
         //let mut writer1 = index.writer().unwrap();
         {
             //writer1.add(1, &d).unwrap();
@@ -1134,7 +1142,8 @@ mod tests {
             });
         }
         //  println!("doc vec:{:?}", reader.get_doc_offset().read().unwrap());
-        //  disk::persist_collection(&reader).unwrap();
+        disk::persist_collection(reader, &schema, &PathBuf::from("./data2").join(DATA_FILE))
+            .unwrap();
     }
 
     #[test]
@@ -1148,7 +1157,7 @@ mod tests {
         schema.add_field(FieldEntry::i32("title"));
 
         let field_id_title = schema.get_field("title").unwrap();
-        let disk_reader = DiskStoreReader::open(PathBuf::from("./data1/my_index")).unwrap();
+        let disk_reader = DiskStoreReader::open(PathBuf::from("./data1")).unwrap();
         let p = disk_reader
             .search(Term::from_field_text(field_id_title, "aa"))
             .unwrap();
@@ -1209,7 +1218,7 @@ mod tests {
         schema.add_field(FieldEntry::i32("title"));
         let field_id_title = schema.get_field("title").unwrap();
         let config = ConfigBuilder::default()
-            .data_path(PathBuf::from("/opt/rsproject/chappie/searchlite/data2"))
+            .data_path(PathBuf::from("/opt/rsproject/chappie/vectorvase/data2"))
             .build();
         let mut index = Index::new(&schema, config.get_engine_config(PathBuf::from(""))).unwrap();
         let mut writer1 = index.writer().unwrap();
@@ -1261,22 +1270,62 @@ mod tests {
     #[test]
     fn test_merge_store() {
         let disk_reader1 = DiskStoreReader::open(PathBuf::from(
-            "/opt/rsproject/chappie/searchlite/data1/my_index",
+            "/opt/rsproject/chappie/vectorvase/data1/my_index",
         ))
         .unwrap();
 
         let disk_reader2 = DiskStoreReader::open(PathBuf::from(
-            "/opt/rsproject/chappie/searchlite/data2/my_index",
+            "/opt/rsproject/chappie/vectorvase/data2/my_index",
         ))
         .unwrap();
         FileManager::mkdir(&PathBuf::from(
-            "/opt/rsproject/chappie/searchlite/data3/my_index",
+            "/opt/rsproject/chappie/vectorvase/data3/my_index",
         ))
         .unwrap();
-        disk::merge(
+        disk::merge_two(
             &disk_reader1,
             &disk_reader2,
-            &PathBuf::from("/opt/rsproject/chappie/searchlite/data3/my_index/data.gy"),
+            &PathBuf::from("/opt/rsproject/chappie/vectorvase/data3/my_index/data.gy"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_merge_much() {
+        let disk_reader1 =
+            DiskStoreReader::open(PathBuf::from("/opt/rsproject/chappie/vectorbase/data1"))
+                .unwrap();
+
+        let disk_reader2 =
+            DiskStoreReader::open(PathBuf::from("/opt/rsproject/chappie/vectorbase/data2"))
+                .unwrap();
+        FileManager::mkdir(&PathBuf::from("/opt/rsproject/chappie/vectorbase/data3")).unwrap();
+        disk::merge_much(
+            [&disk_reader1, &disk_reader2],
+            &PathBuf::from("/opt/rsproject/chappie/vectorbase/data3/data.gy"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_merge_3() {
+        let disk_reader1 =
+            DiskStoreReader::open(PathBuf::from("/opt/rsproject/chappie/vectorbase/data1"))
+                .unwrap();
+
+        let disk_reader2 =
+            DiskStoreReader::open(PathBuf::from("/opt/rsproject/chappie/vectorbase/data2"))
+                .unwrap();
+
+        let disk_reader3 =
+            DiskStoreReader::open(PathBuf::from("/opt/rsproject/chappie/vectorbase/data3"))
+                .unwrap();
+
+        FileManager::mkdir(&PathBuf::from("/opt/rsproject/chappie/vectorbase/data4")).unwrap();
+
+        disk::merge_much(
+            [&disk_reader1, &disk_reader2, &disk_reader3],
+            &PathBuf::from("/opt/rsproject/chappie/vectorbase/data4/data.gy"),
         )
         .unwrap();
     }
@@ -1287,10 +1336,9 @@ mod tests {
         schema.add_field(FieldEntry::str("body"));
         schema.add_field(FieldEntry::i32("title"));
         let field_id_title = schema.get_field("title").unwrap();
-        let disk_reader = DiskStoreReader::open(PathBuf::from(
-            "/opt/rsproject/chappie/searchlite/data3/my_index",
-        ))
-        .unwrap();
+        let disk_reader =
+            DiskStoreReader::open(PathBuf::from("/opt/rsproject/chappie/vectorbase/data4"))
+                .unwrap();
         let p = disk_reader
             .search(Term::from_field_text(field_id_title, "aa"))
             .unwrap();
@@ -1308,7 +1356,7 @@ mod tests {
         schema.add_field(FieldEntry::i32("title"));
         let field_id_title = schema.get_field("title").unwrap();
         let disk_reader = DiskStoreReader::open(PathBuf::from(
-            "/opt/rsproject/chappie/searchlite/data/my_index",
+            "/opt/rsproject/chappie/vectorvase/data/my_index",
         ))
         .unwrap();
 

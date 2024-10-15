@@ -4,13 +4,18 @@ use super::util::error::{GyError, GyResult};
 use super::util::fs::{self};
 use super::util::fst::{FstBuilder, FstReader, FstReaderIter};
 use super::{EngineReader, IndexReader, Meta};
+use crate::ann::AnnType;
 use crate::config::DiskFileMeta;
+use crate::config::TermRange;
 use crate::config::DATA_FILE;
 use crate::config::META_FILE;
 use crate::fs::FileManager;
 use crate::iocopy;
 use crate::schema::VUInt;
 use crate::schema::VarIntSerialize;
+use crate::schema::VectorEntry;
+use crate::schema::VectorType;
+use crate::searcher::BlockReader;
 use crate::util::bloom::GyBloom;
 use crate::util::fs::GyFile;
 use crate::Ann;
@@ -26,8 +31,7 @@ use furze::fst::Cow;
 use galois::Tensor;
 use memmap2::Mmap;
 use std::borrow::Borrow;
-use std::collections::HashMap;
-use std::fs::File;
+use std::fs::{read, File};
 use std::io::{BufWriter, Read};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -98,16 +102,69 @@ impl GyWrite for File {
     }
 }
 
-struct CompactionMerger<T: Iterator> {
+struct CompactionMergeMuch<T: Iterator> {
+    readers: Vec<Peekable<T>>,
+}
+
+impl<T: Iterator> CompactionMergeMuch<T>
+where
+    T::Item: Ord,
+{
+    fn new(readers: Vec<Peekable<T>>) -> CompactionMergeMuch<T> {
+        Self { readers }
+    }
+
+    fn merge(mut self) -> impl Iterator<Item = Vec<Option<T::Item>>> {
+        std::iter::from_fn(move || {
+            let mut min_indices = Vec::new();
+            let mut min_value: Option<&T::Item> = None;
+
+            for (i, reader) in self.readers.iter_mut().enumerate() {
+                if let Some(peek) = reader.peek() {
+                    match min_value {
+                        Some(value) => match peek.cmp(value) {
+                            CmpOrdering::Less => {
+                                min_value = Some(peek);
+                                min_indices.clear();
+                                min_indices.push(i);
+                            }
+                            CmpOrdering::Equal => {
+                                min_indices.push(i);
+                            }
+                            CmpOrdering::Greater => {}
+                        },
+                        None => {
+                            min_value = Some(peek);
+                            min_indices.push(i);
+                        }
+                    }
+                }
+            }
+
+            if min_indices.is_empty() {
+                None
+            } else {
+                let mut result = Vec::with_capacity(self.readers.len());
+                (0..self.readers.len()).for_each(|_| result.push(None));
+                for &i in &min_indices {
+                    result[i] = self.readers[i].next();
+                }
+                Some(result)
+            }
+        })
+    }
+}
+
+struct CompactionMergerTwo<T: Iterator> {
     a: Peekable<T>,
     b: Peekable<T>,
 }
 
-impl<T: Iterator> CompactionMerger<T>
+impl<T: Iterator> CompactionMergerTwo<T>
 where
     T::Item: Ord,
 {
-    fn new(a: Peekable<T>, b: Peekable<T>) -> CompactionMerger<T> {
+    fn new(a: Peekable<T>, b: Peekable<T>) -> CompactionMergerTwo<T> {
         Self { a, b }
     }
 
@@ -128,34 +185,180 @@ where
     }
 }
 
-// struct TmpBufWriter(Vec<u8>);
-
-// impl TmpBufWriter {
-//     fn new(size: usize) -> TmpBufWriter {
-//         TmpBufWriter(Vec::with_capacity(size))
-//     }
-
-//     fn clear(&mut self) {
-//         self.0.clear();
-//     }
-// }
-
-// impl Write for TmpBufWriter {
-//     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-//         self.0.write(buf)
-//     }
-//     fn flush(&mut self) -> std::io::Result<()> {
-//         self.0.flush()
-//     }
-// }
-
 fn open_file_stream(fname: &str) -> GyResult<BufWriter<File>> {
     let file = File::open(fname)?;
     let buf_writer = BufWriter::new(file);
     Ok(buf_writer)
 }
 
-pub fn merge(a: &DiskStoreReader, b: &DiskStoreReader, new_fname: &Path) -> GyResult<()> {
+pub fn merge_much(
+    readers: &[VectorStoreReader],
+    new_fname: &Path,
+) -> GyResult<()> {
+    let mut schema = readers[0].meta.get_schema();
+    let mut new_schema: Option<Schema> = None;
+    for e in &readers[1..] {
+        new_schema = Some(schema.merge(&e.meta.get_schema()));
+        schema = new_schema.as_ref().unwrap();
+    }
+    let level = readers[0].meta.get_level();
+
+    let mut writer = DiskStoreWriter::new(new_fname)?;
+    let doc_num = readers.iter().map(|r| r.doc_num()).sum();
+    let parant: Vec<String> = readers
+        .iter()
+        .map(|r| r.meta.get_collection_name().to_string())
+        .collect();
+    let mut doc_meta: Vec<usize> = Vec::with_capacity(readers.iter().map(|r| r.doc_size()).sum());
+    // Write the doc blocks from all readers sequentially.
+    let mut total_doc_end = 0;
+    for reader in readers {
+        writer.write_doc_block(reader.doc_block())?;
+        total_doc_end += reader.doc_block().len();
+    }
+    // Collect all doc meta information.
+    let mut accumulated_end = 0;
+    for reader in readers {
+        for &meta in &reader.doc_meta {
+            doc_meta.push(meta + accumulated_end);
+        }
+        accumulated_end += reader.doc_end;
+    }
+    writer.doc_end = total_doc_end;
+
+    // Merge the vector fields across all readers.
+    let mut x: &Ann<Tensor> = Arc::as_ref(&readers[0].vector_field);
+    let mut v: Option<Ann<Tensor>> = None;
+    for e in &readers[1..] {
+        v = Some(x.merge(&e.vector_field)?);
+        x = v.as_ref().unwrap();
+    }
+    writer.write_vector(&v.unwrap())?;
+
+    let mut bytes = BytesMut::with_capacity(4 * 1024).writer();
+
+    let reader_iters = readers
+        .iter()
+        .map(|r| r.iter().peekable())
+        .collect::<Vec<_>>();
+    let reader_merger = CompactionMergeMuch::new(reader_iters);
+    let mut term_range_list: Vec<TermRange> = Vec::new();
+    reader_merger
+        .merge()
+        .try_for_each(|field_readers| -> GyResult<()> {
+            assert!(
+                field_readers
+                    .iter()
+                    .filter_map(|x| x.as_ref()) // 过滤出 Some 值
+                    .fold((true, None), |(equal, first), current| {
+                        match first {
+                            Some(f) => (equal && f == current, Some(f)), // 比较当前值与第一个值
+                            None => (true, Some(current)),               // 记录第一个值
+                        }
+                    })
+                    .0
+            );
+
+            let mut bloom = GyBloom::new(
+                field_readers
+                    .iter()
+                    .filter_map(|item| item.as_ref().map(|r| r.get_term_count()))
+                    .sum::<usize>()
+                    .max(1),
+            );
+            let mut term_count: usize = 0;
+
+            let field_merger = CompactionMergeMuch::new(
+                field_readers
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, r)| r.as_ref().map(|r1| r1.iter_with_index(idx).peekable()))
+                    .collect(),
+            );
+
+            field_merger
+                .merge()
+                .try_for_each(|term_item| -> GyResult<()> {
+                    assert!(
+                        term_item
+                            .iter()
+                            .filter_map(|x| x.as_ref()) // 过滤出 Some 值
+                            .fold((true, None), |(equal, first), current| {
+                                match first {
+                                    Some(f) => (equal && f == current, Some(f)), // 比较当前值与第一个值
+                                    None => (true, Some(current)),               // 记录第一个值
+                                }
+                            })
+                            .0
+                    );
+                    let mut idx = 0;
+                    let mut disk_posting_writer = DiskPostingWriter::new(&mut bytes);
+                    let mut doc_count: usize = 0;
+                    let mut term_iter = term_item.iter();
+
+                    for (i, item) in term_item.iter().enumerate() {
+                        if let Some(iterm) = item {
+                            let posting_reader = iterm.posting_reader();
+                            for doc_freq in posting_reader.iter() {
+                                println!(
+                                    "doc_id1:{},doc_size:{}",
+                                    doc_freq.doc_id(),
+                                    readers[..iterm.idx()]
+                                        .iter()
+                                        .map(|r| r.doc_size() as u64)
+                                        .sum::<u64>()
+                                );
+                                let adjusted_doc_id = doc_freq.doc_id()
+                                    + readers[..iterm.idx()]
+                                        .iter()
+                                        .map(|r| r.doc_size() as u64)
+                                        .sum::<u64>();
+                                println!(
+                                    "iterm:{},adjusted_doc_id:{}",
+                                    String::from_utf8_lossy(iterm.term()),
+                                    adjusted_doc_id
+                                );
+                                disk_posting_writer.add(adjusted_doc_id, doc_freq.freq())?;
+                            }
+                            doc_count += posting_reader.get_doc_count();
+                            idx = i;
+                        }
+                    }
+
+                    let offset = writer.write_posting(doc_count, bytes.get_ref())?;
+                    writer.add_term(term_item[idx].as_ref().unwrap().term(), offset)?;
+                    bloom.set(term_item[idx].as_ref().unwrap().term());
+                    term_count += 1;
+                    bytes.get_mut().clear();
+                    Ok(())
+                })?;
+
+            let bh1 = writer.write_bloom(&bloom)?;
+            let bh2 = writer.write_fst()?;
+            writer.finish_field(term_count, bh1, bh2)?;
+            Ok(())
+        })?;
+    writer.write_doc_meta(&doc_meta)?;
+    // 写入每个域的 meta
+    writer.write_field_meta()?;
+    let newfsize = writer.close()? as usize;
+    drop(writer);
+    if let Some(dir_path) = new_fname.parent() {
+        let meta = DiskFileMeta::new(
+            Meta::new(new_schema.unwrap()),
+            dir_path.file_name().unwrap().to_str().unwrap(),
+            parant,
+            term_range_list,
+            newfsize,
+            doc_num,
+            level + 1,
+        );
+        FileManager::to_json_file(&meta, dir_path.join(META_FILE))?;
+    }
+    Ok(())
+}
+
+pub fn merge_two(a: &DiskStoreReader, b: &DiskStoreReader, new_fname: &Path) -> GyResult<()> {
     let mut writer = DiskStoreWriter::new(new_fname)?;
     let mut doc_meta: Vec<usize> = Vec::with_capacity(a.doc_size() + b.doc_size());
     writer.write_doc_block(a.doc_block())?;
@@ -171,14 +374,14 @@ pub fn merge(a: &DiskStoreReader, b: &DiskStoreReader, new_fname: &Path) -> GyRe
     writer.write_vector(&a.vector_field.merge(&b.vector_field)?)?;
 
     let mut bytes = BytesMut::with_capacity(4 * 1024).writer();
-    let reader_merger = CompactionMerger::new(a.iter().peekable(), b.iter().peekable());
+    let reader_merger = CompactionMergerTwo::new(a.iter().peekable(), b.iter().peekable());
     reader_merger.merge().try_for_each(|e0| -> GyResult<()> {
         match (e0.0, e0.1) {
             (Some(r1), Some(r2)) => {
                 assert!(r1.get_field_name() == r2.get_field_name());
                 let field_merger =
-                    CompactionMerger::new(r1.iter().peekable(), r2.iter().peekable());
-                let mut bloom = GyBloom::new(r1.get_term_count() + r2.get_term_count());
+                    CompactionMergerTwo::new(r1.iter().peekable(), r2.iter().peekable());
+                let bloom = GyBloom::new(r1.get_term_count() + r2.get_term_count());
                 let mut term_count: usize = 0;
                 field_merger.merge().try_for_each(|e1| -> GyResult<()> {
                     let mut disk_poting_writer = DiskPostingWriter::new(&mut bytes);
@@ -257,11 +460,17 @@ pub fn merge(a: &DiskStoreReader, b: &DiskStoreReader, new_fname: &Path) -> GyRe
     // 写入每个域的 meta
     writer.write_field_meta()?;
     writer.close()?;
+    drop(writer);
+
     Ok(())
 }
 
 //合并索引
-pub fn persist_collection(reader: &EngineReader, refname: PathBuf) -> GyResult<()> {
+pub fn persist_collection(
+    reader: EngineReader,
+    schema: &Schema,
+    refname: &Path,
+) -> GyResult<usize> {
     let index_reader = reader.index_reader();
     let fname = index_reader.get_wal_path();
     let doc_end = index_reader.offset()?;
@@ -273,9 +482,15 @@ pub fn persist_collection(reader: &EngineReader, refname: PathBuf) -> GyResult<(
     writer.write_vector(reader.vector_field.0.read()?.borrow())?;
     let mut buf = Vec::with_capacity(4 * KB);
     // write field
+    let mut term_range_list: Vec<TermRange> = Vec::new();
     for field in index_reader.iter() {
-        let mut term_offset_cache: HashMap<Vec<u8>, usize> = HashMap::new();
-        for (b, p) in field.indexs.read()?.iter() {
+        // let mut term_offset_cache: HashMap<Vec<u8>, usize> = HashMap::new();
+        let mut bloom = GyBloom::new(field.get_term_count().max(1));
+        let indexs = field.indexs.read()?;
+        let mut iter = indexs.iter();
+        if let Some((b_min, p)) = iter.next() {
+            let mut b_max = b_min; // 临时将最大值设置为第一个元素
+
             let (doc_count, start_addr, end_addr) = {
                 let posting = (*p).read()?;
                 (
@@ -290,17 +505,37 @@ pub fn persist_collection(reader: &EngineReader, refname: PathBuf) -> GyResult<(
                 buf.write(rb)?;
             }
             let offset = writer.write_posting(doc_count, buf.as_slice())?;
-            term_offset_cache.insert(b.to_bytes(), offset);
+            bloom.set(b_min.borrow());
+            writer.add_term(b_min.borrow(), offset)?;
+            //term_offset_cache.insert(b.to_bytes(), offset);
             buf.clear();
-        }
-        // write bloom todo
-        let mut bloom = GyBloom::new(field.get_term_count().max(1));
-        // write fst
-        for (b, _) in field.indexs.read()?.iter() {
-            let v: &[u8] = b.borrow();
-            bloom.set(v);
-            let offset = term_offset_cache.get(v).unwrap();
-            writer.add_term(v, *offset)?;
+            // 迭代剩余的元素
+            for (b, p) in iter {
+                let (doc_count, start_addr, end_addr) = {
+                    let posting = (*p).read()?;
+                    (
+                        posting.doc_count,
+                        posting.byte_addr.load(Ordering::SeqCst),
+                        posting.doc_freq_addr.load(Ordering::SeqCst),
+                    )
+                };
+                // write posting
+                let posting_buffer = field.posting_buffer(start_addr, end_addr)?;
+                for rb in posting_buffer.iter() {
+                    buf.write(rb)?;
+                }
+                let offset = writer.write_posting(doc_count, buf.as_slice())?;
+                bloom.set(b.borrow());
+                writer.add_term(b.borrow(), offset)?;
+                //term_offset_cache.insert(b.to_bytes(), offset);
+                buf.clear();
+
+                // 最后一次迭代的 b 就是最大值
+                b_max = b;
+            }
+            // 你可以在这里使用 min_value 和 max_value
+            println!("Min: {:?}, Max: {:?}", b_min, b_max);
+            term_range_list.push(TermRange::new(b_min.to_bytes(), b_max.to_bytes()));
         }
         let bh1 = writer.write_bloom(&bloom)?;
         let bh2 = writer.write_fst()?;
@@ -311,19 +546,55 @@ pub fn persist_collection(reader: &EngineReader, refname: PathBuf) -> GyResult<(
     writer.write_doc_meta(&index_reader.get_doc_offset())?;
     // 写入每个域的 meta
     writer.write_field_meta()?;
-    let newfsize = writer.close()?;
+    let newfsize = writer.close()? as usize;
     println!("newfsize:{}", newfsize);
+    index_reader.reopen_wal(newfsize)?;
     drop(writer);
-    // index_reader.reopen_wal(newfsize as usize)?;
-    if let Some(dir_path) = fname.parent() {
-        std::fs::rename(&fname, refname)?;
-        // std::fs::rename(&fname, dir_path.join(DATA_FILE))?;
-        // crate::fs::to_json_file(
-        //     index_reader.get_index_base().get_meta(),
-        //     dir_path.join(META_FILE),
-        // )?;
+    if let Some(dir_path) = refname.parent() {
+        std::fs::rename(&fname, &refname)?;
+        let meta = DiskFileMeta::new(
+            Meta::new(schema.clone()),
+            dir_path.file_name().unwrap().to_str().unwrap(),
+            Vec::new(),
+            term_range_list,
+            newfsize,
+            reader.doc_num(),
+            0,
+        );
+        FileManager::to_json_file(&meta, dir_path.join(META_FILE))?;
     }
-    Ok(())
+
+    Ok(newfsize)
+}
+
+unsafe impl Sync for VectorStoreReader {}
+unsafe impl Send for VectorStoreReader {}
+
+#[derive(Clone)]
+pub struct VectorStoreReader(Arc<DiskStoreReader>);
+
+impl VectorStoreReader {
+    pub fn open<P: AsRef<Path>>(path: P) -> GyResult<VectorStoreReader> {
+        Ok(VectorStoreReader(Arc::new(DiskStoreReader::open(path)?)))
+    }
+
+    pub fn level(&self) -> usize {
+        self.0.level()
+    }
+
+    pub fn file_size(&self) -> usize {
+        self.0.
+    }
+}
+
+impl BlockReader for VectorStoreReader {
+    fn query(&self, tensor: &Tensor, k: usize) -> GyResult<Vec<Neighbor>> {
+        self.0.query(tensor, k)
+    }
+
+    fn vector(&self, doc_id: DocID) -> GyResult<Vector> {
+        self.0.vector(doc_id)
+    }
 }
 
 pub struct DiskStoreReader {
@@ -336,6 +607,18 @@ pub struct DiskStoreReader {
     file: GyFile,
     fsize: usize,
     mmap: Arc<Mmap>,
+}
+
+impl BlockReader for DiskStoreReader {
+    fn vector(&self, doc_id: DocID) -> GyResult<Vector> {
+        let doc_offset = self.doc_meta[doc_id as usize];
+        let doc = self.read_vector::<Vector>(doc_offset)?;
+        Ok(doc)
+    }
+
+    fn query(&self, v: &Tensor, k: usize) -> GyResult<Vec<Neighbor>> {
+        self.vector_field.query(v, k)
+    }
 }
 
 impl DiskStoreReader {
@@ -380,8 +663,8 @@ impl DiskStoreReader {
         let mut mmap_reader = MmapReader::new(&mmap, vector_meta_bh.start(), vector_meta_bh.end());
         let vector_index =
             Self::read_vector_index::<Ann<Tensor>>(&mut mmap_reader, meta.tensor_entry())?;
-
         assert!(fields_meta.len() == meta.get_fields().len());
+        assert!(doc_meta.len() == meta.get_doc_num());
         Ok(Self {
             meta: meta,
             vector_field: Arc::new(vector_index),
@@ -448,10 +731,6 @@ impl DiskStoreReader {
         })
     }
 
-    pub fn query(&self, v: &Tensor, k: usize) -> GyResult<Vec<Neighbor>> {
-        self.vector_field.query(v, k)
-    }
-
     pub fn search(&self, term: Term) -> GyResult<DiskPostingReader> {
         let field_id = term.field_id().id();
         let field_reader = self.field_reader(field_id)?;
@@ -460,6 +739,18 @@ impl DiskStoreReader {
 
     pub fn doc_size(&self) -> usize {
         self.doc_meta.len()
+    }
+
+    pub fn doc_num(&self) -> usize {
+        self.meta.get_doc_num()
+    }
+
+    pub fn level(&self) -> usize {
+        self.meta.get_level()
+    }
+
+    pub fn file_size(&self) -> usize {
+        self.meta.f
     }
 
     pub(crate) fn doc_block(&self) -> &[u8] {
@@ -473,12 +764,6 @@ impl DiskStoreReader {
     pub fn doc(&self, doc_id: DocID) -> GyResult<Document> {
         let doc_offset = self.doc_meta[doc_id as usize];
         let doc = self.read_at::<Document>(doc_offset)?;
-        Ok(doc)
-    }
-
-    pub fn vector(&self, doc_id: DocID) -> GyResult<Vector> {
-        let doc_offset = self.doc_meta[doc_id as usize];
-        let doc = self.read_vector::<Vector>(doc_offset)?;
         Ok(doc)
     }
 
@@ -573,6 +858,15 @@ impl<'a> DiskFieldReader<'a> {
         DiskFieldReaderIter {
             iter: self.fst.iter(),
             mmap: self.mmap.clone(),
+            i: 0,
+        }
+    }
+
+    pub fn iter_with_index(&self, i: usize) -> DiskFieldReaderIter {
+        DiskFieldReaderIter {
+            iter: self.fst.iter(),
+            mmap: self.mmap.clone(),
+            i: i,
         }
     }
 
@@ -596,11 +890,12 @@ impl<'a> DiskFieldReader<'a> {
 pub struct DiskFieldReaderIter<'a> {
     iter: FstReaderIter<'a>,
     mmap: Arc<Mmap>,
+    i: usize,
 }
 
-pub struct FieldItem(Cow, DiskPostingReader);
+pub struct TermItem(Cow, DiskPostingReader, usize);
 
-impl FieldItem {
+impl TermItem {
     pub fn term(&self) -> &[u8] {
         self.0.as_ref()
     }
@@ -608,34 +903,39 @@ impl FieldItem {
     pub fn posting_reader(&self) -> &DiskPostingReader {
         &self.1
     }
+
+    pub fn idx(&self) -> usize {
+        self.2
+    }
 }
 
 impl<'a> Iterator for DiskFieldReaderIter<'a> {
-    type Item = FieldItem;
+    type Item = TermItem;
     fn next(&mut self) -> Option<Self::Item> {
         let item = self.iter.next()?;
-        Some(FieldItem(
+        Some(TermItem(
             item.0.clone(),
             DiskPostingReader::new(self.mmap.clone(), item.1 as usize).unwrap(),
+            self.i,
         ))
     }
 }
 
-impl PartialOrd for FieldItem {
+impl PartialOrd for TermItem {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         self.0.as_ref().partial_cmp(other.0.as_ref())
     }
 }
 
-impl PartialEq for FieldItem {
+impl PartialEq for TermItem {
     fn eq(&self, other: &Self) -> bool {
         self.0.as_ref() == other.0.as_ref()
     }
 }
 
-impl Eq for FieldItem {}
+impl Eq for TermItem {}
 
-impl Ord for FieldItem {
+impl Ord for TermItem {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.0.as_ref().cmp(other.0.as_ref())
     }
@@ -1217,5 +1517,20 @@ mod tests {
         println!("{:?}", c.get_ref());
         c.write_u8(3u8);
         println!("{:?}", c.get_ref());
+    }
+
+    #[test]
+    fn test_CompactionMergeMuch() {
+        let iters = vec![
+            vec![1, 4, 7, 11].into_iter().peekable(),
+            vec![1, 5, 8, 10].into_iter().peekable(),
+            vec![1, 5, 9].into_iter().peekable(),
+            vec![5].into_iter().peekable(),
+        ];
+
+        let merger = CompactionMergeMuch::new(iters);
+        for merged in merger.merge() {
+            println!("{:?}", merged);
+        }
     }
 }

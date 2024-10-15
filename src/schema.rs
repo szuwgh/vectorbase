@@ -1,3 +1,5 @@
+use crate::util::common;
+
 // 每一行数据
 use super::ann::{AnnType, Metric};
 use super::disk::{GyRead, GyWrite};
@@ -9,6 +11,7 @@ use galois::{GGmlType, TensorType};
 use galois::{Shape, Tensor};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io::Cursor;
 use std::io::Read;
 use std::io::Write;
 use varintrs::{Binary, ReadBytesVarExt, WriteBytesVarExt};
@@ -81,7 +84,7 @@ impl BinarySerialize for DocFreq {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Schema {
     pub vector_field: VectorEntry,
     pub fields: Vec<FieldEntry>,
@@ -91,6 +94,21 @@ pub struct Schema {
 impl Schema {
     pub fn new() -> Schema {
         Schema::default()
+    }
+
+    pub fn merge(&self, other: &Self) -> Self {
+        assert!(self.vector_field.name() == other.vector_field.name());
+        let fields = common::merge_sorted_vecs_unique(&self.fields, &other.fields);
+        let fields_map = self
+            .fields
+            .iter()
+            .map(|field| (field.name.clone(), field.field_id.clone()))
+            .collect();
+        Self {
+            vector_field: self.vector_field.clone(),
+            fields: fields,
+            fields_map: fields_map,
+        }
     }
 
     pub fn with_vector(vector_field: VectorEntry) -> Schema {
@@ -110,12 +128,13 @@ impl Schema {
     }
 
     //添加一个域
-    pub fn add_field(&mut self, mut field_entry: FieldEntry) {
+    pub fn add_field(&mut self, mut field_entry: FieldEntry) -> FieldID {
         let field_id = FieldID::from_field_id(self.fields.len() as u32);
         let field_name = field_entry.get_name().to_string();
         field_entry.field_id = field_id.clone();
         self.fields.push(field_entry);
         self.fields_map.insert(field_name, field_id);
+        field_id
     }
 }
 
@@ -143,7 +162,7 @@ impl VectorType {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Default)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct VectorEntry {
     name: String,
     index_type: AnnType,
@@ -157,6 +176,10 @@ impl VectorEntry {
             index_type: index_type,
             tensor_entry: tensor_entry,
         }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
     pub(crate) fn tensor_entry(&self) -> &TensorEntry {
@@ -223,6 +246,18 @@ pub struct FieldEntry {
     name: String,
     field_id: FieldID,
     field_type: FieldType,
+}
+
+impl PartialOrd for FieldEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.field_id.partial_cmp(&other.field_id)
+    }
+}
+
+impl PartialEq for FieldEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name && self.field_id == self.field_id
+    }
 }
 
 impl FieldEntry {
@@ -480,6 +515,10 @@ impl Document {
         self.add_field_value(FieldValue::new(field, Value::I64(value)));
     }
 
+    pub fn add_str(&mut self, field: FieldID, value: String) {
+        self.add_field_value(FieldValue::new(field, Value::String(value)));
+    }
+
     pub fn add_text(&mut self, field: FieldID, value: &str) {
         self.add_field_value(FieldValue::new(field, Value::String(value.to_string())));
     }
@@ -687,48 +726,41 @@ impl Value {
         }
     }
 
-    pub fn to_vec(&self) -> GyResult<Vec<u8>> {
+    pub fn to_slice<'a>(&'a self, v: &'a mut Cursor<[u8; 8]>) -> GyResult<&'a [u8]> {
         match &self {
-            Value::Str(s) => Ok((*s).as_bytes().to_vec()),
-            Value::String(s) => Ok(s.as_bytes().to_vec()),
+            Value::Str(s) => Ok((*s).as_bytes()),
+            Value::String(s) => Ok(s.as_bytes()),
             Value::I64(i) => {
-                let mut v = vec![0u8; 8];
-                i.binary_serialize(&mut v)?;
-                Ok(v)
+                i.binary_serialize(v)?;
+                Ok(&v.get_ref()[..v.position() as usize])
             }
 
             Value::U64(i) => {
-                let mut v = vec![0u8; 8];
-                i.binary_serialize(&mut v)?;
-                Ok(v)
+                i.binary_serialize(v)?;
+                Ok(&v.get_ref()[..v.position() as usize])
             }
             Value::I32(i) => {
-                let mut v = vec![0u8; 4];
-                i.binary_serialize(&mut v)?;
-                Ok(v)
+                i.binary_serialize(v)?;
+                Ok(&v.get_ref()[..v.position() as usize])
             }
             Value::U32(u) => {
-                let mut v = vec![0u8; 4];
-                u.binary_serialize(&mut v)?;
-                Ok(v)
+                u.binary_serialize(v)?;
+                Ok(&v.get_ref()[..v.position() as usize])
             }
             Value::F64(f) => {
-                let mut v = vec![0u8; 8];
-                f.binary_serialize(&mut v)?;
-                Ok(v)
+                f.binary_serialize(v)?;
+                Ok(&v.get_ref()[..v.position() as usize])
             }
             Value::F32(f) => {
-                let mut v = vec![0u8; 4];
-                f.binary_serialize(&mut v)?;
-                Ok(v)
+                f.binary_serialize(v)?;
+                Ok(&v.get_ref()[..v.position() as usize])
             }
             Value::Date(f) => {
-                let mut v = vec![0u8; 4];
-                f.timestamp_nanos().binary_serialize(&mut v)?;
-                Ok(v)
+                f.timestamp_nanos().binary_serialize(v)?;
+                Ok(&v.get_ref()[..v.position() as usize])
             }
-            Value::Bytes(v) => Ok(v.clone()),
-            _ => Ok(Vec::new()),
+            Value::Bytes(v) => Ok(v),
+            _ => todo!(),
         }
     }
 }

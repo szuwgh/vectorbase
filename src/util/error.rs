@@ -4,7 +4,7 @@ use std::io;
 use std::io::Error as IOError;
 use std::sync::{PoisonError, TryLockError};
 use thiserror::Error;
-
+use tokio::sync::mpsc::error::SendError;
 pub type GyResult<T> = Result<T, GyError>;
 
 #[derive(Error, Debug)]
@@ -53,6 +53,8 @@ pub enum GyError {
     ErrNotFoundTermFromBloom(String),
     #[error("collection wal invalid")]
     ErrCollectionWalInvalid,
+    #[error("err send invalid")]
+    ErrSendInvalid(String),
 }
 
 impl From<&str> for GyError {
@@ -106,5 +108,11 @@ impl<T> From<TryLockError<T>> for GyError {
 impl From<serde_json::Error> for GyError {
     fn from(e: serde_json::Error) -> Self {
         GyError::ErrSerdeJson(e)
+    }
+}
+
+impl<T> From<SendError<T>> for GyError {
+    fn from(e: SendError<T>) -> Self {
+        GyError::ErrSendInvalid(e.to_string())
     }
 }

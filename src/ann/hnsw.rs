@@ -21,7 +21,7 @@ impl Metric<Vec<f32>> for Vec<f32> {
 
 const GGUF_DEFAULT_ALIGNMENT: usize = 32;
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct Node {
     level: usize,
     neighbors: Vec<Vec<usize>>, //layer --> vec
@@ -34,6 +34,7 @@ impl Node {
     }
 }
 
+#[derive(Debug)]
 #[warn(non_snake_case)]
 pub struct HNSW<V: VectorSerialize + Clone> {
     enter_point: usize,

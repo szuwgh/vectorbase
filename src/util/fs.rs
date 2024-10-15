@@ -1,10 +1,10 @@
 use super::error::GyResult;
 
+use crate::config::DATA_FILE;
 use crate::config::WAL_FILE;
 use crate::iocopy;
 use crate::GyError;
 use fs2::FileExt;
-use memmap2::MmapAsRawDesc;
 use memmap2::{self, MmapMut};
 use regex::Regex;
 use serde::de::DeserializeOwned;
@@ -17,7 +17,6 @@ use std::os::unix::fs::{FileExt as linuxFileExt, MetadataExt};
 #[cfg(target_os = "windows")]
 use std::os::windows::fs::{FileExt as windowsFileExt, MetadataExt};
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 pub struct GyFile(File);
 
 impl GyFile {
@@ -58,6 +57,22 @@ impl GyFile {
 pub struct FileManager;
 
 impl FileManager {
+    pub(crate) fn get_rename_wal_path<P: AsRef<Path>>(p: P) -> GyResult<PathBuf> {
+        let path = p.as_ref();
+        let parent_dir = path.parent().unwrap();
+        if let Some(name_str) = path.to_str() {
+            // 去掉文件扩展名
+            let base_name = name_str
+                .strip_suffix(".wal")
+                .expect("File name format is incorrect");
+            return Ok(PathBuf::new()
+                .join(parent_dir)
+                .join(base_name)
+                .join(DATA_FILE));
+        }
+        todo!()
+    }
+
     pub(crate) fn get_next_wal_name<P: AsRef<Path>>(dir: P) -> GyResult<PathBuf> {
         let list = Self::get_files_with_extension(dir.as_ref(), "wal")?;
         if list.len() == 0 {
@@ -168,7 +183,11 @@ impl FileManager {
     }
 
     pub(crate) fn open_file(fname: &Path, read: bool, write: bool) -> GyResult<File> {
-        let file = OpenOptions::new().read(read).write(write).open(fname)?;
+        let file = OpenOptions::new()
+            .create(true)
+            .read(read)
+            .write(write)
+            .open(fname)?;
         Ok(file)
     }
 

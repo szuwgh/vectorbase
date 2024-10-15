@@ -1,3 +1,5 @@
+use crate::schema::DocID;
+use crate::schema::Schema;
 use crate::FieldEntry;
 use crate::IOType;
 use crate::Meta;
@@ -16,7 +18,6 @@ pub struct ConfigBuilder {
     collect_name: String,
     io_type: IOType,
     data_path: PathBuf,
-    wal_fname: PathBuf,
     fsize: usize,
 }
 
@@ -26,15 +27,14 @@ impl Default for ConfigBuilder {
             collect_name: "my_index".to_string(),
             io_type: IOType::MMAP,
             data_path: PathBuf::from("./"),
-            wal_fname: PathBuf::from(WAL_FILE),
             fsize: DEFAULT_WAL_FILE_SIZE,
         }
     }
 }
 
 impl ConfigBuilder {
-    pub fn collect_name(mut self, collect_name: String) -> ConfigBuilder {
-        self.collect_name = collect_name;
+    pub fn collect_name(mut self, collect_name: &str) -> ConfigBuilder {
+        self.collect_name = collect_name.to_string();
         self
     }
 
@@ -54,15 +54,17 @@ impl ConfigBuilder {
     }
 
     pub fn build(self) -> Config {
-        let wal_path = self
-            .data_path
-            .join(&self.collect_name)
-            .join(&self.wal_fname);
+        // let wal_path = self
+        //     .data_path
+        //     .join(&self.collect_name)
+        //     .join(&self.wal_fname);
+        let collection_path = self.data_path.join(&self.collect_name);
         Config {
             collect_name: self.collect_name,
             data_path: self.data_path,
+            collection_path: collection_path,
             io_type: self.io_type,
-            wal_fname: self.wal_fname,
+            //wal_fname: self.wal_fname,
             fsize: self.fsize,
         }
     }
@@ -71,8 +73,8 @@ impl ConfigBuilder {
 pub struct Config {
     collect_name: String,
     data_path: PathBuf,
+    collection_path: PathBuf,
     io_type: IOType,
-    wal_fname: PathBuf,
     fsize: usize,
 }
 
@@ -85,15 +87,9 @@ impl Config {
         &self.data_path
     }
 
-    pub fn get_collection_path(&self) -> PathBuf {
-        self.data_path.join(&self.collect_name)
+    pub fn get_collection_path(&self) -> &Path {
+        &self.collection_path
     }
-
-    // pub fn get_wal_path(&self) -> PathBuf {
-    //     self.get_data_path()
-    //         .join(self.get_collect_name())
-    //         .join(self.get_wal_fname())
-    // }
 
     pub fn get_meta_path(&self) -> PathBuf {
         self.data_path.join(&self.collect_name).join(META_FILE)
@@ -138,16 +134,81 @@ impl EngineConfig {
 #[derive(Serialize, Deserialize, Debug)]
 pub(crate) struct DiskFileMeta {
     meta: Meta,
+    collection_name: String,
     parent: Vec<String>,
-    level: i32,
+    field_range: Vec<TermRange>,
+    file_size: usize, //文件大小
+    doc_num: usize,   //文档数量
+    level: usize,     //文件所在层数
 }
 
 impl DiskFileMeta {
+    pub(crate) fn new(
+        meta: Meta,
+        collection_name: &str,
+        parent: Vec<String>,
+        field_range: Vec<TermRange>,
+        file_size: usize,
+        doc_num: usize,
+        level: usize,
+    ) -> DiskFileMeta {
+        DiskFileMeta {
+            meta,
+            collection_name: collection_name.to_string(),
+            parent,
+            field_range,
+            file_size: file_size,
+            doc_num: doc_num,
+            level,
+        }
+    }
+
+    pub fn get_collection_name(&self) -> &str {
+        &self.collection_name
+    }
+
+    pub fn get_schema(&self) -> &Schema {
+        &self.meta.schema
+    }
+
+    pub fn vector_name(&self) -> &str {
+        self.meta.vector_name()
+    }
+
     pub fn tensor_entry(&self) -> &TensorEntry {
         self.meta.tensor_entry()
     }
 
+    pub fn get_level(&self) -> usize {
+        self.level
+    }
+
+    pub fn file_size(&self) -> usize {
+        self.file_size
+    }
+
     pub fn get_fields(&self) -> &[FieldEntry] {
         self.meta.get_fields()
+    }
+
+    pub fn get_doc_num(&self) -> usize {
+        self.doc_num
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub(crate) struct TermRange(Vec<u8>, Vec<u8>);
+
+impl TermRange {
+    pub(crate) fn new(start: Vec<u8>, end: Vec<u8>) -> TermRange {
+        TermRange(start, end)
+    }
+
+    pub(crate) fn start(&self) -> &[u8] {
+        &self.0
+    }
+
+    pub(crate) fn end(&self) -> &[u8] {
+        &self.1
     }
 }
