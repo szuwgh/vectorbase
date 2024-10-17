@@ -183,6 +183,12 @@ impl Wal {
         self.io_selector.reopen(&self.fname, fsize)
     }
 
+    pub(crate) fn rename(&mut self, new_fname: &Path) -> GyResult<()> {
+        std::fs::rename(&self.fname, new_fname)?;
+        self.fname = new_fname.to_path_buf();
+        Ok(())
+    }
+
     pub(crate) fn open(fname: &Path, fsize: usize, io_type: &IOType) -> GyResult<Wal> {
         let io_selector: Box<dyn IoSelector> = match io_type {
             IOType::FILEIO => todo!(),

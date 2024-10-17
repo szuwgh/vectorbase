@@ -82,10 +82,6 @@ impl Searcher {
         let mut vec_set = Vec::with_capacity(ne_set.len());
         for n in ne_set {
             let v = self.blocks[n.i].vector(n.neighbor.doc_id())?;
-            // let v = match &self.blocks[n.i] {
-            //     BlockQuerySet::Memory(e) => e.vector(n.neighbor.doc_id())?,
-            //     BlockQuerySet::Disk(d) => d.vector(n.neighbor.doc_id())?,
-            // };
             vec_set.push(VectorSet {
                 v: v,
                 d: n.neighbor.distance(),

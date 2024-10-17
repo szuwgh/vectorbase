@@ -1,3 +1,4 @@
+pub(crate) mod asyncio;
 pub(crate) mod bloom;
 pub(crate) mod common;
 pub(crate) mod error;

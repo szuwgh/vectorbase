@@ -191,46 +191,44 @@ fn open_file_stream(fname: &str) -> GyResult<BufWriter<File>> {
     Ok(buf_writer)
 }
 
-pub fn merge_much(
-    readers: &[VectorStoreReader],
-    new_fname: &Path,
-) -> GyResult<()> {
-    let mut schema = readers[0].meta.get_schema();
+pub fn merge_much(readers: &[VectorStoreReader], new_fname: &Path) -> GyResult<()> {
+    let mut schema = readers[0].get_store().meta.get_schema();
     let mut new_schema: Option<Schema> = None;
     for e in &readers[1..] {
-        new_schema = Some(schema.merge(&e.meta.get_schema()));
+        new_schema = Some(schema.merge(&e.get_store().meta.get_schema()));
         schema = new_schema.as_ref().unwrap();
     }
-    let level = readers[0].meta.get_level();
+    let level = readers[0].get_store().meta.get_level();
 
     let mut writer = DiskStoreWriter::new(new_fname)?;
-    let doc_num = readers.iter().map(|r| r.doc_num()).sum();
+    let doc_num = readers.iter().map(|r| r.get_store().doc_num()).sum();
     let parant: Vec<String> = readers
         .iter()
-        .map(|r| r.meta.get_collection_name().to_string())
+        .map(|r| r.get_store().meta.get_collection_name().to_string())
         .collect();
-    let mut doc_meta: Vec<usize> = Vec::with_capacity(readers.iter().map(|r| r.doc_size()).sum());
+    let mut doc_meta: Vec<usize> =
+        Vec::with_capacity(readers.iter().map(|r| r.get_store().doc_size()).sum());
     // Write the doc blocks from all readers sequentially.
     let mut total_doc_end = 0;
     for reader in readers {
-        writer.write_doc_block(reader.doc_block())?;
-        total_doc_end += reader.doc_block().len();
+        writer.write_doc_block(reader.get_store().doc_block())?;
+        total_doc_end += reader.get_store().doc_block().len();
     }
     // Collect all doc meta information.
     let mut accumulated_end = 0;
     for reader in readers {
-        for &meta in &reader.doc_meta {
+        for &meta in &reader.get_store().doc_meta {
             doc_meta.push(meta + accumulated_end);
         }
-        accumulated_end += reader.doc_end;
+        accumulated_end += reader.get_store().doc_end;
     }
     writer.doc_end = total_doc_end;
 
     // Merge the vector fields across all readers.
-    let mut x: &Ann<Tensor> = Arc::as_ref(&readers[0].vector_field);
+    let mut x: &Ann<Tensor> = Arc::as_ref(&readers[0].get_store().vector_field);
     let mut v: Option<Ann<Tensor>> = None;
     for e in &readers[1..] {
-        v = Some(x.merge(&e.vector_field)?);
+        v = Some(x.merge(&e.get_store().vector_field)?);
         x = v.as_ref().unwrap();
     }
     writer.write_vector(&v.unwrap())?;
@@ -239,7 +237,7 @@ pub fn merge_much(
 
     let reader_iters = readers
         .iter()
-        .map(|r| r.iter().peekable())
+        .map(|r| r.get_store().iter().peekable())
         .collect::<Vec<_>>();
     let reader_merger = CompactionMergeMuch::new(reader_iters);
     let mut term_range_list: Vec<TermRange> = Vec::new();
@@ -305,13 +303,13 @@ pub fn merge_much(
                                     doc_freq.doc_id(),
                                     readers[..iterm.idx()]
                                         .iter()
-                                        .map(|r| r.doc_size() as u64)
+                                        .map(|r| r.get_store().doc_size() as u64)
                                         .sum::<u64>()
                                 );
                                 let adjusted_doc_id = doc_freq.doc_id()
                                     + readers[..iterm.idx()]
                                         .iter()
-                                        .map(|r| r.doc_size() as u64)
+                                        .map(|r| r.get_store().doc_size() as u64)
                                         .sum::<u64>();
                                 println!(
                                     "iterm:{},adjusted_doc_id:{}",
@@ -551,6 +549,7 @@ pub fn persist_collection(
     index_reader.reopen_wal(newfsize)?;
     drop(writer);
     if let Some(dir_path) = refname.parent() {
+        println!("fname:{:?},rename:{:?}", fname, refname);
         std::fs::rename(&fname, &refname)?;
         let meta = DiskFileMeta::new(
             Meta::new(schema.clone()),
@@ -583,7 +582,15 @@ impl VectorStoreReader {
     }
 
     pub fn file_size(&self) -> usize {
-        self.0.
+        self.0.file_size()
+    }
+
+    pub fn get_store(&self) -> &DiskStoreReader {
+        &self.0
+    }
+
+    pub fn collection_name(&self) -> &str {
+        self.0.collection_name()
     }
 }
 
@@ -750,7 +757,11 @@ impl DiskStoreReader {
     }
 
     pub fn file_size(&self) -> usize {
-        self.meta.f
+        self.meta.file_size()
+    }
+
+    pub fn collection_name(&self) -> &str {
+        self.meta.get_collection_name()
     }
 
     pub(crate) fn doc_block(&self) -> &[u8] {

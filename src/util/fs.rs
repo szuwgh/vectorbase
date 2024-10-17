@@ -17,6 +17,7 @@ use std::os::unix::fs::{FileExt as linuxFileExt, MetadataExt};
 #[cfg(target_os = "windows")]
 use std::os::windows::fs::{FileExt as windowsFileExt, MetadataExt};
 use std::path::{Path, PathBuf};
+use ulid::Ulid;
 pub struct GyFile(File);
 
 impl GyFile {
@@ -57,6 +58,21 @@ impl GyFile {
 pub struct FileManager;
 
 impl FileManager {
+    pub(crate) fn get_mem_wal_fname<P: AsRef<Path>>(p: P) -> GyResult<PathBuf> {
+        return Ok(PathBuf::new().join(p).join("mem.wal"));
+    }
+
+    pub(crate) fn get_imm_wal_fname<P: AsRef<Path>>(p: P) -> GyResult<PathBuf> {
+        return Ok(PathBuf::new().join(p).join("imm.wal"));
+    }
+
+    pub(crate) fn get_next_table_fname<P: AsRef<Path>>(p: P) -> GyResult<PathBuf> {
+        let uid = Ulid::new();
+        let dir = PathBuf::new().join(p).join(uid.to_string());
+        Self::mkdir(&dir)?;
+        return Ok(dir.join(DATA_FILE));
+    }
+
     pub(crate) fn get_rename_wal_path<P: AsRef<Path>>(p: P) -> GyResult<PathBuf> {
         let path = p.as_ref();
         let parent_dir = path.parent().unwrap();

@@ -1,13 +1,13 @@
 use crate::disk::DiskStoreReader;
 use galois::Shape;
 use galois::Tensor;
-use searchlite::ann::AnnType;
-use searchlite::disk;
-use searchlite::query::Term;
-use searchlite::schema::*;
-use searchlite::Collection;
-use searchlite::IndexConfigBuilder;
 use std::path::PathBuf;
+use vectorbase::ann::AnnType;
+use vectorbase::disk;
+use vectorbase::query::Term;
+use vectorbase::schema::*;
+use vectorbase::Collection;
+use vectorbase::IndexConfigBuilder;
 fn main() {
     let mut schema = Schema::with_vector(VectorEntry::new(
         "vector",

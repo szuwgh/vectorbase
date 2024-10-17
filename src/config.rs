@@ -24,7 +24,7 @@ pub struct ConfigBuilder {
 impl Default for ConfigBuilder {
     fn default() -> ConfigBuilder {
         ConfigBuilder {
-            collect_name: "my_index".to_string(),
+            collect_name: "my_vector".to_string(),
             io_type: IOType::MMAP,
             data_path: PathBuf::from("./"),
             fsize: DEFAULT_WAL_FILE_SIZE,

@@ -150,6 +150,9 @@ impl EngineReader {
     }
 }
 
+unsafe impl Sync for Engine {}
+unsafe impl Send for Engine {}
+
 #[derive(Clone)]
 pub struct Engine(Arc<VectorEngine<Tensor>>);
 
@@ -176,6 +179,10 @@ impl Engine {
 
     fn get_wal_fname(&self) -> &Path {
         self.0.index_base.wal.get_borrow().get_fname()
+    }
+
+    fn rename_wal(&self, new_fname: &Path) -> GyResult<()> {
+        self.0.index_base.wal.get_borrow_mut().rename(new_fname)
     }
 
     pub(crate) fn check_room_for_write(&self, size: usize) -> bool {
@@ -302,8 +309,6 @@ where
         Ok(doc_id)
     }
 
-    async fn compaction() {}
-
     fn check_room_for_write(&self, size: usize) -> bool {
         self.index_base.wal.get_borrow().check_room(size)
     }
@@ -318,6 +323,10 @@ where
             offset
         };
         Ok(offset)
+    }
+
+    fn rename_wal(&self, new_fname: &Path) -> GyResult<()> {
+        self.index_base.get_wal_mut().rename(new_fname)
     }
 }
 
@@ -1289,19 +1298,19 @@ mod tests {
         )
         .unwrap();
     }
-
+    use crate::disk::VectorStoreReader;
     #[test]
     fn test_merge_much() {
         let disk_reader1 =
-            DiskStoreReader::open(PathBuf::from("/opt/rsproject/chappie/vectorbase/data1"))
+            VectorStoreReader::open(PathBuf::from("/opt/rsproject/chappie/vectorbase/data1"))
                 .unwrap();
 
         let disk_reader2 =
-            DiskStoreReader::open(PathBuf::from("/opt/rsproject/chappie/vectorbase/data2"))
+            VectorStoreReader::open(PathBuf::from("/opt/rsproject/chappie/vectorbase/data2"))
                 .unwrap();
         FileManager::mkdir(&PathBuf::from("/opt/rsproject/chappie/vectorbase/data3")).unwrap();
         disk::merge_much(
-            [&disk_reader1, &disk_reader2],
+            &[disk_reader1, disk_reader2],
             &PathBuf::from("/opt/rsproject/chappie/vectorbase/data3/data.gy"),
         )
         .unwrap();
@@ -1310,21 +1319,21 @@ mod tests {
     #[test]
     fn test_merge_3() {
         let disk_reader1 =
-            DiskStoreReader::open(PathBuf::from("/opt/rsproject/chappie/vectorbase/data1"))
+            VectorStoreReader::open(PathBuf::from("/opt/rsproject/chappie/vectorbase/data1"))
                 .unwrap();
 
         let disk_reader2 =
-            DiskStoreReader::open(PathBuf::from("/opt/rsproject/chappie/vectorbase/data2"))
+            VectorStoreReader::open(PathBuf::from("/opt/rsproject/chappie/vectorbase/data2"))
                 .unwrap();
 
         let disk_reader3 =
-            DiskStoreReader::open(PathBuf::from("/opt/rsproject/chappie/vectorbase/data3"))
+            VectorStoreReader::open(PathBuf::from("/opt/rsproject/chappie/vectorbase/data3"))
                 .unwrap();
 
         FileManager::mkdir(&PathBuf::from("/opt/rsproject/chappie/vectorbase/data4")).unwrap();
 
         disk::merge_much(
-            [&disk_reader1, &disk_reader2, &disk_reader3],
+            &[disk_reader1, disk_reader2, disk_reader3],
             &PathBuf::from("/opt/rsproject/chappie/vectorbase/data4/data.gy"),
         )
         .unwrap();
@@ -1626,10 +1635,10 @@ mod tests {
             AnnType::HNSW,
             TensorEntry::new(1, [4], schema::VectorType::F32),
         ));
+        let field_id_title = schema.get_field("title").unwrap();
         schema.add_field(FieldEntry::str("body"));
         schema.add_field(FieldEntry::i32("title"));
         //  let p = PathBuf::from("./data_wal/my_index/data.wal");
-        let field_id_title = schema.get_field("title").unwrap();
 
         let config = ConfigBuilder::default()
             .data_path(PathBuf::from("./data_wal"))
