@@ -22,12 +22,14 @@ use schema::ValueSized;
 use searcher::BlockReader;
 use std::io::{Cursor, Write};
 use std::sync::atomic::AtomicU64;
+use util::asyncio::WaitGroup;
 use util::error::{GyError, GyResult};
 use wal::ThreadWal;
 use wal::WalIter;
 mod macros;
 use crate::buffer::SafeAddr;
 use crate::schema::VectorBase;
+use crate::util::asyncio::Worker;
 pub mod wal;
 use crate::ann::Ann;
 use crate::ann::HNSW;
@@ -107,6 +109,7 @@ pub struct EngineReader {
     pub(crate) vector_field: Arc<VectorIndexBase<Tensor>>,
     index_reader: IndexReader,
     entry: TensorEntry,
+    w: Worker,
 }
 
 impl BlockReader for EngineReader {
@@ -162,6 +165,7 @@ impl Engine {
             vector_field: self.0.vector_field.clone(),
             index_reader: IndexReader::new(self.0.index_base.clone()),
             entry: self.0.entry.clone(),
+            w: self.0.wg.worker(),
         }
     }
 
@@ -175,6 +179,10 @@ impl Engine {
 
     pub fn add(&self, v: Vector) -> GyResult<DocID> {
         self.0.add(v)
+    }
+
+    pub async fn wait(&self) {
+        self.0.wg.wait().await
     }
 
     fn get_wal_fname(&self) -> &Path {
@@ -231,6 +239,7 @@ where
     vector_field: Arc<VectorIndexBase<V>>,
     index_base: Arc<IndexBase>,
     entry: TensorEntry,
+    wg: WaitGroup,
     rw_lock: Mutex<()>,
 }
 
@@ -243,6 +252,7 @@ where
             vector_field: Arc::new(VectorIndexBase(RwLock::new(Ann::HNSW(HNSW::<V>::new(32))))),
             index_base: Arc::new(IndexBase::new(schema, config)?),
             entry: schema.tensor_entry().clone(),
+            wg: WaitGroup::new(),
             rw_lock: Mutex::new(()),
         })
     }
@@ -253,6 +263,7 @@ where
             vector_field: Arc::new(VectorIndexBase(RwLock::new(Ann::HNSW(HNSW::<V>::new(32))))),
             index_base: Arc::new(IndexBase::open(schema, config)?),
             entry: schema.tensor_entry().clone(),
+            wg: WaitGroup::new(),
             rw_lock: Mutex::new(()),
         };
         {
@@ -1298,16 +1309,15 @@ mod tests {
         )
         .unwrap();
     }
+    use crate::disk::VectorStore;
     use crate::disk::VectorStoreReader;
     #[test]
     fn test_merge_much() {
         let disk_reader1 =
-            VectorStoreReader::open(PathBuf::from("/opt/rsproject/chappie/vectorbase/data1"))
-                .unwrap();
+            VectorStore::open(PathBuf::from("/opt/rsproject/chappie/vectorbase/data1")).unwrap();
 
         let disk_reader2 =
-            VectorStoreReader::open(PathBuf::from("/opt/rsproject/chappie/vectorbase/data2"))
-                .unwrap();
+            VectorStore::open(PathBuf::from("/opt/rsproject/chappie/vectorbase/data2")).unwrap();
         FileManager::mkdir(&PathBuf::from("/opt/rsproject/chappie/vectorbase/data3")).unwrap();
         disk::merge_much(
             &[disk_reader1, disk_reader2],
@@ -1319,16 +1329,13 @@ mod tests {
     #[test]
     fn test_merge_3() {
         let disk_reader1 =
-            VectorStoreReader::open(PathBuf::from("/opt/rsproject/chappie/vectorbase/data1"))
-                .unwrap();
+            VectorStore::open(PathBuf::from("/opt/rsproject/chappie/vectorbase/data1")).unwrap();
 
         let disk_reader2 =
-            VectorStoreReader::open(PathBuf::from("/opt/rsproject/chappie/vectorbase/data2"))
-                .unwrap();
+            VectorStore::open(PathBuf::from("/opt/rsproject/chappie/vectorbase/data2")).unwrap();
 
         let disk_reader3 =
-            VectorStoreReader::open(PathBuf::from("/opt/rsproject/chappie/vectorbase/data3"))
-                .unwrap();
+            VectorStore::open(PathBuf::from("/opt/rsproject/chappie/vectorbase/data3")).unwrap();
 
         FileManager::mkdir(&PathBuf::from("/opt/rsproject/chappie/vectorbase/data4")).unwrap();
 

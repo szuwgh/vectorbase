@@ -16,6 +16,7 @@ use crate::schema::VarIntSerialize;
 use crate::schema::VectorEntry;
 use crate::schema::VectorType;
 use crate::searcher::BlockReader;
+use crate::util::asyncio::{WaitGroup, Worker};
 use crate::util::bloom::GyBloom;
 use crate::util::fs::GyFile;
 use crate::Ann;
@@ -191,7 +192,7 @@ fn open_file_stream(fname: &str) -> GyResult<BufWriter<File>> {
     Ok(buf_writer)
 }
 
-pub fn merge_much(readers: &[VectorStoreReader], new_fname: &Path) -> GyResult<()> {
+pub fn merge_much(readers: &[VectorStore], new_fname: &Path) -> GyResult<()> {
     let mut schema = readers[0].get_store().meta.get_schema();
     let mut new_schema: Option<Schema> = None;
     for e in &readers[1..] {
@@ -566,15 +567,26 @@ pub fn persist_collection(
     Ok(newfsize)
 }
 
-unsafe impl Sync for VectorStoreReader {}
-unsafe impl Send for VectorStoreReader {}
+unsafe impl Sync for VectorStore {}
+unsafe impl Send for VectorStore {}
 
 #[derive(Clone)]
-pub struct VectorStoreReader(Arc<DiskStoreReader>);
+pub struct VectorStore(Arc<DiskStoreReader>);
 
-impl VectorStoreReader {
-    pub fn open<P: AsRef<Path>>(path: P) -> GyResult<VectorStoreReader> {
-        Ok(VectorStoreReader(Arc::new(DiskStoreReader::open(path)?)))
+impl VectorStore {
+    pub fn open<P: AsRef<Path>>(path: P) -> GyResult<VectorStore> {
+        Ok(VectorStore(Arc::new(DiskStoreReader::open(path)?)))
+    }
+
+    pub fn reader(&self) -> VectorStoreReader {
+        VectorStoreReader {
+            reader: self.0.clone(),
+            w: self.0.wg.worker(),
+        }
+    }
+
+    pub async fn wait(&self) {
+        self.0.wg.wait().await
     }
 
     pub fn level(&self) -> usize {
@@ -594,13 +606,18 @@ impl VectorStoreReader {
     }
 }
 
+pub struct VectorStoreReader {
+    reader: Arc<DiskStoreReader>,
+    w: Worker,
+}
+
 impl BlockReader for VectorStoreReader {
     fn query(&self, tensor: &Tensor, k: usize) -> GyResult<Vec<Neighbor>> {
-        self.0.query(tensor, k)
+        self.reader.query(tensor, k)
     }
 
     fn vector(&self, doc_id: DocID) -> GyResult<Vector> {
-        self.0.vector(doc_id)
+        self.reader.vector(doc_id)
     }
 }
 
@@ -614,6 +631,30 @@ pub struct DiskStoreReader {
     file: GyFile,
     fsize: usize,
     mmap: Arc<Mmap>,
+    wg: WaitGroup,
+}
+
+impl Drop for DiskStoreReader {
+    fn drop(&mut self) {
+        if let Ok(mmap) = Arc::try_unwrap(self.mmap.clone()) {
+            // 此处的 mmap 将被释放，因为它实现了 Drop trait
+            drop(mmap);
+        } else {
+            println!("Mmap still has multiple references; cannot unwrap.");
+        }
+        let file_path = self.file.path(); // 获取文件路径
+        if Path::new(file_path).exists() {
+            // 删除文件
+            match std::fs::remove_file(&file_path) {
+                Ok(_) => {
+                    println!("文件 {:?} 已成功删除", file_path);
+                }
+                Err(e) => {
+                    eprintln!("删除文件 {:?} 失败: {}", file_path, e);
+                }
+            }
+        }
+    }
 }
 
 impl BlockReader for DiskStoreReader {
@@ -682,6 +723,7 @@ impl DiskStoreReader {
             file: file,
             fsize: file_size as usize,
             mmap: Arc::new(mmap),
+            wg: WaitGroup::new(),
         })
     }
 

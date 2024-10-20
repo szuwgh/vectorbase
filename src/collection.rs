@@ -1,6 +1,6 @@
 use crate::compaction::Compaction;
 use crate::disk;
-use crate::disk::VectorStoreReader;
+use crate::disk::VectorStore;
 use crate::fs::FileManager;
 use crate::schema::FieldID;
 use crate::schema::ValueSized;
@@ -102,7 +102,7 @@ pub struct CollectionImpl {
     id_gen: RefCell<IdGenerator>,
     mem: RwLock<Engine>,
     imm: ToyRwLock<Option<Engine>>,
-    disk_reader: RwLock<Option<Vec<VectorStoreReader>>>,
+    disk_reader: RwLock<Option<Vec<VectorStore>>>,
     mcomp_cmd_tx: mpsc::Sender<Command>, //mpsc::Sender<Command>,
     tcomp_cmd_tx: UnbufferedSender<Command>, //mpsc::Sender<Command>,
     mcomp_close_tx: mpsc::Sender<()>,
@@ -142,7 +142,7 @@ impl CollectionImpl {
             };
             let readers = FileManager::get_table_directories(&collection_path)?
                 .iter()
-                .map(|path| VectorStoreReader::open(path))
+                .map(|path| VectorStore::open(path))
                 .collect::<Result<Vec<_>, _>>()?;
             (mem, imm, readers)
         } else {
@@ -201,14 +201,16 @@ impl CollectionImpl {
                     (Err(_), Err(_)) => {}
                 }
 
-                let new_list = {
+                let (new_list, path_list) = {
                     let lock = self.disk_reader.read().unwrap();
                     let old_list = lock.as_ref().unwrap();
+                    // 获取需要压缩的 path_list
                     let path_list = comp.plan(old_list);
                     let new_vector_store = comp
                         .compact(self.config.get_collection_path(), &path_list)
                         .unwrap();
-                    let mut new_list: Vec<VectorStoreReader> = old_list
+                    //从old_list 过滤掉 path_list
+                    let mut new_list: Vec<VectorStore> = old_list
                         .iter()
                         .filter(|&x| {
                             !path_list
@@ -218,12 +220,19 @@ impl CollectionImpl {
                         .cloned() // 将引用转换为值
                         .collect();
                     new_list.push(new_vector_store);
-                    new_list
+                    (new_list, path_list)
                 };
 
                 let old = self.disk_reader.write().unwrap().replace(new_list);
                 if let Some(old_list) = old {
-                    drop(old_list);
+                    for v in old_list.into_iter() {
+                        drop(v);
+                    }
+                }
+                //删除 path_list
+                for v in path_list.into_iter() {
+                    v.wait().await;
+                    drop(v);
                 }
             }
             println!("等待压缩信号");
@@ -301,7 +310,7 @@ impl CollectionImpl {
         disk::persist_collection(c.reader(), &self.meta.schema, &rewal_name)?;
         drop(imm);
         println!("读通道是否关闭3：{}", mcomp_pause_rx.is_closed());
-        let new_disk_reader = VectorStoreReader::open(rewal_name.parent().unwrap());
+        let new_disk_reader = VectorStore::open(rewal_name.parent().unwrap());
         match new_disk_reader {
             Ok(reader) => {
                 let mut imm_lock = self.imm.write().await;
@@ -352,6 +361,7 @@ impl CollectionImpl {
             mem::swap(&mut imm, old_mem.borrow_mut());
             self.imm.blocking_write().replace(imm);
             let _ = self.mcomp_cmd_tx.blocking_send(Command::MemComp(None));
+            //释放锁
             drop(old_mem);
         }
         Ok(())
@@ -383,13 +393,14 @@ impl CollectionImpl {
                 block_reader_list.extend(
                     disk_readers
                         .iter()
-                        .cloned()
-                        .map(|d| Box::new(d) as Box<dyn BlockReader>),
+                        .map(|d| Box::new(d.reader()) as Box<dyn BlockReader>),
                 );
             }
         }
         let seacher = Searcher::new(block_reader_list);
-        seacher.query(&tensor, k)
+        let v = seacher.query(&tensor, k)?;
+        seacher.done();
+        Ok(v)
     }
 }
 

@@ -60,6 +60,12 @@ impl Searcher {
         Searcher { blocks: blocks }
     }
 
+    pub(crate) fn done(self) {
+        for v in self.blocks.into_iter() {
+            drop(v);
+        }
+    }
+
     pub fn query(&self, tensor: &Tensor, k: usize) -> GyResult<Vec<VectorSet>> {
         let mut heap = BinaryHeap::new(); // 最大堆存储最小的K个元素
         for (i, block) in self.blocks.iter().enumerate() {
@@ -87,6 +93,7 @@ impl Searcher {
                 d: n.neighbor.distance(),
             });
         }
+
         Ok(vec_set)
     }
 }

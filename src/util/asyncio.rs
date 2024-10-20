@@ -1,9 +1,18 @@
 use std::sync::Arc;
+
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::{Receiver, Sender};
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::Mutex;
+use tokio::sync::Semaphore;
+
+use std::fmt;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc as StdArc, Mutex as StdMutex};
+use std::task::{Context, Poll, Waker};
 
 unsafe impl<T> Send for UnbufferedSender<T> {}
 unsafe impl<T> Sync for UnbufferedSender<T> {}
@@ -75,6 +84,131 @@ impl<T> UnbufferedReceiver<T> {
             }
             Err(_) => return Err(TryRecvError::Empty),
         }
+    }
+}
+
+pub struct WaitGroup {
+    inner: Arc<Inner>,
+}
+
+impl Default for WaitGroup {
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(Inner::new()),
+        }
+    }
+}
+
+impl WaitGroup {
+    /// Creates a new `WaitGroup`.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register a new worker.
+    pub fn worker(&self) -> Worker {
+        self.inner.count.fetch_add(1, Ordering::Relaxed);
+        Worker {
+            inner: self.inner.clone(),
+        }
+    }
+
+    /// Wait until all registered workers finish executing.
+    pub async fn wait(&self) {
+        WaitGroupFuture::new(&self.inner).await
+    }
+}
+
+struct WaitGroupFuture<'a> {
+    inner: &'a StdArc<Inner>,
+}
+
+impl<'a> WaitGroupFuture<'a> {
+    fn new(inner: &'a Arc<Inner>) -> Self {
+        Self { inner }
+    }
+}
+
+impl Future for WaitGroupFuture<'_> {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if self.inner.count.load(Ordering::Relaxed) == 0 {
+            return Poll::Ready(());
+        }
+
+        let waker = cx.waker().clone();
+        *self.inner.waker.lock().unwrap() = Some(waker);
+
+        match self.inner.count.load(Ordering::Relaxed) {
+            0 => Poll::Ready(()),
+            _ => Poll::Pending,
+        }
+    }
+}
+
+struct Inner {
+    waker: StdMutex<Option<Waker>>,
+    count: AtomicUsize,
+}
+
+impl Inner {
+    pub fn new() -> Self {
+        Self {
+            count: AtomicUsize::new(0),
+            waker: StdMutex::new(None),
+        }
+    }
+}
+
+/// A worker registered in a `WaitGroup`.
+///
+/// Refer to the [crate level documentation](crate) for details.
+pub struct Worker {
+    inner: Arc<Inner>,
+}
+
+impl Worker {
+    /// Notify the `WaitGroup` that this worker has finished execution.
+    pub fn done(self) {
+        drop(self)
+    }
+}
+
+impl Clone for Worker {
+    /// Cloning a worker increments the primary reference count and returns a new worker for use in
+    /// another task.
+    fn clone(&self) -> Self {
+        self.inner.count.fetch_add(1, Ordering::Relaxed);
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+impl Drop for Worker {
+    fn drop(&mut self) {
+        let count = self.inner.count.fetch_sub(1, Ordering::Relaxed);
+        // We are the last worker
+        if count == 1 {
+            if let Some(waker) = self.inner.waker.lock().unwrap().take() {
+                waker.wake();
+            }
+        }
+    }
+}
+
+impl fmt::Debug for WaitGroup {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let count = self.inner.count.load(Ordering::Relaxed);
+        f.debug_struct("WaitGroup").field("count", &count).finish()
+    }
+}
+
+impl fmt::Debug for Worker {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let count = self.inner.count.load(Ordering::Relaxed);
+        f.debug_struct("Worker").field("count", &count).finish()
     }
 }
 

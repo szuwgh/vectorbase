@@ -18,39 +18,49 @@ use std::os::unix::fs::{FileExt as linuxFileExt, MetadataExt};
 use std::os::windows::fs::{FileExt as windowsFileExt, MetadataExt};
 use std::path::{Path, PathBuf};
 use ulid::Ulid;
-pub struct GyFile(File);
+pub struct GyFile {
+    path: PathBuf,
+    file: File,
+}
 
 impl GyFile {
-    pub fn open<P: AsRef<Path>>(path: P) -> GyResult<GyFile> {
-        let file = OpenOptions::new().read(true).open(path)?;
-        Ok(GyFile(file))
+    pub fn open<P: AsRef<Path>>(p: P) -> GyResult<GyFile> {
+        let file = OpenOptions::new().read(true).open(p.as_ref())?;
+        Ok(GyFile {
+            path: p.as_ref().to_path_buf(),
+            file: file,
+        })
     }
 
     pub fn file(&self) -> &File {
-        &self.0
+        &self.file
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
     #[cfg(target_os = "linux")]
     pub(crate) fn fsize(&self) -> GyResult<usize> {
-        let s = self.0.metadata()?.size() as usize;
+        let s = self.file.metadata()?.size() as usize;
         Ok(s as usize)
     }
 
     #[cfg(target_os = "windows")]
     pub fn fsize(&self) -> GyResult<usize> {
-        let s = self.0.metadata()?.file_size();
+        let s = self.file.metadata()?.file_size();
         Ok(s as usize)
     }
 
     #[cfg(target_os = "windows")]
     pub(crate) fn read_at(&self, buf: &mut [u8], offset: u64) -> GyResult<usize> {
-        let u = self.0.seek_read(buf, offset)?;
+        let u = self.file.seek_read(buf, offset)?;
         Ok(u)
     }
 
     #[cfg(target_os = "linux")]
     pub(crate) fn read_at(&self, buf: &mut [u8], offset: u64) -> GyResult<usize> {
-        let u = self.0.read_at(buf, offset)?;
+        let u = self.file.read_at(buf, offset)?;
         Ok(u)
     }
 }

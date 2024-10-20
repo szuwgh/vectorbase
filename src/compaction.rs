@@ -1,3 +1,4 @@
+use crate::disk::VectorStore;
 use crate::disk::{self, VectorStoreReader};
 use crate::util::fs::FileManager;
 use crate::GyResult;
@@ -21,7 +22,7 @@ impl Compaction {
         }
     }
 
-    pub(crate) fn need_table_compact(&mut self, list: &Vec<VectorStoreReader>) -> bool {
+    pub(crate) fn need_table_compact(&mut self, list: &Vec<VectorStore>) -> bool {
         let count = list.iter().filter(|f| f.level() == self.cur_level).count();
         count > self.max_files_per_level[self.cur_level]
     }
@@ -29,8 +30,8 @@ impl Compaction {
     /**
      * 返回要压缩的文件列表
      */
-    pub(crate) fn plan(&mut self, list: &Vec<VectorStoreReader>) -> Vec<VectorStoreReader> {
-        let mut plan_list: Vec<VectorStoreReader> = list
+    pub(crate) fn plan(&mut self, list: &Vec<VectorStore>) -> Vec<VectorStore> {
+        let mut plan_list: Vec<VectorStore> = list
             .iter()
             .filter(|f| f.level() == self.cur_level)
             .cloned()
@@ -42,14 +43,10 @@ impl Compaction {
         plan_list
     }
 
-    pub(crate) fn compact(
-        &mut self,
-        p: &Path,
-        list: &[VectorStoreReader],
-    ) -> GyResult<VectorStoreReader> {
+    pub(crate) fn compact(&mut self, p: &Path, list: &[VectorStore]) -> GyResult<VectorStore> {
         let new_fname = FileManager::get_next_table_fname(p)?;
         disk::merge_much(list, &new_fname)?;
-        let reader = VectorStoreReader::open(new_fname)?;
+        let reader = VectorStore::open(new_fname)?;
         Ok(reader)
     }
 }
