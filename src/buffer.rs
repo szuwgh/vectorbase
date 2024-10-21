@@ -12,10 +12,10 @@ use varintrs::{Binary, ReadBytesVarExt, WriteBytesVarExt};
 //参考 lucene 设计 缓存管理
 //https://www.cnblogs.com/forfuture1978/archive/2010/02/02/1661441.html
 
-//pub(crate) const SIZE_CLASS: [usize; 10] = [9, 18, 24, 34, 44, 64, 84, 104, 148, 204];
-pub(crate) const BLOCK_SIZE_CLASS: [usize; 10] = [9, 10, 11, 12, 13, 14, 15, 16, 17, 18];
+pub(crate) const BLOCK_SIZE_CLASS: [usize; 10] = [9, 18, 24, 34, 44, 64, 84, 104, 148, 204];
+//pub(crate) const BLOCK_SIZE_CLASS: [usize; 10] = [9, 10, 11, 12, 13, 14, 15, 16, 17, 18];
 const LEVEL_CLASS: [usize; 10] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 9];
-const BYTE_BLOCK_SIZE: usize = 32; //1 << 15; //64 KB
+const BYTE_BLOCK_SIZE: usize = 32 * 1024; //32; //1 << 15; //32 KB
 const POINTER_LEN: usize = 4;
 pub(super) type Addr = usize;
 

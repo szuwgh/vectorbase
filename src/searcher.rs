@@ -31,6 +31,16 @@ pub struct VectorSet {
     d: f32,
 }
 
+impl VectorSet {
+    pub fn vector(&self) -> &Vector {
+        &self.v
+    }
+
+    pub fn d(&self) -> f32 {
+        self.d
+    }
+}
+
 impl Eq for NeighborSet {}
 
 impl PartialEq for NeighborSet {
@@ -70,21 +80,17 @@ impl Searcher {
         let mut heap = BinaryHeap::new(); // 最大堆存储最小的K个元素
         for (i, block) in self.blocks.iter().enumerate() {
             let neighbor = block.query(tensor, k)?;
-
+            // println!("distance:{}", neighbor[0].distance());
             for n in neighbor {
-                heap.push(Reverse(NeighborSet { neighbor: n, i: i }));
+                heap.push(NeighborSet { neighbor: n, i: i });
             }
             // 如果堆中元素多于 K 个，弹出堆顶最大元素
-            if heap.len() > k {
+            while heap.len() > k {
                 heap.pop();
             }
         }
         // 从堆中提取元素，并转换为 Vec
-        let ne_set: Vec<_> = heap
-            .into_sorted_vec()
-            .into_iter()
-            .map(|Reverse(x)| x)
-            .collect();
+        let ne_set: Vec<_> = heap.into_sorted_vec().into_iter().map(|x| x).collect();
         let mut vec_set = Vec::with_capacity(ne_set.len());
         for n in ne_set {
             let v = self.blocks[n.i].vector(n.neighbor.doc_id())?;

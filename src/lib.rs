@@ -63,7 +63,7 @@ use wal::{IOType, Wal, DEFAULT_WAL_FILE_SIZE};
 // 单例的 Tokio runtime
 pub(crate) static RUNTIME: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
     Builder::new_multi_thread()
-        .worker_threads(4)
+        .worker_threads(2)
         .build()
         .expect("Failed to create runtime")
 });
@@ -1322,6 +1322,7 @@ mod tests {
         disk::merge_much(
             &[disk_reader1, disk_reader2],
             &PathBuf::from("/opt/rsproject/chappie/vectorbase/data3/data.gy"),
+            1,
         )
         .unwrap();
     }
@@ -1342,6 +1343,7 @@ mod tests {
         disk::merge_much(
             &[disk_reader1, disk_reader2, disk_reader3],
             &PathBuf::from("/opt/rsproject/chappie/vectorbase/data4/data.gy"),
+            1,
         )
         .unwrap();
     }

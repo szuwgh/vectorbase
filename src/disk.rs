@@ -192,14 +192,14 @@ fn open_file_stream(fname: &str) -> GyResult<BufWriter<File>> {
     Ok(buf_writer)
 }
 
-pub fn merge_much(readers: &[VectorStore], new_fname: &Path) -> GyResult<()> {
+pub fn merge_much(readers: &[VectorStore], new_fname: &Path, level: usize) -> GyResult<()> {
     let mut schema = readers[0].get_store().meta.get_schema();
     let mut new_schema: Option<Schema> = None;
     for e in &readers[1..] {
         new_schema = Some(schema.merge(&e.get_store().meta.get_schema()));
         schema = new_schema.as_ref().unwrap();
     }
-    let level = readers[0].get_store().meta.get_level();
+    // let level = readers[0].get_store().meta.get_level();
 
     let mut writer = DiskStoreWriter::new(new_fname)?;
     let doc_num = readers.iter().map(|r| r.get_store().doc_num()).sum();
@@ -299,24 +299,24 @@ pub fn merge_much(readers: &[VectorStore], new_fname: &Path) -> GyResult<()> {
                         if let Some(iterm) = item {
                             let posting_reader = iterm.posting_reader();
                             for doc_freq in posting_reader.iter() {
-                                println!(
-                                    "doc_id1:{},doc_size:{}",
-                                    doc_freq.doc_id(),
-                                    readers[..iterm.idx()]
-                                        .iter()
-                                        .map(|r| r.get_store().doc_size() as u64)
-                                        .sum::<u64>()
-                                );
+                                // println!(
+                                //     "doc_id1:{},doc_size:{}",
+                                //     doc_freq.doc_id(),
+                                //     readers[..iterm.idx()]
+                                //         .iter()
+                                //         .map(|r| r.get_store().doc_size() as u64)
+                                //         .sum::<u64>()
+                                // );
                                 let adjusted_doc_id = doc_freq.doc_id()
                                     + readers[..iterm.idx()]
                                         .iter()
                                         .map(|r| r.get_store().doc_size() as u64)
                                         .sum::<u64>();
-                                println!(
-                                    "iterm:{},adjusted_doc_id:{}",
-                                    String::from_utf8_lossy(iterm.term()),
-                                    adjusted_doc_id
-                                );
+                                // println!(
+                                //     "iterm:{},adjusted_doc_id:{}",
+                                //     String::from_utf8_lossy(iterm.term()),
+                                //     adjusted_doc_id
+                                // );
                                 disk_posting_writer.add(adjusted_doc_id, doc_freq.freq())?;
                             }
                             doc_count += posting_reader.get_doc_count();
@@ -350,7 +350,7 @@ pub fn merge_much(readers: &[VectorStore], new_fname: &Path) -> GyResult<()> {
             term_range_list,
             newfsize,
             doc_num,
-            level + 1,
+            level,
         );
         FileManager::to_json_file(&meta, dir_path.join(META_FILE))?;
     }
@@ -400,12 +400,12 @@ pub fn merge_two(a: &DiskStoreReader, b: &DiskStoreReader, new_fname: &Path) -> 
                                 p1.get_doc_count() + p2.get_doc_count(),
                                 bytes.get_ref(),
                             )?;
-                            println!("doc_count:{}", p1.get_doc_count() + p2.get_doc_count());
-                            println!(
-                                "item:{:?},bytes:{:?}",
-                                unsafe { std::str::from_utf8_unchecked(item1.term()) },
-                                bytes.get_ref()
-                            );
+                            // println!("doc_count:{}", p1.get_doc_count() + p2.get_doc_count());
+                            // println!(
+                            //     "item:{:?},bytes:{:?}",
+                            //     unsafe { std::str::from_utf8_unchecked(item1.term()) },
+                            //     bytes.get_ref()
+                            // );
                             writer.add_term(item1.term(), offset)?;
                             term_count += 1;
                         }
@@ -533,7 +533,7 @@ pub fn persist_collection(
                 b_max = b;
             }
             // 你可以在这里使用 min_value 和 max_value
-            println!("Min: {:?}, Max: {:?}", b_min, b_max);
+            // println!("Min: {:?}, Max: {:?}", b_min, b_max);
             term_range_list.push(TermRange::new(b_min.to_bytes(), b_max.to_bytes()));
         }
         let bh1 = writer.write_bloom(&bloom)?;
@@ -642,10 +642,10 @@ impl Drop for DiskStoreReader {
         } else {
             println!("Mmap still has multiple references; cannot unwrap.");
         }
-        let file_path = self.file.path(); // 获取文件路径
+        let file_path = self.file.path().parent().unwrap(); // 获取文件路径
         if Path::new(file_path).exists() {
             // 删除文件
-            match std::fs::remove_file(&file_path) {
+            match std::fs::remove_dir_all(&file_path) {
                 Ok(_) => {
                     println!("文件 {:?} 已成功删除", file_path);
                 }
@@ -679,7 +679,6 @@ impl DiskStoreReader {
         if file_size < FOOTER_LEN {
             return Err(GyError::ErrFooter);
         }
-        println!("file_size:{}", file_size);
         let footer_pos = file_size - FOOTER_LEN;
         let mut footer = [0u8; FOOTER_LEN as usize];
         file.read_at(&mut footer, footer_pos as u64)?;
@@ -700,10 +699,8 @@ impl DiskStoreReader {
 
         let fields_meta = Self::read_at_bh::<Vec<FieldHandle>>(&mmap, field_meta_bh)?;
         let doc_meta = Self::read_at_bh::<Vec<usize>>(&mmap, doc_meta_bh)?;
-        println!("finish read fields_meta");
         let mut blooms: Vec<Arc<GyBloom>> = Vec::with_capacity(fields_meta.len());
         for meta in fields_meta.iter() {
-            println!(" meta.bloom_bh:{:?}", meta.bloom_bh);
             let bloom = Self::read_at_bh::<GyBloom>(&mmap, meta.bloom_bh)?;
             blooms.push(Arc::new(bloom));
         }
@@ -1074,12 +1071,12 @@ impl DiskSnapshotReader {
         let mut r = mmap[offset..].reader();
         let (length, i) = VUInt::binary_deserialize(&mut r)?;
         let l = length.val() as usize;
-        println!(
-            "length:{},p:{:?},offset:{}",
-            length.val(),
-            &mmap[offset..offset + l],
-            offset
-        );
+        // println!(
+        //     "length:{},p:{:?},offset:{}",
+        //     length.val(),
+        //     &mmap[offset..offset + l],
+        //     offset
+        // );
         offset += i;
         let snapshot = Self {
             mmap: mmap,
@@ -1233,11 +1230,9 @@ impl DiskStoreWriter {
     // write document meta
     fn write_doc_meta(&mut self, meta: &[usize]) -> GyResult<()> {
         let offset = self.offset;
-        println!("doc_meta:{}", offset);
         meta.binary_serialize(self)?;
         self.flush()?;
         self.offset = self.get_cursor()? as usize;
-        println!("doc_meta cursor:{}", self.offset);
         self.doc_meta_bh = BlockHandle(offset, self.offset - offset);
         Ok(())
     }
@@ -1311,7 +1306,6 @@ impl DiskStoreWriter {
         let offset = self.offset;
         VUInt(doc_size as u64).binary_serialize(&mut self.file)?;
         VUInt(b.len() as u64).binary_serialize(&mut self.file)?;
-        println!("len:{},u8:{:?},offset:{}", b.len(), b, offset);
         self.file.write(b)?;
         self.flush()?;
         self.offset = self.get_cursor()? as usize;

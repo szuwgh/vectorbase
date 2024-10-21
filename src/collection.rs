@@ -177,7 +177,6 @@ impl CollectionImpl {
         let mut comp = Compaction::new();
         loop {
             if comp.need_table_compact(self.disk_reader.read().unwrap().as_ref().unwrap()) {
-                println!("需要压缩");
                 let cmd_opt = tcomp_cmd_rx.try_recv();
                 let close_opt = tcomp_close_rx.try_recv();
                 match (cmd_opt, close_opt) {
@@ -200,12 +199,15 @@ impl CollectionImpl {
                     // 如果两个通道都没有消息，继续循环
                     (Err(_), Err(_)) => {}
                 }
-
+                println!("需要压缩");
                 let (new_list, path_list) = {
                     let lock = self.disk_reader.read().unwrap();
                     let old_list = lock.as_ref().unwrap();
                     // 获取需要压缩的 path_list
                     let path_list = comp.plan(old_list);
+                    for v in path_list.iter() {
+                        println!("path_list 合并的文件夹：{}", v.collection_name());
+                    }
                     let new_vector_store = comp
                         .compact(self.config.get_collection_path(), &path_list)
                         .unwrap();
@@ -222,18 +224,22 @@ impl CollectionImpl {
                     new_list.push(new_vector_store);
                     (new_list, path_list)
                 };
-
-                let old = self.disk_reader.write().unwrap().replace(new_list);
-                if let Some(old_list) = old {
-                    for v in old_list.into_iter() {
-                        drop(v);
+                {
+                    let old = self.disk_reader.write().unwrap().replace(new_list);
+                    if let Some(old_list) = old {
+                        for v in old_list.into_iter() {
+                            drop(v);
+                        }
                     }
                 }
                 //删除 path_list
                 for v in path_list.into_iter() {
+                    println!("删除的文件夹：{}", v.collection_name());
                     v.wait().await;
                     drop(v);
                 }
+                tokio::task::yield_now().await;
+                continue;
             }
             println!("等待压缩信号");
             //如果不需要压缩 等待压缩信号
@@ -289,27 +295,21 @@ impl CollectionImpl {
     }
 
     async fn do_mem_compaction(&self) -> GyResult<()> {
-        println!("do_mem_compaction1");
         let imm = self.imm.read().await;
         if imm.is_none() {
             println!("imm is none");
             return Ok(());
         }
-        println!("do_mem_compaction2");
         let (tcomp_pause_tx, mcomp_pause_rx) = asyncio::un_buffered_channel::<CompAck>();
         // 发送table compact 暂停信号
-        println!("读通道是否关闭1：{}", mcomp_pause_rx.is_closed());
         let _ = self
             .tcomp_cmd_tx
             .send(Command::PauseComp(tcomp_pause_tx))
             .await;
-        println!("读通道是否关闭2：{}", mcomp_pause_rx.is_closed());
         let c = imm.as_ref().unwrap();
-        println!("table compact 已暂停");
         let rewal_name = FileManager::get_next_table_fname(self.config.get_collection_path())?;
         disk::persist_collection(c.reader(), &self.meta.schema, &rewal_name)?;
         drop(imm);
-        println!("读通道是否关闭3：{}", mcomp_pause_rx.is_closed());
         let new_disk_reader = VectorStore::open(rewal_name.parent().unwrap());
         match new_disk_reader {
             Ok(reader) => {
@@ -319,9 +319,10 @@ impl CollectionImpl {
                 drop(imm_lock);
                 let _ = mcomp_pause_rx.recv().await;
                 println!("table pause 结束");
-                drop(imm_engine); //释放 imm engine
-                                  //通知进行磁盘文件合并
+                //通知进行磁盘文件合并
                 let _ = self.tcomp_cmd_tx.try_send(Command::TableComp);
+                imm_engine.wait().await;
+                drop(imm_engine); //释放 imm engine
             }
             Err(e) => {
                 println!("{:?}", e);
@@ -329,6 +330,7 @@ impl CollectionImpl {
                 println!("table pause 结束");
             }
         }
+        println!("完成内存压缩");
 
         Ok(())
     }
@@ -351,6 +353,7 @@ impl CollectionImpl {
             return Ok(());
         } else {
             //wait mem comp
+            println!("需要进行内存压缩");
             self.wait_mem_compaction()?;
             let mem_wal = FileManager::get_mem_wal_fname(self.config.get_collection_path())?;
             let imm_wal = FileManager::get_imm_wal_fname(self.config.get_collection_path())?;
@@ -360,18 +363,18 @@ impl CollectionImpl {
             let mut old_mem = self.mem.write()?;
             mem::swap(&mut imm, old_mem.borrow_mut());
             self.imm.blocking_write().replace(imm);
-            let _ = self.mcomp_cmd_tx.blocking_send(Command::MemComp(None));
-            //释放锁
             drop(old_mem);
+            let _ = self.mcomp_cmd_tx.try_send(Command::MemComp(None));
+            //释放锁
         }
         Ok(())
     }
 
     pub fn add(&self, mut v: Vector) -> GyResult<String> {
-        let x = self.id_gen.borrow_mut().generate_id();
         unsafe {
             self.mem_lock.raw().lock();
         }
+        let x = self.id_gen.borrow_mut().generate_id();
         v.payload.add_str(self._id_field_id, x.clone());
         self.make_room_for_write(v.bytes_size())?;
         self.mem.read()?.add(v)?;
@@ -387,14 +390,21 @@ impl CollectionImpl {
         {
             if let Some(imm) = self.imm.blocking_read().as_ref() {
                 block_reader_list.push(Box::new(imm.reader()));
-            }
-
-            if let Some(disk_readers) = self.disk_reader.read()?.as_ref() {
-                block_reader_list.extend(
-                    disk_readers
-                        .iter()
-                        .map(|d| Box::new(d.reader()) as Box<dyn BlockReader>),
-                );
+                if let Some(disk_readers) = self.disk_reader.read()?.as_ref() {
+                    block_reader_list.extend(
+                        disk_readers
+                            .iter()
+                            .map(|d| Box::new(d.reader()) as Box<dyn BlockReader>),
+                    );
+                }
+            } else {
+                if let Some(disk_readers) = self.disk_reader.read()?.as_ref() {
+                    block_reader_list.extend(
+                        disk_readers
+                            .iter()
+                            .map(|d| Box::new(d.reader()) as Box<dyn BlockReader>),
+                    );
+                }
             }
         }
         let seacher = Searcher::new(block_reader_list);

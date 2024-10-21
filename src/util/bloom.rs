@@ -37,7 +37,6 @@ pub struct GyBloom {
 impl BinarySerialize for GyBloom {
     fn binary_deserialize<R: std::io::Read>(reader: &mut R) -> GyResult<Self> {
         let items_count = usize::binary_deserialize(reader)?;
-        println!("items_count:{}", items_count);
         let number_of_bits = u64::binary_deserialize(reader)?;
         let number_of_hash_functions = u32::binary_deserialize(reader)?;
         let sip_keys: [(u64, u64); 2] = <[(u64, u64); 2]>::binary_deserialize(reader)?;

@@ -75,7 +75,6 @@ impl<V: VectorSerialize + Clone> VectorSerialize for HNSW<V> {
         }
         let position = reader.offset();
         let next_position = position - (position % GGUF_DEFAULT_ALIGNMENT) + GGUF_DEFAULT_ALIGNMENT;
-        println!("position:{},next_position:{}", position, next_position);
         reader.read_bytes(next_position - position)?;
         let mut vectors: Vec<V> = Vec::with_capacity(node_len);
         for _ in 0..node_len {
@@ -244,7 +243,7 @@ where
         Self {
             enter_point: 0,
             max_layer: 0,
-            ef_construction: 400,
+            ef_construction: 100,
             rng: rand::thread_rng(),
             level_mut: 1f64 / ((M as f64).ln()),
             nodes: Vec::with_capacity(10000),

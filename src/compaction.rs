@@ -1,5 +1,5 @@
 use crate::disk::VectorStore;
-use crate::disk::{self, VectorStoreReader};
+use crate::disk::{self};
 use crate::util::fs::FileManager;
 use crate::GyResult;
 use std::path::Path;
@@ -17,14 +17,19 @@ impl Compaction {
     pub(crate) fn new() -> Compaction {
         Compaction {
             cur_level: 0,
-            max_files_per_level: [15, 8, 4, 2, 1],  //9,5,3,2,1
-            merge_files_per_level: [9, 5, 3, 2, 2], //9,5,3,2,1
+            max_files_per_level: [2, 2, 2, 2, 1], //[16, 8, 4, 2, 1],  //9,5,3,2,1
+            merge_files_per_level: [2, 2, 2, 2, 2], // [9, 5, 3, 2, 2], //9,5,3,2,1
         }
     }
 
     pub(crate) fn need_table_compact(&mut self, list: &Vec<VectorStore>) -> bool {
         let count = list.iter().filter(|f| f.level() == self.cur_level).count();
-        count > self.max_files_per_level[self.cur_level]
+        let need = count > self.max_files_per_level[self.cur_level];
+        if !need {
+            println!("no need cur level:{}", self.cur_level);
+            self.cur_level = 0;
+        }
+        need
     }
 
     /**
@@ -39,14 +44,16 @@ impl Compaction {
         // 按文件大小排序，并截取指定数量的文件
         plan_list.sort_by_key(|f| f.file_size());
         plan_list.truncate(self.merge_files_per_level[self.cur_level]);
-        self.cur_level = (self.cur_level + 1) % self.max_files_per_level.len();
         plan_list
     }
 
     pub(crate) fn compact(&mut self, p: &Path, list: &[VectorStore]) -> GyResult<VectorStore> {
+        let level = std::cmp::min(self.cur_level + 1, 4);
         let new_fname = FileManager::get_next_table_fname(p)?;
-        disk::merge_much(list, &new_fname)?;
-        let reader = VectorStore::open(new_fname)?;
+        disk::merge_much(list, &new_fname, level)?;
+        let reader = VectorStore::open(new_fname.parent().unwrap())?;
+        println!("path cur level:{}", self.cur_level);
+        self.cur_level = (self.cur_level + 1) % self.max_files_per_level.len();
         Ok(reader)
     }
 }

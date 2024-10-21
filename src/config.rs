@@ -54,17 +54,12 @@ impl ConfigBuilder {
     }
 
     pub fn build(self) -> Config {
-        // let wal_path = self
-        //     .data_path
-        //     .join(&self.collect_name)
-        //     .join(&self.wal_fname);
         let collection_path = self.data_path.join(&self.collect_name);
         Config {
             collect_name: self.collect_name,
             data_path: self.data_path,
             collection_path: collection_path,
             io_type: self.io_type,
-            //wal_fname: self.wal_fname,
             fsize: self.fsize,
         }
     }
