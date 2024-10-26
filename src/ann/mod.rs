@@ -58,6 +58,13 @@ impl<V: VectorSerialize + Clone> VectorSerialize for Ann<V> {
             _ => todo!(),
         }
     }
+
+    fn vector_nommap_deserialize<R: Read + GyRead>(
+        reader: &mut R,
+        entry: &TensorEntry,
+    ) -> GyResult<Self> {
+        todo!()
+    }
 }
 
 impl<V: VectorSerialize + Clone> Ann<V>

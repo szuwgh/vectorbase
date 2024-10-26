@@ -144,6 +144,9 @@ impl CollectionImpl {
                 .iter()
                 .map(|path| VectorStore::open(path))
                 .collect::<Result<Vec<_>, _>>()?;
+            for v in readers.iter() {
+                println!("open collect_name:{}", v.collection_name());
+            }
             (mem, imm, readers)
         } else {
             //创建文件夹
@@ -236,7 +239,19 @@ impl CollectionImpl {
                 for v in path_list.into_iter() {
                     println!("删除的文件夹：{}", v.collection_name());
                     v.wait().await;
+                    let dir_path = v.file_path().parent().unwrap().to_path_buf();
                     drop(v);
+                    if dir_path.exists() {
+                        // 删除文件
+                        match std::fs::remove_dir_all(&dir_path) {
+                            Ok(_) => {
+                                println!("文件 {:?} 已成功删除", dir_path);
+                            }
+                            Err(e) => {
+                                eprintln!("删除文件 {:?} 失败: {}", dir_path, e);
+                            }
+                        }
+                    }
                 }
                 tokio::task::yield_now().await;
                 continue;
@@ -364,7 +379,7 @@ impl CollectionImpl {
             mem::swap(&mut imm, old_mem.borrow_mut());
             self.imm.blocking_write().replace(imm);
             drop(old_mem);
-            let _ = self.mcomp_cmd_tx.try_send(Command::MemComp(None));
+            let _ = self.mcomp_cmd_tx.blocking_send(Command::MemComp(None));
             //释放锁
         }
         Ok(())

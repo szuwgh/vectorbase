@@ -62,7 +62,7 @@ impl<'a, V: VectorSerialize> Iterator for WalIter<'a, V> {
         // if (offset + 4 >= self.fsize()) {
         //     return None;
         // }
-        match V::vector_deserialize(&mut self.wal_reader, &self.tensor_entry) {
+        match V::vector_nommap_deserialize(&mut self.wal_reader, &self.tensor_entry) {
             Ok(v) => Some((offset, v)),
             Err(_) => None,
         }

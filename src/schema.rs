@@ -22,6 +22,11 @@ pub trait VectorSerialize: Sized {
     fn vector_serialize<W: Write + GyWrite>(&self, writer: &mut W) -> GyResult<()>;
     /// Deserialize
     fn vector_deserialize<R: Read + GyRead>(reader: &mut R, entry: &TensorEntry) -> GyResult<Self>;
+
+    fn vector_nommap_deserialize<R: Read + GyRead>(
+        reader: &mut R,
+        entry: &TensorEntry,
+    ) -> GyResult<Self>;
 }
 
 pub trait ValueSized {
@@ -31,6 +36,7 @@ pub trait ValueSized {
 pub trait VectorOps {
     fn from_vec<T: TensorType>(v: Vec<T>) -> Self;
     fn from_arr<T: TensorType, const N: usize>(v: [T; N]) -> Self;
+    fn from_slice<T: TensorType>(v: &[T]) -> Self;
 }
 
 pub trait BinarySerialize: Sized {
@@ -363,6 +369,20 @@ impl VectorSerialize for Tensor {
         //  println!("t:{:?}", unsafe { t.as_slice::<f32>() });
         Ok(t)
     }
+
+    fn vector_nommap_deserialize<R: std::io::Read + GyRead>(
+        reader: &mut R,
+        entry: &TensorEntry,
+    ) -> GyResult<Self> {
+        let v = reader.read_bytes(entry.nbytes())?.to_vec();
+        let t = Tensor::from_raw(
+            v,
+            entry.n_dims(),
+            Shape::from_slice(entry.dims()),
+            entry.vector_type().to_ggml_type(),
+        );
+        Ok(t)
+    }
 }
 
 impl Metric for Tensor {
@@ -384,6 +404,10 @@ impl VectorOps for Tensor {
 
     fn from_vec<T: TensorType>(v: Vec<T>) -> Self {
         Tensor::arr(v)
+    }
+
+    fn from_slice<T: TensorType>(v: &[T]) -> Self {
+        Tensor::arr_slice(v)
     }
 }
 
@@ -419,6 +443,22 @@ impl<V: VectorSerialize + ValueSized + VectorOps> VectorSerialize for VectorBase
         self.payload.binary_serialize(writer)?;
         Ok(())
     }
+
+    fn vector_nommap_deserialize<R: Read + GyRead>(
+        reader: &mut R,
+        entry: &TensorEntry,
+    ) -> GyResult<Self> {
+        let size = usize::binary_deserialize(reader)?;
+        if size == 0 {
+            return Err(GyError::WalEOF);
+        }
+        let v = V::vector_nommap_deserialize(reader, entry)?;
+        let payload = Document::binary_deserialize(reader)?;
+        Ok(Self {
+            v: v,
+            payload: payload,
+        })
+    }
 }
 
 impl<V: VectorSerialize + ValueSized + VectorOps> VectorBase<V> {
@@ -440,6 +480,13 @@ impl<V: VectorSerialize + ValueSized + VectorOps> VectorBase<V> {
     pub fn from_array<T: TensorType, const N: usize>(xs: [T; N], payload: Document) -> Self {
         VectorBase {
             v: V::from_arr(xs),
+            payload: payload,
+        }
+    }
+
+    pub fn from_slice<T: TensorType>(xs: &[T], payload: Document) -> Self {
+        VectorBase {
+            v: V::from_slice(xs),
             payload: payload,
         }
     }
@@ -527,6 +574,10 @@ impl Document {
         Self {
             field_values: field_values,
         }
+    }
+
+    pub fn get_field_values(&self) -> &[FieldValue] {
+        &self.field_values
     }
 
     pub fn add_field_value(&mut self, field: FieldValue) {
@@ -816,6 +867,13 @@ impl<T: BinarySerialize> VectorSerialize for Vec<T> {
             items.push(item);
         }
         Ok(items)
+    }
+
+    fn vector_nommap_deserialize<R: Read + GyRead>(
+        reader: &mut R,
+        entry: &TensorEntry,
+    ) -> GyResult<Self> {
+        todo!()
     }
 }
 

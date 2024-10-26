@@ -1,5 +1,6 @@
 use crate::PathBuf;
-use furze::error::FstError;
+use fst::Error as FstError;
+use jiebars::Jieba;
 use std::io;
 use std::io::Error as IOError;
 use std::sync::{PoisonError, TryLockError};

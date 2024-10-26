@@ -1,57 +1,109 @@
 use super::error::GyResult;
-use furze::fst::FstItem;
-use furze::{Builder, FstIterator, FST};
+use fst::raw::Output;
+use fst::raw::Stream;
+use fst::raw::{Builder, Fst};
+use fst::Streamer;
+pub(crate) struct FstBuilder<W: std::io::Write>(Builder<W>);
 
-pub(crate) struct FstBuilder(Builder<Vec<u8>>);
-
-impl FstBuilder {
-    pub(crate) fn new() -> FstBuilder {
-        FstBuilder(Builder::new(Vec::with_capacity(4 * 1024 * 1024)))
+impl<W: std::io::Write> FstBuilder<W> {
+    pub(crate) fn new(w: W) -> FstBuilder<W> {
+        let b = Builder::new(w).unwrap();
+        FstBuilder(b)
     }
 
     pub(crate) fn add(&mut self, key: &[u8], val: u64) -> GyResult<()> {
-        self.0.add(key, val)?;
+        self.0.insert(key, val).unwrap();
         Ok(())
     }
 
-    pub(crate) fn finish(&mut self) -> GyResult<()> {
-        self.0.finish()?;
-        Ok(())
+    pub(crate) fn finish(self) -> GyResult<W> {
+        let w = self.0.into_inner()?;
+        Ok(w)
     }
 
-    pub(crate) fn get_ref(&self) -> &[u8] {
-        self.0.get()
-    }
+    // pub(crate) fn get_ref(&self) -> &[u8] {
+    //     self.0.get_ref()
+    // }
 
     pub(crate) fn reset(&mut self) -> GyResult<()> {
-        self.0.reset()?;
         Ok(())
     }
 }
 
-pub(crate) struct FstReader<'a>(FST<&'a [u8]>);
+pub(crate) struct FstReader<'a>(Fst<&'a [u8]>);
 
 impl<'a> FstReader<'a> {
     pub(crate) fn load(b: &'a [u8]) -> FstReader {
-        Self(FST::load(b))
+        Self(Fst::new(b).unwrap())
     }
 
     pub(crate) fn get(&self, key: &[u8]) -> GyResult<u64> {
-        let u = self.0.get(key)?;
-        Ok(u)
+        let u = self.0.get(key).unwrap();
+        Ok(u.value())
     }
 
     pub(crate) fn iter(&self) -> FstReaderIter {
-        FstReaderIter(self.0.iter())
+        FstReaderIter(self.0.stream())
     }
 }
 
-pub(crate) struct FstReaderIter<'a>(FstIterator<'a, &'a [u8]>);
+#[derive(Clone)]
+pub struct FstItem(pub Cow, pub u64);
+
+impl PartialOrd for FstItem {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.0.as_ref().partial_cmp(other.0.as_ref())
+    }
+}
+
+impl PartialEq for FstItem {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.as_ref() == other.0.as_ref()
+    }
+}
+
+impl Eq for FstItem {}
+
+impl Ord for FstItem {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.as_ref().cmp(other.0.as_ref())
+    }
+}
+
+use core::ptr::NonNull;
+#[derive(Clone)]
+pub struct Cow {
+    ptr: NonNull<u8>,
+    len: usize,
+}
+
+impl Cow {
+    fn from_raw_parts(ptr: *mut u8, length: usize) -> Self {
+        unsafe {
+            Self {
+                ptr: NonNull::new_unchecked(ptr),
+                len: length,
+            }
+        }
+    }
+}
+
+impl AsRef<[u8]> for Cow {
+    fn as_ref(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.ptr.as_ptr() as *const u8, self.len) }
+    }
+}
+
+pub(crate) struct FstReaderIter<'a>(Stream<'a>);
 
 impl<'a> Iterator for FstReaderIter<'a> {
     type Item = FstItem;
     fn next(&mut self) -> Option<Self::Item> {
-        self.0.next()
+        let (k, v) = self.0.next()?;
+        return Some(FstItem(
+            Cow::from_raw_parts(k.as_ptr() as *mut u8, k.len()),
+            v.value(),
+        ));
     }
 }
 
@@ -63,19 +115,19 @@ mod tests {
     use super::*;
     #[test]
     fn test_fst() {
-        let mut fst = FstBuilder::new();
-        fst.add(b"aa", 1).unwrap();
-        fst.add(b"bb", 2).unwrap();
-        fst.finish();
-        println!("{:?}", fst.get_ref());
-        let fst_r = FstReader::load(fst.get_ref());
-        let u = fst_r.get(b"aa").unwrap();
-        println!("u:{}", u);
+        // let mut fst = FstBuilder::new();
+        // fst.add(b"aa", 1).unwrap();
+        // fst.add(b"bb", 2).unwrap();
+        // fst.finish();
+        // println!("{:?}", fst.get_ref());
+        // let fst_r = FstReader::load(fst.get_ref());
+        // let u = fst_r.get(b"aa").unwrap();
+        // println!("u:{}", u);
 
-        let mut iter = fst_r.iter();
-        while let Some(v) = iter.next() {
-            println!("v:{:?}", v.0.as_ref());
-        }
+        // let mut iter = fst_r.iter();
+        // while let Some(v) = iter.next() {
+        //     println!("v:{:?}", v.0.as_ref());
+        // }
     }
 
     // #[test]

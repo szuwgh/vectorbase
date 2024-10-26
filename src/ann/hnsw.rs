@@ -51,6 +51,13 @@ pub struct HNSW<V: VectorSerialize + Clone> {
 }
 
 impl<V: VectorSerialize + Clone> VectorSerialize for HNSW<V> {
+    fn vector_nommap_deserialize<R: std::io::Read + GyRead>(
+        reader: &mut R,
+        entry: &TensorEntry,
+    ) -> GyResult<Self> {
+        todo!()
+    }
+
     fn vector_deserialize<R: std::io::Read + GyRead>(
         reader: &mut R,
         entry: &TensorEntry,
@@ -157,7 +164,7 @@ where
                 while changed {
                     changed = false;
                     for i in self.get_neighbors_nodes(ep.id, level).unwrap() {
-                        let d = self.get_vector(ep_id).distance(&q); //distance(self.get_node(ep_id).p.borrow(), &q);
+                        let d = self.get_vector(i).distance(&q); //distance(self.get_node(ep_id).p.borrow(), &q);
                         if d < ep.d {
                             ep.id = i;
                             ep.d = d;
@@ -206,7 +213,7 @@ where
                 changed = false;
                 if let Some(x) = self.get_neighbors_nodes(ep.id, level) {
                     for i in x {
-                        let d = self.get_vector(self.enter_point).distance(&q); // distance(self.get_node(self.enter_point).p.borrow(), &q);
+                        let d = self.get_vector(i).distance(&q); // distance(self.get_node(self.enter_point).p.borrow(), &q);
                         if d < ep.d {
                             ep.id = i;
                             ep.d = d;
@@ -243,7 +250,7 @@ where
         Self {
             enter_point: 0,
             max_layer: 0,
-            ef_construction: 100,
+            ef_construction: 400,
             rng: rand::thread_rng(),
             level_mut: 1f64 / ((M as f64).ln()),
             nodes: Vec::with_capacity(10000),
@@ -515,17 +522,17 @@ mod tests {
         // }
     }
 
-    #[test]
-    fn test_hnsw_binary_heap() {
-        let mut heap: BinaryHeap<Neighbor> = BinaryHeap::new();
+    // #[test]
+    // fn test_hnsw_binary_heap() {
+    //     let mut heap: BinaryHeap<Neighbor> = BinaryHeap::new();
 
-        heap.push(Neighbor { id: 0, d: 10.0 });
-        heap.push(Neighbor { id: 2, d: 9.0 });
-        heap.push(Neighbor { id: 1, d: 15.0 });
-        println!("{:?}", heap.into_sorted_vec()); //
-                                                  //  println!("{:?}", heap.peek()); //
-                                                  //   println!("{:?}", heap);
-    }
+    //     heap.push(Neighbor { id: 0, d: 10.0 });
+    //     heap.push(Neighbor { id: 2, d: 9.0 });
+    //     heap.push(Neighbor { id: 1, d: 15.0 });
+    //     println!("{:?}", heap.into_sorted_vec()); //
+    //                                               //  println!("{:?}", heap.peek()); //
+    //                                               //   println!("{:?}", heap);
+    //}
 
     #[test]
     fn test_hnsw_search() {
@@ -596,34 +603,34 @@ mod tests {
         file.flush().unwrap();
     }
 
+    const dims: usize = 100;
+
     #[test]
     fn test_hnsw_rng() {
-        let mut hnsw = HNSW::<Tensor>::new(32);
-        let array_count = 100;
-        let array_length = 100;
+        let size = 1000;
 
         // 创建随机数生成器
         let mut rng = rand::thread_rng();
+        let mut array_list = Vec::with_capacity(size);
+        for i in 0..size {
+            let random_array2: [f32; dims] = std::array::from_fn(|_| rng.gen());
+            array_list.push(random_array2);
+        }
 
-        // 填充数组
-        for _ in 0..array_count {
-            let mut arr = [0.0_f32; 100]; // 初始化长度为 100 的 f32 数组
-            for i in 0..array_length {
-                arr[i] = rng.gen::<f32>(); // 填充随机数
+        let mut hnsw = HNSW::<Tensor>::new(32);
+
+        for i in 0..size {
+            hnsw.insert(Tensor::arr_array(array_list[i])).unwrap();
+        }
+
+        for i in 0..size {
+            let neighbors = hnsw.query(&Tensor::arr_array(array_list[i]), 5).unwrap();
+            assert!(neighbors.len() == 5);
+
+            if (neighbors[0].d != 0.0) {
+                println!("fail");
             }
-            hnsw.insert(Tensor::arr_array(arr)).unwrap();
         }
-
-        let mut arr = [0.0_f32; 100]; // 初始化长度为 100 的 f32 数组
-        for i in 0..array_length {
-            arr[i] = rng.gen::<f32>(); // 填充随机数
-        }
-
-        let neighbors = hnsw.query(&Tensor::arr_array(arr), 4);
-        println!("{:?}", neighbors);
-        let mut file = File::create("./data.hnsw").unwrap();
-        hnsw.vector_serialize(&mut file).unwrap();
-        file.flush().unwrap();
     }
 
     use crate::disk::MmapReader;

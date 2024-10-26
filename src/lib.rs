@@ -16,6 +16,7 @@ use art_tree::{Art, ByteString};
 use core::cell::UnsafeCell;
 use disk::GyRead;
 use galois::Tensor;
+use jiebars::Jieba;
 use query::Term;
 use schema::TensorEntry;
 use schema::ValueSized;
@@ -229,6 +230,13 @@ impl<V: VectorSerialize + Clone> VectorSerialize for VectorIndexBase<V> {
     fn vector_serialize<W: Write + GyWrite>(&self, writer: &mut W) -> GyResult<()> {
         self.0.read()?.vector_serialize(writer)
     }
+
+    fn vector_nommap_deserialize<R: std::io::Read + GyRead>(
+        reader: &mut R,
+        entry: &TensorEntry,
+    ) -> GyResult<Self> {
+        todo!()
+    }
 }
 
 //向量搜索
@@ -370,6 +378,7 @@ pub struct IndexBase {
     doc_offset: ThreadVec,
     rw_lock: Mutex<()>,
     last_offset: AtomicUsize,
+    jieba: Jieba,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -423,12 +432,13 @@ impl IndexBase {
             doc_offset: ThreadVec::new(Vec::with_capacity(1024)), // Max memory doc
             //config: config,
             last_offset: AtomicUsize::new(0),
+            jieba: Jieba::new().unwrap(),
         })
     }
 
     fn open(schema: &Schema, config: EngineConfig) -> GyResult<IndexBase> {
         let index_path = config.get_wal_path();
-        if !(index_path.exists() && index_path.is_dir()) {
+        if !index_path.exists() || index_path.is_dir() {
             return Err(GyError::IndexDirNotExist(index_path.to_path_buf()));
         }
         let buffer_pool = Arc::new(RingBuffer::new());
@@ -437,7 +447,7 @@ impl IndexBase {
             field_cache.push(FieldCache::new(Arc::downgrade(&buffer_pool)));
         }
         let wal = Wal::open(
-            &config.get_wal_path(), //&index_path.join(&config.wal_fname),
+            index_path, //&index_path.join(&config.wal_fname),
             config.get_fsize(),
             config.get_io_type(),
         )?;
@@ -449,6 +459,7 @@ impl IndexBase {
             wal: Arc::new(ThreadWal::new(wal)),
             doc_offset: ThreadVec::new(Vec::with_capacity(1024)), // Max memory doc
             last_offset: AtomicUsize::new(0),
+            jieba: Jieba::new().unwrap(),
         })
     }
 
@@ -461,10 +472,29 @@ impl IndexBase {
     // }
 
     fn inner_add(&self, doc_id: DocID, doc: &Document) -> GyResult<()> {
-        for field in doc.field_values.iter() {
+        for field in doc.get_field_values().iter() {
             // println!("field.field_id().0:{}", field.field_id().id());
             let fw = self.fields.get(field.field_id().id() as usize).unwrap();
-            fw.add(doc_id, field.value())?;
+            // 分词
+            match field.value() {
+                Value::Str(s) => {
+                    let word = self.jieba.cut_for_search(*s);
+                    println!("{:?}", word);
+                    for v in word.into_iter() {
+                        fw.add_with_bytes(doc_id, v.as_bytes())?;
+                    }
+                }
+                Value::String(s) => {
+                    let word = self.jieba.cut_for_search(s);
+                    println!("{:?}", word);
+                    for v in word.into_iter() {
+                        fw.add_with_bytes(doc_id, v.as_bytes())?;
+                    }
+                }
+                _ => {
+                    fw.add(doc_id, field.value())?;
+                }
+            }
         }
         Ok(())
     }
@@ -640,10 +670,7 @@ impl FieldCache {
         Ok(())
     }
 
-    //添加 token 单词
-    pub fn add(&self, doc_id: DocID, value: &Value) -> GyResult<()> {
-        let mut share_bytes = Cursor::new([0u8; 8]);
-        let v = value.to_slice(&mut share_bytes)?;
+    pub fn add_with_bytes(&self, doc_id: DocID, v: &[u8]) -> GyResult<()> {
         if !self.indexs.read()?.contains_key(v) {
             let pool = self.share_bytes_block.upgrade().unwrap();
             let pos = (*pool).get_borrow_mut().alloc_bytes(0, None);
@@ -671,6 +698,14 @@ impl FieldCache {
             (*p).write()?.add_commit = true;
         }
 
+        Ok(())
+    }
+
+    //添加 token 单词
+    pub fn add(&self, doc_id: DocID, value: &Value) -> GyResult<()> {
+        let mut share_bytes = Cursor::new([0u8; 8]);
+        let v = value.to_slice(&mut share_bytes)?;
+        self.add_with_bytes(doc_id, v)?;
         Ok(())
     }
 
@@ -935,13 +970,17 @@ mod tests {
         schema.add_field(FieldEntry::i32("title"));
         let field_id_title = schema.get_field("title").unwrap();
         let config = ConfigBuilder::default()
-            .data_path(PathBuf::from("/opt/rsproject/chappie/vectorvase/data2"))
+            .data_path(PathBuf::from("./data2"))
             .build();
-        let mut index = Index::new(&schema, config.get_engine_config(PathBuf::from(""))).unwrap();
+        let mut index = Index::new(
+            &schema,
+            config.get_engine_config(PathBuf::from("./data2").join(WAL_FILE)),
+        )
+        .unwrap();
         let mut writer1 = index.writer().unwrap();
         {
             let mut d = Document::new();
-            d.add_text(field_id_title.clone(), "bb");
+            d.add_text(field_id_title.clone(), "bb aa");
             writer1.add(1, &d).unwrap();
 
             let mut d1 = Document::new();
@@ -949,7 +988,7 @@ mod tests {
             writer1.add(2, &d1).unwrap();
 
             let mut d2 = Document::new();
-            d2.add_text(field_id_title.clone(), "cc");
+            d2.add_text(field_id_title.clone(), "cc aa");
             writer1.add(3, &d2).unwrap();
 
             let mut d3 = Document::new();
@@ -961,11 +1000,11 @@ mod tests {
             writer1.add(5, &d1).unwrap();
 
             let mut d2 = Document::new();
-            d2.add_text(field_id_title.clone(), "cc");
+            d2.add_text(field_id_title.clone(), "cc aa ff gg");
             writer1.add(6, &d2).unwrap();
 
             let mut d3 = Document::new();
-            d3.add_text(field_id_title.clone(), "aa");
+            d3.add_text(field_id_title.clone(), "ff");
             writer1.add(7, &d3).unwrap();
 
             writer1.commit().unwrap();
@@ -977,6 +1016,7 @@ mod tests {
             .unwrap();
 
         for doc_freq in p.iter() {
+            println!("docid:{}", doc_freq.doc_id());
             let doc = reader.doc(doc_freq.doc_id()).unwrap();
             println!("docid:{},doc{:?}", doc_freq.doc_id(), doc);
         }
@@ -1017,27 +1057,33 @@ mod tests {
             //writer1.add(1, &d).unwrap();
 
             let mut d1 = Document::new();
-            d1.add_text(field_id_title.clone(), "aa");
+            d1.add_text(field_id_title.clone(), "Can I sign up for Medicare Part B if I am working and have health insurance through an employer?");
 
             let v1 = Vector::from_array([0.0, 0.0, 0.0, 1.0], d1);
 
             collect.add(v1).unwrap();
 
             let mut d2 = Document::new();
-            d2.add_text(field_id_title.clone(), "cc");
+            d2.add_text(
+                field_id_title.clone(),
+                "Will my Medicare premiums be higher because of my higher income?",
+            );
             let v2 = Vector::from_array([0.0, 0.0, 1.0, 0.0], d2);
 
             collect.add(v2).unwrap();
 
             let mut d3 = Document::new();
-            d3.add_text(field_id_title.clone(), "aa");
+            d3.add_text(field_id_title.clone(), "ff cc aa");
 
             let v3 = Vector::from_array([0.0, 1.0, 0.0, 0.0], d3);
 
             collect.add(v3).unwrap();
 
             let mut d4 = Document::new();
-            d4.add_text(field_id_title.clone(), "bb");
+            d4.add_text(
+                field_id_title.clone(),
+                "Should I sign up for Medicare Part B if I have Veterans' Benefits?",
+            );
             let v4 = Vector::from_array([1.0, 0.0, 0.0, 0.0], d4);
             collect.add(v4).unwrap();
 
@@ -1060,18 +1106,33 @@ mod tests {
         }
 
         let reader = collect.reader();
-        let p = reader
-            .query(
-                &Tensor::from_vec(vec![1.0f32, 0.0, 0.0, 1.0], 1, Shape::from_array([4])),
-                4,
-            )
-            .unwrap();
 
+        let p = reader
+            .search(Term::from_field_text(field_id_title, "Medicare"))
+            .unwrap();
+        // println!("doc_size:{:?}", p.get_doc_count());
         for n in p.iter() {
             let doc = reader.vector(n.doc_id()).unwrap();
-            println!("docid:{},doc{:?}", n.doc_id(), doc.v.to_vec::<f32>());
+            println!(
+                "docid:{},vector{:?},doc:{:?}",
+                n.doc_id(),
+                unsafe { doc.v.to_vec::<f32>() },
+                doc.doc()
+            );
         }
-        //  println!("doc vec:{:?}", reader.get_doc_offset().read().unwrap());
+
+        // let p = reader
+        //     .query(
+        //         &Tensor::from_vec(vec![1.0f32, 0.0, 0.0, 1.0], 1, Shape::from_array([4])),
+        //         4,
+        //     )
+        //     .unwrap();
+
+        // for n in p.iter() {
+        //     let doc = reader.vector(n.doc_id()).unwrap();
+        //     println!("docid:{},doc{:?}", n.doc_id(), doc.v.to_vec::<f32>());
+        // }
+        // //  println!("doc vec:{:?}", reader.get_doc_offset().read().unwrap());
         disk::persist_collection(reader, &schema, &PathBuf::from("./data1").join(DATA_FILE))
             .unwrap();
     }
@@ -1179,14 +1240,17 @@ mod tests {
         let field_id_title = schema.get_field("title").unwrap();
         let disk_reader = DiskStoreReader::open(PathBuf::from("./data1")).unwrap();
         let p = disk_reader
-            .search(Term::from_field_text(field_id_title, "aa"))
+            .search(Term::from_field_text(field_id_title, "Medicare"))
             .unwrap();
         // println!("doc_size:{:?}", p.get_doc_count());
         for n in p.iter() {
             let doc = disk_reader.vector(n.doc_id()).unwrap();
-            println!("docid:{},doc{:?}", n.doc_id(), unsafe {
-                doc.v.as_slice::<f32>()
-            });
+            println!(
+                "docid:{},vector{:?},doc:{:?}",
+                n.doc_id(),
+                unsafe { doc.v.to_vec::<f32>() },
+                doc.doc()
+            );
         }
 
         let p = disk_reader
@@ -1198,9 +1262,12 @@ mod tests {
 
         for n in p.iter() {
             let doc = disk_reader.vector(n.doc_id()).unwrap();
-            println!("docid:{},doc{:?}", n.doc_id(), unsafe {
-                doc.v.as_slice::<f32>()
-            });
+            println!(
+                "docid:{},vector{:?},doc:{:?}",
+                n.doc_id(),
+                unsafe { doc.v.to_vec::<f32>() },
+                doc.doc()
+            );
         }
     }
 
@@ -1302,12 +1369,12 @@ mod tests {
             "/opt/rsproject/chappie/vectorvase/data3/my_index",
         ))
         .unwrap();
-        disk::merge_two(
-            &disk_reader1,
-            &disk_reader2,
-            &PathBuf::from("/opt/rsproject/chappie/vectorvase/data3/my_index/data.gy"),
-        )
-        .unwrap();
+        // disk::merge_two(
+        //     &disk_reader1,
+        //     &disk_reader2,
+        //     &PathBuf::from("/opt/rsproject/chappie/vectorvase/data3/my_index/data.gy"),
+        // )
+        // .unwrap();
     }
     use crate::disk::VectorStore;
     use crate::disk::VectorStoreReader;

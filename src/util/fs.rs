@@ -65,6 +65,8 @@ impl GyFile {
     }
 }
 
+struct BufferWriter {}
+
 pub struct FileManager;
 
 impl FileManager {
@@ -143,8 +145,7 @@ impl FileManager {
 
     pub(crate) fn get_table_directories<P: AsRef<Path>>(dir: P) -> GyResult<Vec<PathBuf>> {
         let mut directories = Vec::new();
-        let re = Regex::new(r"^\d{20}$").unwrap(); // 匹配20个数字
-                                                   // 读取目录条目
+        let ulid_regex = Regex::new(r"^[0-9A-HJ-NP-Z]{26}$").unwrap();
         for entry in fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
@@ -153,7 +154,7 @@ impl FileManager {
             if path.is_dir() {
                 if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                     // 检查文件夹名是否匹配正则表达式
-                    if re.is_match(name) {
+                    if ulid_regex.is_match(name) {
                         directories.push(path);
                     }
                 }
