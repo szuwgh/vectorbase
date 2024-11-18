@@ -139,7 +139,6 @@ where
             let new_node = Node {
                 level: cur_level,
                 neighbors: vec![Vec::new(); cur_level],
-                // p: q,
             };
             self.nodes.push(new_node);
             self.vectors.push(q);
@@ -201,6 +200,9 @@ where
     }
 
     fn query(&self, q: &V, K: usize) -> GyResult<Vec<Neighbor>> {
+        if self.enter_point >= self.vectors.len() {
+            return Ok(Vec::new());
+        }
         let current_max_layer = self.max_layer;
         let mut ep = Neighbor {
             id: self.enter_point,

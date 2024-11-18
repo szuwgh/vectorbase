@@ -78,11 +78,10 @@ impl FileManager {
         return Ok(PathBuf::new().join(p).join("imm.wal"));
     }
 
-    pub(crate) fn get_next_table_fname<P: AsRef<Path>>(p: P) -> GyResult<PathBuf> {
+    pub(crate) fn get_next_table_dir<P: AsRef<Path>>(p: P) -> GyResult<PathBuf> {
         let uid = Ulid::new();
         let dir = PathBuf::new().join(p).join(uid.to_string());
-        Self::mkdir(&dir)?;
-        return Ok(dir.join(DATA_FILE));
+        return Ok(dir);
     }
 
     pub(crate) fn get_rename_wal_path<P: AsRef<Path>>(p: P) -> GyResult<PathBuf> {
@@ -141,6 +140,21 @@ impl FileManager {
             2 => return Ok((Some(list[0].clone()), Some(list[1].clone()))),
             _ => return Err(GyError::ErrCollectionWalInvalid),
         }
+    }
+
+    pub(crate) fn get_directories<P: AsRef<Path>>(dir: P) -> GyResult<Vec<PathBuf>> {
+        let mut directories = Vec::new();
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            // 仅检查文件夹
+            if path.is_dir() {
+                directories.push(path);
+            }
+        }
+        // 按文件名正序排序
+        directories.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
+        Ok(directories)
     }
 
     pub(crate) fn get_table_directories<P: AsRef<Path>>(dir: P) -> GyResult<Vec<PathBuf>> {
@@ -462,8 +476,10 @@ mod tests {
 
     #[test]
     fn test_get_table_directories() {
-        let l =
-            FileManager::get_table_directories("/opt/rsproject/chappie/searchlite/data").unwrap();
+        let l = FileManager::get_table_directories(
+            "/opt/rsproject/chappie/vectorbase/example/embed/data/vector1",
+        )
+        .unwrap();
         println!("{:?}", l);
     }
 

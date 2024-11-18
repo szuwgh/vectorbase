@@ -11,6 +11,7 @@ mod tokenize;
 pub mod util;
 use crate::config::Config;
 use crate::config::EngineConfig;
+use crate::searcher::PostingReader;
 use ann::Neighbor;
 use art_tree::{Art, ByteString};
 use core::cell::UnsafeCell;
@@ -22,6 +23,7 @@ use schema::TensorEntry;
 use schema::ValueSized;
 use searcher::BlockReader;
 use std::io::{Cursor, Write};
+use std::option;
 use std::sync::atomic::AtomicU64;
 use util::asyncio::WaitGroup;
 use util::error::{GyError, GyResult};
@@ -114,8 +116,13 @@ pub struct EngineReader {
 }
 
 impl BlockReader for EngineReader {
-    fn query(&self, v: &Tensor, k: usize) -> GyResult<Vec<Neighbor>> {
+    fn query(&self, v: &Tensor, k: usize, term: &Option<Term>) -> GyResult<Vec<Neighbor>> {
+        let posing = self.search(term)?;
         self.vector_field.query(v, k)
+    }
+
+    fn search(&self, term: Term) -> GyResult<PostingReader> {
+        Ok(PostingReader::Mem(self._search(term)?))
     }
 
     fn vector(&self, doc_id: DocID) -> GyResult<Vector> {
@@ -134,7 +141,7 @@ impl EngineReader {
         self.index_reader.doc_num()
     }
 
-    pub fn search(&self, term: Term) -> GyResult<PostingReader> {
+    pub(crate) fn _search(&self, term: Term) -> GyResult<MemPostingReader> {
         self.index_reader.search(term)
     }
 
@@ -777,17 +784,17 @@ impl FieldReader {
         ))
     }
 
-    fn posting(&self, start_addr: Addr, end_addr: Addr) -> GyResult<PostingReader> {
+    fn posting(&self, start_addr: Addr, end_addr: Addr) -> GyResult<MemPostingReader> {
         let reader = RingBufferReader::new(
             self.share_bytes_block.upgrade().unwrap(),
             start_addr,
             end_addr,
         );
         let r = SnapshotReader::new(reader);
-        Ok(PostingReader::new(r))
+        Ok(MemPostingReader::new(r))
     }
 
-    fn get(&self, term: &[u8]) -> GyResult<PostingReader> {
+    fn get(&self, term: &[u8]) -> GyResult<MemPostingReader> {
         let (start_addr, end_addr) = {
             let index = self.indexs.read()?;
             let posting = index.get(term).unwrap();
@@ -805,29 +812,29 @@ impl FieldReader {
     }
 }
 
-pub struct PostingReader {
+pub struct MemPostingReader {
     snap: SnapshotReader,
 }
 
-impl PostingReader {
-    fn new(snap: SnapshotReader) -> PostingReader {
-        PostingReader { snap: snap }
+impl MemPostingReader {
+    fn new(snap: SnapshotReader) -> MemPostingReader {
+        MemPostingReader { snap: snap }
     }
 
-    pub fn iter<'a>(&'a self) -> PostingReaderIter<'a> {
-        PostingReaderIter {
+    pub fn iter<'a>(&'a self) -> MemPostingReaderIter<'a> {
+        MemPostingReaderIter {
             last_docid: 0,
             snap_iter: self.snap.iter(),
         }
     }
 }
 
-pub struct PostingReaderIter<'a> {
+pub struct MemPostingReaderIter<'a> {
     last_docid: DocID,
     snap_iter: SnapshotReaderIter<'a>,
 }
 
-impl<'b, 'a> Iterator for PostingReaderIter<'a> {
+impl<'b, 'a> Iterator for MemPostingReaderIter<'a> {
     type Item = DocFreq;
     fn next(&mut self) -> Option<Self::Item> {
         return match DocFreq::binary_deserialize(&mut self.snap_iter) {
@@ -907,7 +914,7 @@ impl IndexReader {
         IndexReaderIter::new(self.index_base.clone())
     }
 
-    fn search(&self, term: Term) -> GyResult<PostingReader> {
+    fn search(&self, term: Term) -> GyResult<MemPostingReader> {
         let field_id = term.field_id().id();
         let field_reader = self.index_base.field_reader(field_id)?;
         field_reader.get(term.bytes_value())
@@ -1107,18 +1114,23 @@ mod tests {
 
         let reader = collect.reader();
 
-        let p = reader
+        let posting = reader
             .search(Term::from_field_text(field_id_title, "Medicare"))
             .unwrap();
         // println!("doc_size:{:?}", p.get_doc_count());
-        for n in p.iter() {
-            let doc = reader.vector(n.doc_id()).unwrap();
-            println!(
-                "docid:{},vector{:?},doc:{:?}",
-                n.doc_id(),
-                unsafe { doc.v.to_vec::<f32>() },
-                doc.doc()
-            );
+        match posting {
+            PostingReader::Mem(p) => {
+                for n in p.iter() {
+                    let doc = reader.vector(n.doc_id()).unwrap();
+                    println!(
+                        "docid:{},vector{:?},doc:{:?}",
+                        n.doc_id(),
+                        unsafe { doc.v.to_vec::<f32>() },
+                        doc.doc()
+                    );
+                }
+            }
+            _ => {}
         }
 
         // let p = reader
@@ -1213,6 +1225,7 @@ mod tests {
             .query(
                 &Tensor::from_vec(vec![0.0f32, 0.0, 1.0, 0.0], 1, Shape::from_array([4])),
                 4,
+                &None,
             )
             .unwrap();
 
@@ -1257,6 +1270,7 @@ mod tests {
             .query(
                 &Tensor::from_vec(vec![0.0f32, 0.0, 1.0, 0.0], 1, Shape::from_array([4])),
                 4,
+                &None,
             )
             .unwrap();
 
@@ -1287,6 +1301,7 @@ mod tests {
             .query(
                 &Tensor::from_vec(vec![1.0f32, 0.0, 0.0, 1.0], 1, Shape::from_array([4])),
                 4,
+                &None,
             )
             .unwrap();
         // println!("doc_size:{:?}", p.get_doc_count());
@@ -1725,6 +1740,7 @@ mod tests {
             .query(
                 &Tensor::from_vec(vec![0.0f32, 0.0, 1.0, 0.0], 1, Shape::from_array([4])),
                 4,
+                &None,
             )
             .unwrap();
 

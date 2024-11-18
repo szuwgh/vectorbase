@@ -2,11 +2,11 @@ use crate::disk::VectorStore;
 use crate::disk::{self};
 use crate::util::fs::FileManager;
 use crate::GyResult;
+use std::fs;
 use std::path::Path;
-
 unsafe impl Sync for Compaction {}
 unsafe impl Send for Compaction {}
-
+use crate::config::DATA_FILE;
 pub(crate) struct Compaction {
     cur_level: usize,                  // 当前层数，跟踪需要合并的层
     max_files_per_level: [usize; 5],   // 每一层的文件数量上限
@@ -49,9 +49,14 @@ impl Compaction {
 
     pub(crate) fn compact(&mut self, p: &Path, list: &[VectorStore]) -> GyResult<VectorStore> {
         let level = std::cmp::min(self.cur_level + 1, 4);
-        let new_fname = FileManager::get_next_table_fname(p)?;
-        disk::merge_much(list, &new_fname, level)?;
-        let reader = VectorStore::open(new_fname.parent().unwrap())?;
+        let table_dir = FileManager::get_next_table_dir(p)?;
+        let tmp_table_dir = table_dir.with_extension("tmp");
+        FileManager::mkdir(&tmp_table_dir)?;
+        let data_fname = tmp_table_dir.join(DATA_FILE);
+        disk::merge_much(list, &data_fname, level)?;
+        //重命名文件夹
+        fs::rename(tmp_table_dir, &table_dir)?;
+        let reader = VectorStore::open(&table_dir)?;
         println!("path cur level:{}", self.cur_level);
         self.cur_level = (self.cur_level + 1) % self.max_files_per_level.len();
         Ok(reader)

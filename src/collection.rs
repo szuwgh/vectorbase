@@ -1,33 +1,28 @@
-use crate::compaction::Compaction;
-use crate::disk;
-use crate::disk::VectorStore;
-use crate::fs::FileManager;
-use crate::schema::FieldID;
-use crate::schema::ValueSized;
-use crate::searcher::BlockReader;
-use crate::searcher::Searcher;
-use crate::searcher::VectorSet;
-use crate::util::asyncio;
-use crate::util::asyncio::UnbufferedSender;
-use crate::util::common::IdGenerator;
-use crate::FieldEntry;
-use crate::Meta;
-use crate::Schema;
-use crate::Vector;
-use crate::RUNTIME;
-use crate::{Config, Engine};
-use crate::{GyError, GyResult};
+use crate::config::DATA_FILE;
+use crate::{
+    compaction::Compaction,
+    disk::{self, VectorStore},
+    fs::FileManager,
+    schema::{FieldID, ValueSized},
+    searcher::{BlockReader, Searcher, VectorSet},
+    util::{
+        asyncio::{self, UnbufferedSender},
+        common::IdGenerator,
+    },
+    Config, Engine, FieldEntry, GyError, GyResult, Meta, Schema, Vector, RUNTIME,
+};
 use galois::Tensor;
 use lock_api::RawMutex;
 use parking_lot::Mutex;
-use std::borrow::BorrowMut;
-use std::cell::RefCell;
-use std::mem;
-use std::path::Path;
-use std::sync::Arc;
-use std::sync::RwLock;
-use tokio::sync::RwLock as ToyRwLock;
-use tokio::sync::{mpsc, oneshot};
+use std::{
+    borrow::BorrowMut,
+    cell::RefCell,
+    mem,
+    path::Path,
+    sync::{Arc, RwLock},
+};
+use tokio::sync::{mpsc, oneshot, RwLock as ToyRwLock};
+
 enum CompAck {
     Done,
     Start,
@@ -42,6 +37,7 @@ enum Command {
 unsafe impl Sync for Collection {}
 unsafe impl Send for Collection {}
 
+#[derive(Clone)]
 pub struct Collection(Arc<CollectionImpl>);
 
 impl Collection {
@@ -67,8 +63,8 @@ impl Collection {
         self.0.add(v)
     }
 
-    pub fn query(&self, tensor: &Tensor, k: usize) -> GyResult<Vec<VectorSet>> {
-        self.0.query(tensor, k)
+    pub fn searcher(&self) -> GyResult<Searcher> {
+        self.0.searcher()
     }
 
     fn go_table_compaction(
@@ -188,12 +184,9 @@ impl CollectionImpl {
                     // 收到了命令
                     (Ok(cmd), _) => {
                         match cmd {
-                            Command::TableComp => {
-                                println!("收到压缩信号")
-                            }
+                            Command::TableComp => {}
                             Command::PauseComp(chan) => {
                                 // 发送压缩开始确认信号
-                                println!("收到暂停信号");
                                 let _ = chan.send(CompAck::Start).await;
                             }
                             _ => {}
@@ -202,15 +195,14 @@ impl CollectionImpl {
                     // 如果两个通道都没有消息，继续循环
                     (Err(_), Err(_)) => {}
                 }
-                println!("需要压缩");
                 let (new_list, path_list) = {
-                    let lock = self.disk_reader.read().unwrap();
-                    let old_list = lock.as_ref().unwrap();
+                    let disk_reader = self.disk_reader.read().unwrap();
+                    let old_list = disk_reader.as_ref().unwrap();
                     // 获取需要压缩的 path_list
                     let path_list = comp.plan(old_list);
-                    for v in path_list.iter() {
-                        println!("path_list 合并的文件夹：{}", v.collection_name());
-                    }
+                    // for v in path_list.iter() {
+                    //     println!("path_list 合并的文件夹：{}", v.collection_name());
+                    // }
                     let new_vector_store = comp
                         .compact(self.config.get_collection_path(), &path_list)
                         .unwrap();
@@ -237,7 +229,6 @@ impl CollectionImpl {
                 }
                 //删除 path_list
                 for v in path_list.into_iter() {
-                    println!("删除的文件夹：{}", v.collection_name());
                     v.wait().await;
                     let dir_path = v.file_path().parent().unwrap().to_path_buf();
                     drop(v);
@@ -256,15 +247,13 @@ impl CollectionImpl {
                 tokio::task::yield_now().await;
                 continue;
             }
-            println!("等待压缩信号");
             //如果不需要压缩 等待压缩信号
             tokio::select! {
                Some(cmd) = tcomp_cmd_rx.recv() => {
                     match cmd {
-                        Command::TableComp => { println!("收到压缩信号")}
+                        Command::TableComp => { }
                         Command::PauseComp(chan) => {
                             //暂停信号
-                            println!("收到暂停信号");
                             let _ = chan.send(CompAck::Start).await;
                         }
                         _ => {}
@@ -274,7 +263,6 @@ impl CollectionImpl {
                     return;
                 }
             }
-            println!("开始压缩")
         }
     }
 
@@ -288,17 +276,11 @@ impl CollectionImpl {
                Some(cmd) = mcomp_cmd_rx.recv() => {
                     match cmd {
                         Command::MemComp(chan) => {
-                            println!("开始内存压缩");
                             let _ = self.do_mem_compaction().await;
                             if let Some(c) = chan {
                                 let _ = c.send(CompAck::Done);
                             }
                         }
-                        // Command::PauseComp(chan) => {
-                        //     //暂停信号
-                        //     println!("收到暂停信号");
-                        //     let _ = chan.send(CompAck::Start).await;
-                        // }
                         _ => {}
                     }
                 }
@@ -312,7 +294,6 @@ impl CollectionImpl {
     async fn do_mem_compaction(&self) -> GyResult<()> {
         let imm = self.imm.read().await;
         if imm.is_none() {
-            println!("imm is none");
             return Ok(());
         }
         let (tcomp_pause_tx, mcomp_pause_rx) = asyncio::un_buffered_channel::<CompAck>();
@@ -322,10 +303,14 @@ impl CollectionImpl {
             .send(Command::PauseComp(tcomp_pause_tx))
             .await;
         let c = imm.as_ref().unwrap();
-        let rewal_name = FileManager::get_next_table_fname(self.config.get_collection_path())?;
-        disk::persist_collection(c.reader(), &self.meta.schema, &rewal_name)?;
+        let table_dir = FileManager::get_next_table_dir(self.config.get_collection_path())?;
+        let tmp_table_dir = table_dir.with_extension("tmp");
+        FileManager::mkdir(&tmp_table_dir)?;
+        let data_fname = tmp_table_dir.join(DATA_FILE);
+        disk::persist_collection(c.reader(), &self.meta.schema, &data_fname)?;
+        std::fs::rename(tmp_table_dir, &table_dir)?;
         drop(imm);
-        let new_disk_reader = VectorStore::open(rewal_name.parent().unwrap());
+        let new_disk_reader = VectorStore::open(table_dir);
         match new_disk_reader {
             Ok(reader) => {
                 let mut imm_lock = self.imm.write().await;
@@ -333,7 +318,6 @@ impl CollectionImpl {
                 self.disk_reader.write()?.as_mut().unwrap().push(reader);
                 drop(imm_lock);
                 let _ = mcomp_pause_rx.recv().await;
-                println!("table pause 结束");
                 //通知进行磁盘文件合并
                 let _ = self.tcomp_cmd_tx.try_send(Command::TableComp);
                 imm_engine.wait().await;
@@ -342,10 +326,8 @@ impl CollectionImpl {
             Err(e) => {
                 println!("{:?}", e);
                 let _ = mcomp_pause_rx.recv().await;
-                println!("table pause 结束");
             }
         }
-        println!("完成内存压缩");
 
         Ok(())
     }
@@ -355,11 +337,6 @@ impl CollectionImpl {
         self.mcomp_cmd_tx
             .blocking_send(Command::MemComp(Some(mcomp_ack_tx)))?;
         let _ = mcomp_ack_rx.blocking_recv();
-        Ok(())
-    }
-
-    fn rename_mem_to_imm<P: AsRef<Path>>(mem: &P, imm: &P) -> GyResult<()> {
-        std::fs::rename(mem, imm)?;
         Ok(())
     }
 
@@ -380,7 +357,6 @@ impl CollectionImpl {
             self.imm.blocking_write().replace(imm);
             drop(old_mem);
             let _ = self.mcomp_cmd_tx.blocking_send(Command::MemComp(None));
-            //释放锁
         }
         Ok(())
     }
@@ -399,7 +375,7 @@ impl CollectionImpl {
         Ok(x)
     }
 
-    pub fn query(&self, tensor: &Tensor, k: usize) -> GyResult<Vec<VectorSet>> {
+    pub fn searcher(&self) -> GyResult<Searcher> {
         let mut block_reader_list: Vec<Box<dyn BlockReader>> =
             vec![Box::new(self.mem.read()?.reader())];
         {
@@ -422,10 +398,10 @@ impl CollectionImpl {
                 }
             }
         }
-        let seacher = Searcher::new(block_reader_list);
-        let v = seacher.query(&tensor, k)?;
-        seacher.done();
-        Ok(v)
+
+        // let seacher =
+
+        Ok(Searcher::new(block_reader_list))
     }
 }
 

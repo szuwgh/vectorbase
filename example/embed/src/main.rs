@@ -1,7 +1,9 @@
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use galois::Tensor;
 use std::path::PathBuf;
+use std::thread;
 use vectorbase::ann::AnnType;
+use vectorbase::collection;
 use vectorbase::collection::Collection;
 use vectorbase::config::ConfigBuilder;
 use vectorbase::schema::Document;
@@ -11,15 +13,12 @@ use vectorbase::schema::TensorEntry;
 use vectorbase::schema::Vector;
 use vectorbase::schema::VectorEntry;
 use vectorbase::schema::VectorType;
-
 fn main() {
     // With custom InitOptions
     let model = TextEmbedding::try_new(
         InitOptions::new(EmbeddingModel::AllMiniLML6V2)
             .with_show_download_progress(true)
-            .with_cache_dir(PathBuf::from(
-                "/opt/rsproject/chappie/vectorbase/example/embed/model",
-            )),
+            .with_cache_dir(PathBuf::from("/opt/rsproject/chappie/rust-lib/model")),
     )
     .unwrap();
 
@@ -146,24 +145,32 @@ fn main() {
 
     let collection = Collection::new(schema, config).unwrap();
 
-    for (i, v) in embeddings.iter().enumerate() {
-        let mut d: Document = Document::new();
-        d.add_text(field_id_content.clone(), doc2[i]);
-        let v6 = Vector::from_slice(v, d);
-        collection.add(v6).unwrap();
-        // std::thread::sleep(std::time::Duration::from_secs(1));
-    }
-
-    let test_doc = vec!["What is a good Italian restaurant in the area?"];
-
-    let embeddings = model.embed(test_doc, None).unwrap();
-
-    for (i, v) in embeddings.iter().enumerate() {
-        let tensor = Tensor::arr_slice(v);
-        let v = collection.query(&tensor, 5).unwrap();
-        for x in v.iter() {
-            println!("{:?}", x.vector().doc());
+    let collection2 = collection.clone();
+    let handle1 = thread::spawn(move || {
+        for (i, v) in embeddings.iter().enumerate() {
+            let mut d: Document = Document::new();
+            d.add_text(field_id_content.clone(), doc2[i]);
+            let v6 = Vector::from_slice(v, d);
+            collection2.add(v6).unwrap();
+            std::thread::sleep(std::time::Duration::from_secs(1));
         }
-        // std::thread::sleep(std::time::Duration::from_secs(1));
-    }
+    });
+    let handle2 = thread::spawn(move || {
+        let test_doc = vec!["What is a good Italian restaurant in the area?"];
+        let embeddings = model.embed(test_doc, None).unwrap();
+        for _ in 0..100 {
+            for (i, v) in embeddings.iter().enumerate() {
+                let tensor = Tensor::arr_slice(v);
+                let seacher = collection.searcher().unwrap();
+                let v = seacher.query(&tensor, 5, None).unwrap();
+                seacher.done();
+                // for vs in v.iter() {
+                //     println!("v:{:?}", vs.vector().vector().to_vec::<f32>())
+                // }
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+        }
+    });
+    handle1.join();
+    handle2.join();
 }
