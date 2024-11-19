@@ -267,7 +267,7 @@ impl MmapSelector {
             .read(true)
             .write(true)
             .open(fname)?;
-        println!("fsize:{}", fsize);
+        //  println!("fsize:{}", fsize);
         file.allocate(fsize as u64)?;
         let nmmap = unsafe {
             memmap2::MmapOptions::new()
@@ -334,7 +334,6 @@ impl IoSelector for MmapSelector {
         }
         drop(&self.file);
         let file = OpenOptions::new().read(true).write(true).open(fname)?;
-        println!("reopen");
         file.set_len(fsize as u64)?;
         let nmmap = unsafe {
             memmap2::MmapOptions::new()

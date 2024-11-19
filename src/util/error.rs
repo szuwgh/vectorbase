@@ -56,6 +56,8 @@ pub enum GyError {
     ErrCollectionWalInvalid,
     #[error("err send invalid")]
     ErrSendInvalid(String),
+    #[error("term not found:{0}")]
+    ErrTermNotFound(String),
 }
 
 impl From<&str> for GyError {

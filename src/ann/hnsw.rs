@@ -118,7 +118,7 @@ impl<V: VectorSerialize + Clone> VectorSerialize for HNSW<V> {
         }
         let position = writer.get_pos()?;
         let next_position = position - (position % GGUF_DEFAULT_ALIGNMENT) + GGUF_DEFAULT_ALIGNMENT;
-        println!("position:{},next_position:{}", position, next_position);
+        // println!("position:{},next_position:{}", position, next_position);
         writer.write(&vec![0u8; next_position - position])?;
         //self.vectors.len().binary_serialize(writer)?;
         for v in self.vectors.iter() {

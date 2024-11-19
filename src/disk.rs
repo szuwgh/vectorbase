@@ -489,6 +489,8 @@ impl VectorStore {
     }
 }
 
+unsafe impl Send for VectorStoreReader {}
+
 pub struct VectorStoreReader {
     reader: Arc<DiskStoreReader>,
     w: Worker,
@@ -503,10 +505,12 @@ impl BlockReader for VectorStoreReader {
         self.reader.vector(doc_id)
     }
 
-    fn search(&self, term: Term) -> GyResult<PostingReader> {
+    fn search(&self, term: &Term) -> GyResult<PostingReader> {
         Ok(PostingReader::Disk(self.reader.search(term)?))
     }
 }
+
+unsafe impl Send for DiskStoreReader {}
 
 pub struct DiskStoreReader {
     meta: DiskFileMeta,
@@ -520,16 +524,6 @@ pub struct DiskStoreReader {
     mmap: Arc<Mmap>,
     wg: WaitGroup,
 }
-
-// impl BlockReader for DiskStoreReader {
-
-//     fn search(&self, term: Term) -> GyResult<Posting> {
-//         let field_id = term.field_id().id();
-//         let field_reader = self.field_reader(field_id)?;
-//         let p = field_reader.find(term.bytes_value())?;
-//         Ok(p)
-//     }
-// }
 
 impl DiskStoreReader {
     pub fn open<P: AsRef<Path>>(path: P) -> GyResult<DiskStoreReader> {
@@ -620,22 +614,19 @@ impl DiskStoreReader {
         term: &Option<Term>,
     ) -> GyResult<Vec<Neighbor>> {
         if let Some(t) = term {
-            // let ne = self.vector_field.query(v, k)?;
-            // let bitmap = BitVec::new();
             todo!()
         } else {
             self.vector_field.query(v, k)
         }
     }
 
-    pub(crate) fn search(&self, term: Term) -> GyResult<DiskPostingReader> {
+    pub(crate) fn search(&self, term: &Term) -> GyResult<DiskPostingReader> {
         let field_id = term.field_id().id();
         let field_reader = self.field_reader(field_id)?;
         field_reader.find(term.bytes_value())
     }
 
     fn read_vector<T: VectorSerialize>(&self, offset: usize) -> GyResult<T> {
-        //  let mut r = self.mmap[offset..].reader();
         let mut mmap_reader = MmapReader::new(&self.mmap, offset, self.fsize);
         let v = T::vector_deserialize(&mut mmap_reader, self.meta.tensor_entry())?;
         Ok(v)

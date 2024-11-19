@@ -4,14 +4,13 @@ use crate::{
     disk::{self, VectorStore},
     fs::FileManager,
     schema::{FieldID, ValueSized},
-    searcher::{BlockReader, Searcher, VectorSet},
+    searcher::{BlockReader, Searcher},
     util::{
         asyncio::{self, UnbufferedSender},
         common::IdGenerator,
     },
     Config, Engine, FieldEntry, GyError, GyResult, Meta, Schema, Vector, RUNTIME,
 };
-use galois::Tensor;
 use lock_api::RawMutex;
 use parking_lot::Mutex;
 use std::{
@@ -59,12 +58,16 @@ impl Collection {
         Ok(Collection(collection_impl))
     }
 
-    pub fn add(&self, v: Vector) -> GyResult<String> {
-        self.0.add(v)
+    pub fn get_schema(&self) -> &Schema {
+        self.0.get_schema()
     }
 
-    pub fn searcher(&self) -> GyResult<Searcher> {
-        self.0.searcher()
+    pub async fn add(&self, v: Vector) -> GyResult<String> {
+        self.0.add(v).await
+    }
+
+    pub async fn searcher(&self) -> GyResult<Searcher> {
+        self.0.searcher().await
     }
 
     fn go_table_compaction(
@@ -96,9 +99,9 @@ pub struct CollectionImpl {
     config: Config,
     _id_field_id: FieldID,
     id_gen: RefCell<IdGenerator>,
-    mem: RwLock<Engine>,
+    mem: ToyRwLock<Engine>,
     imm: ToyRwLock<Option<Engine>>,
-    disk_reader: RwLock<Option<Vec<VectorStore>>>,
+    disk_reader: ToyRwLock<Option<Vec<VectorStore>>>,
     mcomp_cmd_tx: mpsc::Sender<Command>, //mpsc::Sender<Command>,
     tcomp_cmd_tx: UnbufferedSender<Command>, //mpsc::Sender<Command>,
     mcomp_close_tx: mpsc::Sender<()>,
@@ -140,9 +143,9 @@ impl CollectionImpl {
                 .iter()
                 .map(|path| VectorStore::open(path))
                 .collect::<Result<Vec<_>, _>>()?;
-            for v in readers.iter() {
-                println!("open collect_name:{}", v.collection_name());
-            }
+            // for v in readers.iter() {
+            //     println!("open collect_name:{}", v.collection_name());
+            // }
             (mem, imm, readers)
         } else {
             //创建文件夹
@@ -156,16 +159,20 @@ impl CollectionImpl {
             config: config,
             _id_field_id: field_id,
             id_gen: RefCell::new(IdGenerator::new()),
-            mem: RwLock::new(mem),
+            mem: ToyRwLock::new(mem),
             imm: ToyRwLock::new(imm),
             mcomp_cmd_tx: mcomp_cmd_tx,
             tcomp_cmd_tx: tcomp_cmd_tx,
             mcomp_close_tx: mcomp_close_tx,
             tcomp_close_tx: tcomp_close_tx,
-            disk_reader: RwLock::new(Some(readers)),
+            disk_reader: ToyRwLock::new(Some(readers)),
             mem_lock: Mutex::new(()),
         };
         Ok(colletion)
+    }
+
+    pub fn get_schema(&self) -> &Schema {
+        self.meta.get_schema()
     }
 
     async fn table_compaction(
@@ -175,7 +182,7 @@ impl CollectionImpl {
     ) {
         let mut comp = Compaction::new();
         loop {
-            if comp.need_table_compact(self.disk_reader.read().unwrap().as_ref().unwrap()) {
+            if comp.need_table_compact(self.disk_reader.read().await.as_ref().unwrap()) {
                 let cmd_opt = tcomp_cmd_rx.try_recv();
                 let close_opt = tcomp_close_rx.try_recv();
                 match (cmd_opt, close_opt) {
@@ -196,7 +203,7 @@ impl CollectionImpl {
                     (Err(_), Err(_)) => {}
                 }
                 let (new_list, path_list) = {
-                    let disk_reader = self.disk_reader.read().unwrap();
+                    let disk_reader = self.disk_reader.read().await;
                     let old_list = disk_reader.as_ref().unwrap();
                     // 获取需要压缩的 path_list
                     let path_list = comp.plan(old_list);
@@ -220,7 +227,7 @@ impl CollectionImpl {
                     (new_list, path_list)
                 };
                 {
-                    let old = self.disk_reader.write().unwrap().replace(new_list);
+                    let old = self.disk_reader.write().await.replace(new_list);
                     if let Some(old_list) = old {
                         for v in old_list.into_iter() {
                             drop(v);
@@ -236,10 +243,10 @@ impl CollectionImpl {
                         // 删除文件
                         match std::fs::remove_dir_all(&dir_path) {
                             Ok(_) => {
-                                println!("文件 {:?} 已成功删除", dir_path);
+                                // println!("文件 {:?} 已成功删除", dir_path);
                             }
                             Err(e) => {
-                                eprintln!("删除文件 {:?} 失败: {}", dir_path, e);
+                                //eprintln!("删除文件 {:?} 失败: {}", dir_path, e);
                             }
                         }
                     }
@@ -315,7 +322,12 @@ impl CollectionImpl {
             Ok(reader) => {
                 let mut imm_lock = self.imm.write().await;
                 let imm_engine = imm_lock.take().unwrap();
-                self.disk_reader.write()?.as_mut().unwrap().push(reader);
+                self.disk_reader
+                    .write()
+                    .await
+                    .as_mut()
+                    .unwrap()
+                    .push(reader);
                 drop(imm_lock);
                 let _ = mcomp_pause_rx.recv().await;
                 //通知进行磁盘文件合并
@@ -324,7 +336,7 @@ impl CollectionImpl {
                 drop(imm_engine); //释放 imm engine
             }
             Err(e) => {
-                println!("{:?}", e);
+                //  println!("{:?}", e);
                 let _ = mcomp_pause_rx.recv().await;
             }
         }
@@ -332,56 +344,57 @@ impl CollectionImpl {
         Ok(())
     }
 
-    fn wait_mem_compaction(&self) -> GyResult<()> {
+    async fn wait_mem_compaction(&self) -> GyResult<()> {
         let (mcomp_ack_tx, mcomp_ack_rx) = oneshot::channel::<CompAck>();
         self.mcomp_cmd_tx
-            .blocking_send(Command::MemComp(Some(mcomp_ack_tx)))?;
-        let _ = mcomp_ack_rx.blocking_recv();
+            .send(Command::MemComp(Some(mcomp_ack_tx)))
+            .await?;
+        let _ = mcomp_ack_rx.await;
         Ok(())
     }
 
-    fn make_room_for_write(&self, size: usize) -> GyResult<()> {
-        if self.mem.read()?.check_room_for_write(size) {
+    async fn make_room_for_write(&self, size: usize) -> GyResult<()> {
+        if self.mem.read().await.check_room_for_write(size) {
             return Ok(());
         } else {
             //wait mem comp
-            println!("需要进行内存压缩");
-            self.wait_mem_compaction()?;
+            //println!("需要进行内存压缩");
+            self.wait_mem_compaction().await?;
             let mem_wal = FileManager::get_mem_wal_fname(self.config.get_collection_path())?;
             let imm_wal = FileManager::get_imm_wal_fname(self.config.get_collection_path())?;
-            self.mem.read()?.rename_wal(&imm_wal)?;
+            self.mem.read().await.rename_wal(&imm_wal)?;
             let mut imm: Engine =
                 Engine::new(&self.meta.schema, self.config.get_engine_config(mem_wal))?;
-            let mut old_mem = self.mem.write()?;
+            let mut old_mem = self.mem.write().await;
             mem::swap(&mut imm, old_mem.borrow_mut());
-            self.imm.blocking_write().replace(imm);
+            self.imm.write().await.replace(imm);
             drop(old_mem);
-            let _ = self.mcomp_cmd_tx.blocking_send(Command::MemComp(None));
+            let _ = self.mcomp_cmd_tx.send(Command::MemComp(None)).await;
         }
         Ok(())
     }
 
-    pub fn add(&self, mut v: Vector) -> GyResult<String> {
+    pub async fn add(&self, mut v: Vector) -> GyResult<String> {
         unsafe {
             self.mem_lock.raw().lock();
         }
         let x = self.id_gen.borrow_mut().generate_id();
         v.payload.add_str(self._id_field_id, x.clone());
-        self.make_room_for_write(v.bytes_size())?;
-        self.mem.read()?.add(v)?;
+        self.make_room_for_write(v.bytes_size()).await?;
+        self.mem.read().await.add(v)?;
         unsafe {
             self.mem_lock.raw().unlock();
         }
         Ok(x)
     }
 
-    pub fn searcher(&self) -> GyResult<Searcher> {
+    pub async fn searcher(&self) -> GyResult<Searcher> {
         let mut block_reader_list: Vec<Box<dyn BlockReader>> =
-            vec![Box::new(self.mem.read()?.reader())];
+            vec![Box::new(self.mem.read().await.reader())];
         {
-            if let Some(imm) = self.imm.blocking_read().as_ref() {
+            if let Some(imm) = self.imm.read().await.as_ref() {
                 block_reader_list.push(Box::new(imm.reader()));
-                if let Some(disk_readers) = self.disk_reader.read()?.as_ref() {
+                if let Some(disk_readers) = self.disk_reader.read().await.as_ref() {
                     block_reader_list.extend(
                         disk_readers
                             .iter()
@@ -389,7 +402,7 @@ impl CollectionImpl {
                     );
                 }
             } else {
-                if let Some(disk_readers) = self.disk_reader.read()?.as_ref() {
+                if let Some(disk_readers) = self.disk_reader.read().await.as_ref() {
                     block_reader_list.extend(
                         disk_readers
                             .iter()
@@ -447,40 +460,40 @@ mod tests {
 
             let v1 = Vector::from_array([0.0, 0.0, 0.0, 1.0], d1);
 
-            collection.add(v1).unwrap();
+            collection.add(v1);
 
             let mut d2 = Document::new();
             d2.add_text(field_id_title, "cc");
             let v2 = Vector::from_array([0.0, 0.0, 1.0, 0.0], d2);
 
-            collection.add(v2).unwrap();
+            collection.add(v2);
 
             let mut d3 = Document::new();
             d3.add_text(field_id_title.clone(), "aa");
 
             let v3 = Vector::from_array([0.0, 1.0, 0.0, 0.0], d3);
 
-            collection.add(v3).unwrap();
+            collection.add(v3);
 
             let mut d4 = Document::new();
             d4.add_text(field_id_title.clone(), "bb");
             let v4 = Vector::from_array([1.0, 0.0, 0.0, 0.0], d4);
-            collection.add(v4).unwrap();
+            collection.add(v4);
 
             let mut d5 = Document::new();
             d5.add_text(field_id_title.clone(), "cc");
             let v5 = Vector::from_array([0.0, 0.0, 1.0, 1.0], d5);
-            collection.add(v5).unwrap();
+            collection.add(v5);
 
             let mut d6 = Document::new();
             d6.add_text(field_id_title.clone(), "aa");
             let v6 = Vector::from_array([0.0, 1.0, 1.0, 0.0], d6);
-            collection.add(v6).unwrap();
+            collection.add(v6);
 
             let mut d7 = Document::new();
             d7.add_text(field_id_title.clone(), "ff");
             let v7 = Vector::from_array([1.0, 0.0, 0.0, 1.0], d7);
-            collection.add(v7).unwrap();
+            collection.add(v7);
         }
     }
 

@@ -2,18 +2,53 @@ use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use galois::Tensor;
 use std::path::PathBuf;
 use std::thread;
+use tokio::runtime::Builder;
 use vectorbase::ann::AnnType;
-use vectorbase::collection;
 use vectorbase::collection::Collection;
 use vectorbase::config::ConfigBuilder;
+use vectorbase::query::Term;
 use vectorbase::schema::Document;
 use vectorbase::schema::FieldEntry;
+use vectorbase::schema::FieldID;
 use vectorbase::schema::Schema;
 use vectorbase::schema::TensorEntry;
 use vectorbase::schema::Vector;
 use vectorbase::schema::VectorEntry;
 use vectorbase::schema::VectorType;
-fn main() {
+
+async fn test_query(_id_field_id: FieldID) {
+    // With custom InitOptions
+    let model = TextEmbedding::try_new(
+        InitOptions::new(EmbeddingModel::AllMiniLML6V2)
+            .with_show_download_progress(true)
+            .with_cache_dir(PathBuf::from("/opt/rsproject/chappie/rust-lib/model")),
+    )
+    .unwrap();
+    let mut schema = Schema::with_vector(VectorEntry::new(
+        "vector",
+        AnnType::HNSW,
+        TensorEntry::new(1, [384], VectorType::F32),
+    ));
+    schema.add_field(FieldEntry::str("content"));
+    let config = ConfigBuilder::default()
+        .data_path(PathBuf::from("./data"))
+        .collect_name("vector1")
+        .build();
+
+    let collection = Collection::new(schema, config).unwrap();
+    let test_doc = vec!["She couldn't remember where she put her glasses"];
+    let embeddings = model.embed(test_doc, None).unwrap();
+    let seacher = collection.searcher().await.unwrap();
+    for ds in seacher
+        .search(Term::from_field_text(_id_field_id, "AAAAAGc8xKcACmIqJoHo"))
+        .unwrap()
+    {
+        let vc = seacher.vector(&ds).unwrap();
+        println!("content:{:?}", vc.doc().get_field_values())
+    }
+}
+
+async fn test_insert(collection: Collection, field_id_content: FieldID) {
     // With custom InitOptions
     let model = TextEmbedding::try_new(
         InitOptions::new(EmbeddingModel::AllMiniLML6V2)
@@ -131,46 +166,51 @@ fn main() {
     println!("Embeddings length: {}", embeddings.len()); // -> Embeddings length: 4
     println!("Embedding dimension: {}", embeddings[0].len()); // -> Embedding dimension: 384
 
+    for (i, v) in embeddings.iter().enumerate() {
+        let mut d: Document = Document::new();
+        d.add_text(field_id_content, doc2[i]);
+        let v6 = Vector::from_slice(v, d);
+        collection.add(v6).await.unwrap();
+        // std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+
+    // // let handle2 = thread::spawn(move || {
+    // let test_doc = vec!["What is a good Italian restaurant in the area?"];
+    // let embeddings = model.embed(test_doc, None).unwrap();
+    // for _ in 0..1 {
+    //     for (i, v) in embeddings.iter().enumerate() {
+    //         let tensor = Tensor::arr_slice(v);
+    //         let seacher = collection.searcher().await.unwrap();
+    //         let v = seacher.query(&tensor, 5, None).unwrap();
+    //         for vs in v.iter() {
+    //             let vc = seacher.vector(vs).unwrap();
+    //             println!("content:{:?}", vc.doc().get_field_values())
+    //         }
+    //         seacher.done();
+    //         std::thread::sleep(std::time::Duration::from_secs(1));
+    //     }
+    // }
+}
+
+fn main() {
+    let pool = Builder::new_multi_thread()
+        .worker_threads(2)
+        .build()
+        .expect("Failed to create runtime");
+
     let mut schema = Schema::with_vector(VectorEntry::new(
         "vector",
         AnnType::HNSW,
         TensorEntry::new(1, [384], VectorType::F32),
     ));
-    schema.add_field(FieldEntry::str("content"));
-    let field_id_content = schema.get_field("content").unwrap();
+    let field_id_content = schema.add_field(FieldEntry::str("content"));
     let config = ConfigBuilder::default()
         .data_path(PathBuf::from("./data"))
         .collect_name("vector1")
         .build();
 
     let collection = Collection::new(schema, config).unwrap();
-
-    let collection2 = collection.clone();
-    let handle1 = thread::spawn(move || {
-        for (i, v) in embeddings.iter().enumerate() {
-            let mut d: Document = Document::new();
-            d.add_text(field_id_content.clone(), doc2[i]);
-            let v6 = Vector::from_slice(v, d);
-            collection2.add(v6).unwrap();
-            std::thread::sleep(std::time::Duration::from_secs(1));
-        }
-    });
-    let handle2 = thread::spawn(move || {
-        let test_doc = vec!["What is a good Italian restaurant in the area?"];
-        let embeddings = model.embed(test_doc, None).unwrap();
-        for _ in 0..100 {
-            for (i, v) in embeddings.iter().enumerate() {
-                let tensor = Tensor::arr_slice(v);
-                let seacher = collection.searcher().unwrap();
-                let v = seacher.query(&tensor, 5, None).unwrap();
-                seacher.done();
-                // for vs in v.iter() {
-                //     println!("v:{:?}", vs.vector().vector().to_vec::<f32>())
-                // }
-                std::thread::sleep(std::time::Duration::from_secs(1));
-            }
-        }
-    });
-    handle1.join();
-    handle2.join();
+    let _id_field_id = collection.get_schema().get_field("_id").unwrap();
+    pool.block_on(async move { test_query(_id_field_id).await });
+    // pool.block_on(async move { test_insert(collection, field_id_content).await });
 }

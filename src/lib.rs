@@ -108,6 +108,8 @@ unsafe impl<V: VectorSerialize + ValueSized + VectorOps + Clone + 'static> Sync 
 {
 }
 
+unsafe impl Send for EngineReader {}
+
 pub struct EngineReader {
     pub(crate) vector_field: Arc<VectorIndexBase<Tensor>>,
     index_reader: IndexReader,
@@ -117,11 +119,15 @@ pub struct EngineReader {
 
 impl BlockReader for EngineReader {
     fn query(&self, v: &Tensor, k: usize, term: &Option<Term>) -> GyResult<Vec<Neighbor>> {
-        let posing = self.search(term)?;
-        self.vector_field.query(v, k)
+        if let Some(t) = term {
+            let posing = self.search(t)?;
+            todo!()
+        } else {
+            self.vector_field.query(v, k)
+        }
     }
 
-    fn search(&self, term: Term) -> GyResult<PostingReader> {
+    fn search(&self, term: &Term) -> GyResult<PostingReader> {
         Ok(PostingReader::Mem(self._search(term)?))
     }
 
@@ -141,7 +147,7 @@ impl EngineReader {
         self.index_reader.doc_num()
     }
 
-    pub(crate) fn _search(&self, term: Term) -> GyResult<MemPostingReader> {
+    pub(crate) fn _search(&self, term: &Term) -> GyResult<MemPostingReader> {
         self.index_reader.search(term)
     }
 
@@ -324,14 +330,14 @@ where
     }
 
     pub fn add(&self, v: VectorBase<V>) -> GyResult<DocID> {
-        unsafe {
-            self.rw_lock.raw().lock();
-        }
+        // unsafe {
+        //     self.rw_lock.raw().lock();
+        // }
         let doc_offset = self.write_vector_to_wal(&v)?;
         let doc_id = self.quick_add(doc_offset, v)?;
-        unsafe {
-            self.rw_lock.raw().unlock();
-        }
+        // unsafe {
+        //     self.rw_lock.raw().unlock();
+        // }
         Ok(doc_id)
     }
 
@@ -400,6 +406,10 @@ impl Meta {
             schema: schema,
             create_time: Time::now(),
         }
+    }
+
+    fn get_schema(&self) -> &Schema {
+        &self.schema
     }
 
     pub fn vector_name(&self) -> &str {
@@ -480,20 +490,17 @@ impl IndexBase {
 
     fn inner_add(&self, doc_id: DocID, doc: &Document) -> GyResult<()> {
         for field in doc.get_field_values().iter() {
-            // println!("field.field_id().0:{}", field.field_id().id());
             let fw = self.fields.get(field.field_id().id() as usize).unwrap();
             // 分词
             match field.value() {
                 Value::Str(s) => {
                     let word = self.jieba.cut_for_search(*s);
-                    println!("{:?}", word);
                     for v in word.into_iter() {
                         fw.add_with_bytes(doc_id, v.as_bytes())?;
                     }
                 }
                 Value::String(s) => {
                     let word = self.jieba.cut_for_search(s);
-                    println!("{:?}", word);
                     for v in word.into_iter() {
                         fw.add_with_bytes(doc_id, v.as_bytes())?;
                     }
@@ -797,7 +804,9 @@ impl FieldReader {
     fn get(&self, term: &[u8]) -> GyResult<MemPostingReader> {
         let (start_addr, end_addr) = {
             let index = self.indexs.read()?;
-            let posting = index.get(term).unwrap();
+            let posting = index.get(term).ok_or(GyError::ErrTermNotFound(
+                String::from_utf8_lossy(term).to_string(),
+            ))?;
             let (start_addr, end_addr) = (
                 (*posting).read()?.byte_addr.load(Ordering::SeqCst),
                 (*posting).read()?.doc_freq_addr.load(Ordering::SeqCst),
@@ -914,7 +923,7 @@ impl IndexReader {
         IndexReaderIter::new(self.index_base.clone())
     }
 
-    fn search(&self, term: Term) -> GyResult<MemPostingReader> {
+    fn search(&self, term: &Term) -> GyResult<MemPostingReader> {
         let field_id = term.field_id().id();
         let field_reader = self.index_base.field_reader(field_id)?;
         field_reader.get(term.bytes_value())
@@ -1019,7 +1028,7 @@ mod tests {
 
         let reader = index.reader().unwrap();
         let p = reader
-            .search(Term::from_field_text(field_id_title, "aa"))
+            .search(&Term::from_field_text(field_id_title, "aa"))
             .unwrap();
 
         for doc_freq in p.iter() {
@@ -1115,7 +1124,7 @@ mod tests {
         let reader = collect.reader();
 
         let posting = reader
-            .search(Term::from_field_text(field_id_title, "Medicare"))
+            .search(&Term::from_field_text(field_id_title, "Medicare"))
             .unwrap();
         // println!("doc_size:{:?}", p.get_doc_count());
         match posting {
@@ -1253,7 +1262,7 @@ mod tests {
         let field_id_title = schema.get_field("title").unwrap();
         let disk_reader = DiskStoreReader::open(PathBuf::from("./data1")).unwrap();
         let p = disk_reader
-            .search(Term::from_field_text(field_id_title, "Medicare"))
+            .search(&Term::from_field_text(field_id_title, "Medicare"))
             .unwrap();
         // println!("doc_size:{:?}", p.get_doc_count());
         for n in p.iter() {
@@ -1358,7 +1367,7 @@ mod tests {
 
         let reader = index.reader().unwrap();
         let p = reader
-            .search(Term::from_field_text(field_id_title, "aa"))
+            .search(&Term::from_field_text(field_id_title, "aa"))
             .unwrap();
 
         for doc_freq in p.iter() {
@@ -1440,7 +1449,7 @@ mod tests {
             DiskStoreReader::open(PathBuf::from("/opt/rsproject/chappie/vectorbase/data4"))
                 .unwrap();
         let p = disk_reader
-            .search(Term::from_field_text(field_id_title, "aa"))
+            .search(&Term::from_field_text(field_id_title, "aa"))
             .unwrap();
         println!("doc_size:{:?}", p.get_doc_count());
         for doc_freq in p.iter() {
@@ -1496,7 +1505,7 @@ mod tests {
 
         let reader = index.reader().unwrap();
         let p = reader
-            .search(Term::from_field_text(field_id_title, "aa"))
+            .search(&Term::from_field_text(field_id_title, "aa"))
             .unwrap();
 
         for doc_freq in p.iter() {
@@ -1535,7 +1544,7 @@ mod tests {
         // writer3.commit();
         let reader = index.reader().unwrap();
         let p = reader
-            .search(Term::from_field_i32(field_id_title, 2))
+            .search(&Term::from_field_i32(field_id_title, 2))
             .unwrap();
 
         for x in p.iter() {

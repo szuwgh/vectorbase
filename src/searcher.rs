@@ -14,9 +14,9 @@ use std::collections::BinaryHeap;
 use std::sync::Arc;
 
 // 1. 定义 BlockReader trait
-pub trait BlockReader {
+pub trait BlockReader: Send {
     fn query(&self, tensor: &Tensor, k: usize, term: &Option<Term>) -> GyResult<Vec<Neighbor>>;
-    fn search(&self, term: Term) -> GyResult<PostingReader>;
+    fn search(&self, term: &Term) -> GyResult<PostingReader>;
     fn vector(&self, doc_id: DocID) -> GyResult<Vector>;
 }
 
@@ -25,25 +25,50 @@ pub enum PostingReader {
     Disk(DiskPostingReader),
 }
 
+pub trait GetDocId {
+    fn doc_id(&self) -> DocID;
+
+    fn block_id(&self) -> usize;
+}
+
 pub struct NeighborSet {
     neighbor: Neighbor,
     i: usize,
 }
 
-pub struct VectorSet {
-    v: Vector,
-    d: f32,
-}
-
-impl VectorSet {
-    pub fn vector(&self) -> &Vector {
-        &self.v
+impl GetDocId for NeighborSet {
+    fn doc_id(&self) -> DocID {
+        self.neighbor.doc_id()
     }
 
-    pub fn d(&self) -> f32 {
-        self.d
+    fn block_id(&self) -> usize {
+        self.i
     }
 }
+
+pub struct DocumentSet {
+    doc_freq: DocFreq,
+    i: usize,
+}
+
+impl GetDocId for DocumentSet {
+    fn doc_id(&self) -> DocID {
+        self.doc_freq.doc_id()
+    }
+    fn block_id(&self) -> usize {
+        self.i
+    }
+}
+
+// impl VectorSet {
+//     pub fn vector(&self) -> &Vector {
+//         &self.v
+//     }
+
+//     pub fn d(&self) -> f32 {
+//         self.d
+//     }
+// }
 
 impl Eq for NeighborSet {}
 
@@ -80,8 +105,28 @@ impl Searcher {
         }
     }
 
-    pub fn search(&self, term: Term) -> GyResult<PostingReader> {
-        todo!()
+    pub fn vector<T: GetDocId>(&self, t: &T) -> GyResult<Vector> {
+        Ok(self.blocks[t.block_id()].vector(t.doc_id())?)
+    }
+
+    pub fn search(&self, term: Term) -> GyResult<impl Iterator<Item = DocumentSet> + '_> {
+        //GyResult<impl Iterator<Item = DocumentSet>> {
+        Ok(self.blocks.iter().enumerate().flat_map(move |(i, block)| {
+            block
+                .search(&term)
+                .ok()
+                .into_iter()
+                .flat_map(move |posting| match posting {
+                    PostingReader::Mem(p) => p
+                        .iter()
+                        .map(move |doc_freq| DocumentSet { doc_freq, i })
+                        .collect::<Vec<_>>(),
+                    PostingReader::Disk(p) => p
+                        .iter()
+                        .map(move |doc_freq| DocumentSet { doc_freq, i })
+                        .collect::<Vec<_>>(),
+                })
+        }))
     }
 
     pub fn query(
@@ -89,11 +134,10 @@ impl Searcher {
         tensor: &Tensor,
         k: usize,
         term: Option<Term>,
-    ) -> GyResult<Vec<NeighborSet>> {
+    ) -> GyResult<impl Iterator<Item = NeighborSet>> {
         let mut heap = BinaryHeap::new(); // 最大堆存储最小的K个元素
         for (i, block) in self.blocks.iter().enumerate() {
             let neighbor = block.query(tensor, k, &term)?;
-            // println!("distance:{}", neighbor[0].distance());
             for n in neighbor {
                 heap.push(NeighborSet { neighbor: n, i: i });
             }
@@ -103,16 +147,6 @@ impl Searcher {
             }
         }
         // 从堆中提取元素，并转换为 Vec
-        let ne_set = heap.into_sorted_vec().into_iter().map(|x| x).collect();
-        // let mut vec_set = Vec::with_capacity(ne_set.len());
-        // for n in ne_set {
-        //     let v = self.blocks[n.i].vector(n.neighbor.doc_id())?;
-        //     vec_set.push(VectorSet {
-        //         v: v,
-        //         d: n.neighbor.distance(),
-        //     });
-        // }
-
-        Ok(ne_set)
+        Ok(heap.into_sorted_vec().into_iter().map(|x| x))
     }
 }
