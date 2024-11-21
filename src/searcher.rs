@@ -31,6 +31,7 @@ pub trait GetDocId {
     fn block_id(&self) -> usize;
 }
 
+#[derive(Debug)]
 pub struct NeighborSet {
     neighbor: Neighbor,
     i: usize,

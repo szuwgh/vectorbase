@@ -580,6 +580,10 @@ impl Document {
         &self.field_values
     }
 
+    pub fn get_field_value(&self, field: FieldID) -> &FieldValue {
+        &self.field_values[field.id() as usize]
+    }
+
     pub fn add_field_value(&mut self, field: FieldValue) {
         self.field_values.push(field);
     }
@@ -752,6 +756,14 @@ impl BinarySerialize for Value {
 }
 
 impl Value {
+    pub fn str(&self) -> &str {
+        match self {
+            Value::String(s) => s,
+            Value::Str(s) => *s,
+            _ => "",
+        }
+    }
+
     pub fn size(&self) -> usize {
         match &self {
             Value::Str(s) => {
