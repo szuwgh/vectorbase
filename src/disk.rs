@@ -25,7 +25,6 @@ use crate::PostingReader;
 use crate::Term;
 use crate::Vector;
 use art_tree::Key;
-use bloomfilter::reexports::bit_vec::BitVec;
 use bytes::BytesMut;
 use bytes::{Buf, BufMut};
 use galois::Tensor;
@@ -192,6 +191,8 @@ fn open_file_stream(fname: &str) -> GyResult<BufWriter<File>> {
     Ok(buf_writer)
 }
 
+struct MergeStore {}
+
 pub fn merge_much(readers: &[VectorStore], new_fname: &Path, level: usize) -> GyResult<()> {
     let mut schema = readers[0].get_store().meta.get_schema();
     let mut new_schema: Option<Schema> = None;
@@ -240,7 +241,7 @@ pub fn merge_much(readers: &[VectorStore], new_fname: &Path, level: usize) -> Gy
         .map(|r| r.get_store().iter().peekable())
         .collect::<Vec<_>>();
     let reader_merger = CompactionMergeMuch::new(reader_iters);
-    let mut term_range_list: Vec<TermRange> = Vec::new();
+    let term_range_list: Vec<TermRange> = Vec::new();
     for field_readers in reader_merger.merge() {
         assert!(
             field_readers

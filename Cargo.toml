@@ -5,6 +5,17 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[profile.release]
+# 使用更强的优化来减少文件大小
+opt-level = "z"  # 'z' 是最强的优化选项，目的是最小化二进制文件大小
+# 启用 LTO (Link-Time Optimization) 进一步优化
+lto = true
+# 启用 `panic=abort`，可以减少二进制文件的大小
+panic = "abort"
+# 启用 `strip`，进一步减小符号表
+strip = "debuginfo"
+
+
 [dependencies]
 thiserror = "1.0"
 space = { version = "0.18.0", default-features = false, features = ["alloc"] }

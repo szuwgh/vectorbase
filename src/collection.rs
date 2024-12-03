@@ -207,9 +207,6 @@ impl CollectionImpl {
                     let old_list = disk_reader.as_ref().unwrap();
                     // 获取需要压缩的 path_list
                     let path_list = comp.plan(old_list);
-                    // for v in path_list.iter() {
-                    //     println!("path_list 合并的文件夹：{}", v.collection_name());
-                    // }
                     let new_vector_store = comp
                         .compact(self.config.get_collection_path(), &path_list)
                         .unwrap();
@@ -241,14 +238,7 @@ impl CollectionImpl {
                     drop(v);
                     if dir_path.exists() {
                         // 删除文件
-                        match std::fs::remove_dir_all(&dir_path) {
-                            Ok(_) => {
-                                // println!("文件 {:?} 已成功删除", dir_path);
-                            }
-                            Err(e) => {
-                                //eprintln!("删除文件 {:?} 失败: {}", dir_path, e);
-                            }
-                        }
+                        std::fs::remove_dir_all(&dir_path);
                     }
                 }
                 tokio::task::yield_now().await;

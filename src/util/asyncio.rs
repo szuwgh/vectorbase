@@ -64,9 +64,6 @@ impl<T> UnbufferedReceiver<T> {
     pub(crate) async fn recv(&self) -> Option<T> {
         self.sender_semaphore.add_permits(1);
         let mut receiver = self.receiver.lock().await;
-        if receiver.is_closed() {
-            println!("读通道已关闭");
-        }
         receiver.recv().await
     }
 
@@ -100,12 +97,10 @@ impl Default for WaitGroup {
 }
 
 impl WaitGroup {
-    /// Creates a new `WaitGroup`.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Register a new worker.
     pub fn worker(&self) -> Worker {
         self.inner.count.fetch_add(1, Ordering::Relaxed);
         Worker {
@@ -113,7 +108,6 @@ impl WaitGroup {
         }
     }
 
-    /// Wait until all registered workers finish executing.
     pub async fn wait(&self) {
         WaitGroupFuture::new(&self.inner).await
     }
