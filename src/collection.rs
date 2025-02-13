@@ -143,9 +143,6 @@ impl CollectionImpl {
                 .iter()
                 .map(|path| VectorStore::open(path))
                 .collect::<Result<Vec<_>, _>>()?;
-            // for v in readers.iter() {
-            //     println!("open collect_name:{}", v.collection_name());
-            // }
             (mem, imm, readers)
         } else {
             //创建文件夹
@@ -448,41 +445,41 @@ mod tests {
             let mut d1 = Document::new();
             d1.add_text(field_id_title, "aa");
 
-            let v1 = Vector::from_array([0.0, 0.0, 0.0, 1.0], d1);
+            let v1 = Vector::from_array([0.0, 0.0, 0.0, 1.0], d1).unwrap();
 
             collection.add(v1);
 
             let mut d2 = Document::new();
             d2.add_text(field_id_title, "cc");
-            let v2 = Vector::from_array([0.0, 0.0, 1.0, 0.0], d2);
+            let v2 = Vector::from_array([0.0, 0.0, 1.0, 0.0], d2).unwrap();
 
             collection.add(v2);
 
             let mut d3 = Document::new();
             d3.add_text(field_id_title.clone(), "aa");
 
-            let v3 = Vector::from_array([0.0, 1.0, 0.0, 0.0], d3);
+            let v3 = Vector::from_array([0.0, 1.0, 0.0, 0.0], d3).unwrap();
 
             collection.add(v3);
 
             let mut d4 = Document::new();
             d4.add_text(field_id_title.clone(), "bb");
-            let v4 = Vector::from_array([1.0, 0.0, 0.0, 0.0], d4);
+            let v4 = Vector::from_array([1.0, 0.0, 0.0, 0.0], d4).unwrap();
             collection.add(v4);
 
             let mut d5 = Document::new();
             d5.add_text(field_id_title.clone(), "cc");
-            let v5 = Vector::from_array([0.0, 0.0, 1.0, 1.0], d5);
+            let v5 = Vector::from_array([0.0, 0.0, 1.0, 1.0], d5).unwrap();
             collection.add(v5);
 
             let mut d6 = Document::new();
             d6.add_text(field_id_title.clone(), "aa");
-            let v6 = Vector::from_array([0.0, 1.0, 1.0, 0.0], d6);
+            let v6 = Vector::from_array([0.0, 1.0, 1.0, 0.0], d6).unwrap();
             collection.add(v6);
 
             let mut d7 = Document::new();
             d7.add_text(field_id_title.clone(), "ff");
-            let v7 = Vector::from_array([1.0, 0.0, 0.0, 1.0], d7);
+            let v7 = Vector::from_array([1.0, 0.0, 0.0, 1.0], d7).unwrap();
             collection.add(v7);
         }
     }

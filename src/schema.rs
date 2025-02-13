@@ -1,5 +1,5 @@
 use crate::util::common;
-
+use galois::TensorProto;
 // 每一行数据
 use super::ann::{AnnType, Metric};
 use super::disk::{GyRead, GyWrite};
@@ -7,6 +7,7 @@ use super::util::error::{GyError, GyResult};
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use chrono::{TimeZone, Utc};
 use galois::similarity::Similarity;
+use galois::TensorView;
 use galois::{GGmlType, TensorType};
 use galois::{Shape, Tensor};
 use serde::{Deserialize, Serialize};
@@ -33,10 +34,10 @@ pub trait ValueSized {
     fn bytes_size(&self) -> usize;
 }
 
-pub trait VectorOps {
-    fn from_vec<T: TensorType>(v: Vec<T>) -> Self;
-    fn from_arr<T: TensorType, const N: usize>(v: [T; N]) -> Self;
-    fn from_slice<T: TensorType>(v: &[T]) -> Self;
+pub trait VectorFrom: Sized {
+    fn from_vec<T: TensorType>(v: Vec<T>) -> GyResult<Self>;
+    fn from_arr<T: TensorType, const N: usize>(v: [T; N]) -> GyResult<Self>;
+    fn from_slice<T: TensorType>(v: &[T]) -> GyResult<Self>;
 }
 
 pub trait BinarySerialize: Sized {
@@ -344,6 +345,41 @@ pub enum FieldType {
     Bytes,
 }
 
+impl<'a> VectorSerialize for TensorView<'a> {
+    fn vector_deserialize<R: Read + GyRead>(reader: &mut R, entry: &TensorEntry) -> GyResult<Self> {
+        todo!()
+    }
+    fn vector_serialize<W: Write + GyWrite>(&self, writer: &mut W) -> GyResult<()> {
+        todo!()
+    }
+    fn vector_nommap_deserialize<R: Read + GyRead>(
+        reader: &mut R,
+        entry: &TensorEntry,
+    ) -> GyResult<Self> {
+        todo!()
+    }
+}
+
+impl<'a> ValueSized for TensorView<'a> {
+    fn bytes_size(&self) -> usize {
+        todo!()
+    }
+}
+
+impl<'a> VectorFrom for TensorView<'a> {
+    fn from_arr<T: TensorType, const N: usize>(v: [T; N]) -> GyResult<Self> {
+        todo!()
+    }
+
+    fn from_slice<T: TensorType>(v: &[T]) -> GyResult<Self> {
+        todo!()
+    }
+
+    fn from_vec<T: TensorType>(v: Vec<T>) -> GyResult<Self> {
+        todo!()
+    }
+}
+
 impl VectorSerialize for Tensor {
     fn vector_serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
         writer.write(self.as_bytes())?;
@@ -363,7 +399,8 @@ impl VectorSerialize for Tensor {
                 entry.n_dims(),
                 Shape::from_slice(entry.dims()),
                 entry.vector_type().to_ggml_type(),
-            )
+                &galois::Device::Cpu,
+            )?
         };
 
         //  println!("t:{:?}", unsafe { t.as_slice::<f32>() });
@@ -380,13 +417,32 @@ impl VectorSerialize for Tensor {
             entry.n_dims(),
             Shape::from_slice(entry.dims()),
             entry.vector_type().to_ggml_type(),
-        );
+            &galois::Device::Cpu,
+        )?;
         Ok(t)
     }
 }
 
-impl Metric for Tensor {
-    fn distance(&self, b: &Self) -> f32 {
+impl<'a> Metric<TensorView<'_>> for TensorView<'a> {
+    fn distance(&self, b: &TensorView) -> f32 {
+        self.euclidean(b)
+    }
+}
+
+impl<'a> Metric<Tensor> for TensorView<'a> {
+    fn distance(&self, b: &Tensor) -> f32 {
+        self.euclidean(b)
+    }
+}
+
+impl Metric<TensorView<'_>> for Tensor {
+    fn distance(&self, b: &TensorView) -> f32 {
+        self.euclidean(b)
+    }
+}
+
+impl Metric<Tensor> for Tensor {
+    fn distance(&self, b: &Tensor) -> f32 {
         self.euclidean(b)
     }
 }
@@ -397,34 +453,37 @@ impl ValueSized for Tensor {
     }
 }
 
-impl VectorOps for Tensor {
-    fn from_arr<T: TensorType, const N: usize>(v: [T; N]) -> Self {
-        Tensor::arr_array(v)
+impl VectorFrom for Tensor {
+    fn from_arr<T: TensorType, const N: usize>(v: [T; N]) -> GyResult<Self> {
+        let v = Tensor::arr_array(v, &galois::Device::Cpu)?;
+        Ok(v)
     }
 
-    fn from_vec<T: TensorType>(v: Vec<T>) -> Self {
-        Tensor::arr(v)
+    fn from_vec<T: TensorType>(v: Vec<T>) -> GyResult<Self> {
+        let v = Tensor::arr(v, &galois::Device::Cpu)?;
+        Ok(v)
     }
 
-    fn from_slice<T: TensorType>(v: &[T]) -> Self {
-        Tensor::arr_slice(v)
+    fn from_slice<T: TensorType>(v: &[T]) -> GyResult<Self> {
+        let v = Tensor::arr_slice(v, &galois::Device::Cpu)?;
+        Ok(v)
     }
 }
 
 pub type Vector = VectorBase<Tensor>;
 
-pub struct VectorBase<V: VectorSerialize + ValueSized + VectorOps> {
+pub struct VectorBase<V: VectorSerialize> {
     pub(crate) v: V,
     pub(crate) payload: Document,
 }
 
-impl<V: VectorSerialize + ValueSized + VectorOps> ValueSized for VectorBase<V> {
+impl<V: VectorSerialize + ValueSized> ValueSized for VectorBase<V> {
     fn bytes_size(&self) -> usize {
         self.v.bytes_size() + self.payload.bytes_size()
     }
 }
 
-impl<V: VectorSerialize + ValueSized + VectorOps> VectorSerialize for VectorBase<V> {
+impl<V: VectorSerialize + ValueSized + VectorFrom> VectorSerialize for VectorBase<V> {
     fn vector_deserialize<R: Read + GyRead>(reader: &mut R, entry: &TensorEntry) -> GyResult<Self> {
         let size = usize::binary_deserialize(reader)?;
         if size == 0 {
@@ -461,7 +520,7 @@ impl<V: VectorSerialize + ValueSized + VectorOps> VectorSerialize for VectorBase
     }
 }
 
-impl<V: VectorSerialize + ValueSized + VectorOps> VectorBase<V> {
+impl<V: VectorSerialize + VectorFrom + ValueSized> VectorBase<V> {
     pub fn new(v: V, payload: Document) -> VectorBase<V> {
         VectorBase {
             v: v,
@@ -477,18 +536,21 @@ impl<V: VectorSerialize + ValueSized + VectorOps> VectorBase<V> {
         &self.v
     }
 
-    pub fn from_array<T: TensorType, const N: usize>(xs: [T; N], payload: Document) -> Self {
-        VectorBase {
-            v: V::from_arr(xs),
+    pub fn from_array<T: TensorType, const N: usize>(
+        xs: [T; N],
+        payload: Document,
+    ) -> GyResult<Self> {
+        Ok(VectorBase {
+            v: V::from_arr(xs)?,
             payload: payload,
-        }
+        })
     }
 
-    pub fn from_slice<T: TensorType>(xs: &[T], payload: Document) -> Self {
-        VectorBase {
-            v: V::from_slice(xs),
+    pub fn from_slice<T: TensorType>(xs: &[T], payload: Document) -> GyResult<Self> {
+        Ok(VectorBase {
+            v: V::from_slice(xs)?,
             payload: payload,
-        }
+        })
     }
 
     pub fn with(v: V) -> VectorBase<V> {
@@ -1083,8 +1145,20 @@ mod tests {
     fn test_vector() {
         let mut bytes: Vec<u8> = Vec::with_capacity(1024);
         let mut cursor = Cursor::new(&mut bytes);
-        let v1 = Tensor::from_vec(vec![0.0f32, 0.0, 0.0, 1.0], 1, Shape::from_array([4]));
-        let v2 = Tensor::from_vec(vec![1.0f32, 0.0, 0.0, 1.0], 1, Shape::from_array([4]));
+        let v1 = Tensor::from_vec(
+            vec![0.0f32, 0.0, 0.0, 1.0],
+            1,
+            Shape::from_array([4]),
+            &galois::Device::Cpu,
+        )
+        .unwrap();
+        let v2 = Tensor::from_vec(
+            vec![1.0f32, 0.0, 0.0, 1.0],
+            1,
+            Shape::from_array([4]),
+            &galois::Device::Cpu,
+        )
+        .unwrap();
         v1.vector_serialize(&mut cursor).unwrap();
         v2.vector_serialize(&mut cursor).unwrap();
         let entry = TensorEntry::default();

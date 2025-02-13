@@ -7,6 +7,7 @@ pub mod disk;
 pub mod query;
 pub mod schema;
 mod searcher;
+use galois::TensorProto;
 mod tokenize;
 pub mod util;
 use crate::config::Config;
@@ -37,7 +38,7 @@ pub mod wal;
 use crate::ann::Ann;
 use crate::ann::HNSW;
 use crate::disk::GyWrite;
-use crate::schema::VectorOps;
+use crate::schema::VectorFrom;
 use crate::schema::VectorSerialize;
 use ann::Metric;
 use buffer::{
@@ -98,13 +99,17 @@ impl Index {
     pub fn close() {}
 }
 
-unsafe impl<V: VectorSerialize + ValueSized + VectorOps + Clone + 'static> Send for VectorEngine<V> where
-    V: Metric<V>
+unsafe impl<V: VectorSerialize + ValueSized + VectorFrom + Clone + TensorProto + 'static> Send
+    for VectorEngine<V>
+where
+    V: Metric<V>,
 {
 }
 
-unsafe impl<V: VectorSerialize + ValueSized + VectorOps + Clone + 'static> Sync for VectorEngine<V> where
-    V: Metric<V>
+unsafe impl<V: VectorSerialize + ValueSized + VectorFrom + Clone + TensorProto + 'static> Sync
+    for VectorEngine<V>
+where
+    V: Metric<V>,
 {
 }
 
@@ -212,9 +217,9 @@ impl Engine {
     }
 }
 
-struct VectorIndexBase<V: VectorSerialize + Clone>(RwLock<Ann<V>>);
+struct VectorIndexBase<V: VectorSerialize + TensorProto + Clone>(RwLock<Ann<V>>);
 
-impl<V: VectorSerialize + Clone> VectorIndexBase<V>
+impl<V: VectorSerialize + TensorProto + Clone> VectorIndexBase<V>
 where
     V: Metric<V>,
 {
@@ -231,7 +236,7 @@ where
     }
 }
 
-impl<V: VectorSerialize + Clone> VectorSerialize for VectorIndexBase<V> {
+impl<V: VectorSerialize + TensorProto + Clone> VectorSerialize for VectorIndexBase<V> {
     fn vector_deserialize<R: std::io::Read + GyRead>(
         reader: &mut R,
         entry: &TensorEntry,
@@ -253,8 +258,9 @@ impl<V: VectorSerialize + Clone> VectorSerialize for VectorIndexBase<V> {
 }
 
 //向量搜索
-pub struct VectorEngine<V: VectorSerialize + ValueSized + VectorOps + Clone + 'static>
-where
+pub struct VectorEngine<
+    V: VectorSerialize + TensorProto + ValueSized + VectorFrom + Clone + 'static,
+> where
     V: Metric<V>,
 {
     vector_field: Arc<VectorIndexBase<V>>,
@@ -264,7 +270,7 @@ where
     rw_lock: Mutex<()>,
 }
 
-impl<V: VectorSerialize + ValueSized + VectorOps + Clone + 'static> VectorEngine<V>
+impl<V: VectorSerialize + TensorProto + ValueSized + VectorFrom + Clone + 'static> VectorEngine<V>
 where
     V: Metric<V>,
 {
@@ -1075,7 +1081,7 @@ mod tests {
             let mut d1 = Document::new();
             d1.add_text(field_id_title.clone(), "Can I sign up for Medicare Part B if I am working and have health insurance through an employer?");
 
-            let v1 = Vector::from_array([0.0, 0.0, 0.0, 1.0], d1);
+            let v1 = Vector::from_array([0.0, 0.0, 0.0, 1.0], d1).unwrap();
 
             collect.add(v1).unwrap();
 
@@ -1084,14 +1090,14 @@ mod tests {
                 field_id_title.clone(),
                 "Will my Medicare premiums be higher because of my higher income?",
             );
-            let v2 = Vector::from_array([0.0, 0.0, 1.0, 0.0], d2);
+            let v2 = Vector::from_array([0.0, 0.0, 1.0, 0.0], d2).unwrap();
 
             collect.add(v2).unwrap();
 
             let mut d3 = Document::new();
             d3.add_text(field_id_title.clone(), "ff cc aa");
 
-            let v3 = Vector::from_array([0.0, 1.0, 0.0, 0.0], d3);
+            let v3 = Vector::from_array([0.0, 1.0, 0.0, 0.0], d3).unwrap();
 
             collect.add(v3).unwrap();
 
@@ -1100,7 +1106,7 @@ mod tests {
                 field_id_title.clone(),
                 "Should I sign up for Medicare Part B if I have Veterans' Benefits?",
             );
-            let v4 = Vector::from_array([1.0, 0.0, 0.0, 0.0], d4);
+            let v4 = Vector::from_array([1.0, 0.0, 0.0, 0.0], d4).unwrap();
             collect.add(v4).unwrap();
 
             // let mut d5 = Document::new();
@@ -1208,22 +1214,22 @@ mod tests {
 
             let mut d5 = Document::new();
             d5.add_text(field_id_title.clone(), "cc");
-            let v5 = Vector::from_array([0.0, 0.0, 1.0, 1.0], d5);
+            let v5 = Vector::from_array([0.0, 0.0, 1.0, 1.0], d5).unwrap();
             collect.add(v5).unwrap();
 
             let mut d6 = Document::new();
             d6.add_text(field_id_title.clone(), "aa");
-            let v6 = Vector::from_array([0.0, 1.0, 1.0, 0.0], d6);
+            let v6 = Vector::from_array([0.0, 1.0, 1.0, 0.0], d6).unwrap();
             collect.add(v6).unwrap();
 
             let mut d7 = Document::new();
             d7.add_text(field_id_title.clone(), "ff");
-            let v7 = Vector::from_array([1.0, 0.0, 0.0, 1.0], d7);
+            let v7 = Vector::from_array([1.0, 0.0, 0.0, 1.0], d7).unwrap();
             collect.add(v7).unwrap();
 
             let mut d8 = Document::new();
             d8.add_text(field_id_title.clone(), "gg");
-            let d8 = Vector::from_array([1.0, 1.0, 0.0, 0.0], d8);
+            let d8 = Vector::from_array([1.0, 1.0, 0.0, 0.0], d8).unwrap();
             collect.add(d8).unwrap();
 
             //  collect.commit().unwrap();
@@ -1232,7 +1238,13 @@ mod tests {
         let reader = collect.reader();
         let p = reader
             .query(
-                &Tensor::from_vec(vec![0.0f32, 0.0, 1.0, 0.0], 1, Shape::from_array([4])),
+                &Tensor::from_vec(
+                    vec![0.0f32, 0.0, 1.0, 0.0],
+                    1,
+                    Shape::from_array([4]),
+                    &galois::Device::Cpu,
+                )
+                .unwrap(),
                 4,
                 &None,
             )
@@ -1277,7 +1289,13 @@ mod tests {
 
         let p = disk_reader
             .query(
-                &Tensor::from_vec(vec![0.0f32, 0.0, 1.0, 0.0], 1, Shape::from_array([4])),
+                &Tensor::from_vec(
+                    vec![0.0f32, 0.0, 1.0, 0.0],
+                    1,
+                    Shape::from_array([4]),
+                    &galois::Device::Cpu,
+                )
+                .unwrap(),
                 4,
                 &None,
             )
@@ -1308,7 +1326,13 @@ mod tests {
         let disk_reader = DiskStoreReader::open(PathBuf::from("./data3/my_index")).unwrap();
         let p = disk_reader
             .query(
-                &Tensor::from_vec(vec![1.0f32, 0.0, 0.0, 1.0], 1, Shape::from_array([4])),
+                &Tensor::from_vec(
+                    vec![1.0f32, 0.0, 0.0, 1.0],
+                    1,
+                    Shape::from_array([4]),
+                    &galois::Device::Cpu,
+                )
+                .unwrap(),
                 4,
                 &None,
             )
@@ -1681,26 +1705,26 @@ mod tests {
             let mut d1 = Document::new();
             d1.add_text(field_id_title.clone(), "aa");
 
-            let v1 = Vector::from_array([0.0, 0.0, 0.0, 1.0], d1);
+            let v1 = Vector::from_array([0.0, 0.0, 0.0, 1.0], d1).unwrap();
 
             collect.add(v1).unwrap();
 
             let mut d2 = Document::new();
             d2.add_text(field_id_title.clone(), "cc");
-            let v2 = Vector::from_array([0.0, 0.0, 1.0, 0.0], d2);
+            let v2 = Vector::from_array([0.0, 0.0, 1.0, 0.0], d2).unwrap();
 
             collect.add(v2).unwrap();
 
             let mut d3 = Document::new();
             d3.add_text(field_id_title.clone(), "aa");
 
-            let v3 = Vector::from_array([0.0, 1.0, 0.0, 0.0], d3);
+            let v3 = Vector::from_array([0.0, 1.0, 0.0, 0.0], d3).unwrap();
 
             collect.add(v3).unwrap();
 
             let mut d4 = Document::new();
             d4.add_text(field_id_title.clone(), "bb");
-            let v4 = Vector::from_array([1.0, 0.0, 0.0, 0.0], d4);
+            let v4 = Vector::from_array([1.0, 0.0, 0.0, 0.0], d4).unwrap();
             collect.add(v4).unwrap();
         }
         println!(
@@ -1747,7 +1771,13 @@ mod tests {
         let reader = collect.reader();
         let p = reader
             .query(
-                &Tensor::from_vec(vec![0.0f32, 0.0, 1.0, 0.0], 1, Shape::from_array([4])),
+                &Tensor::from_vec(
+                    vec![0.0f32, 0.0, 1.0, 0.0],
+                    1,
+                    Shape::from_array([4]),
+                    &galois::Device::Cpu,
+                )
+                .unwrap(),
                 4,
                 &None,
             )
@@ -1762,22 +1792,22 @@ mod tests {
 
         let mut d5 = Document::new();
         d5.add_text(field_id_title.clone(), "cc");
-        let v5 = Vector::from_array([0.0, 0.0, 1.0, 1.0], d5);
+        let v5 = Vector::from_array([0.0, 0.0, 1.0, 1.0], d5).unwrap();
         collect.add(v5).unwrap();
 
         let mut d6 = Document::new();
         d6.add_text(field_id_title.clone(), "aa");
-        let v6 = Vector::from_array([0.0, 1.0, 1.0, 0.0], d6);
+        let v6 = Vector::from_array([0.0, 1.0, 1.0, 0.0], d6).unwrap();
         collect.add(v6).unwrap();
 
         let mut d7 = Document::new();
         d7.add_text(field_id_title.clone(), "ff");
-        let v7 = Vector::from_array([1.0, 0.0, 0.0, 1.0], d7);
+        let v7 = Vector::from_array([1.0, 0.0, 0.0, 1.0], d7).unwrap();
         collect.add(v7).unwrap();
 
         let mut d8 = Document::new();
         d8.add_text(field_id_title.clone(), "gg");
-        let d8 = Vector::from_array([1.0, 1.0, 0.0, 0.0], d8);
+        let d8 = Vector::from_array([1.0, 1.0, 0.0, 0.0], d8).unwrap();
         collect.add(d8).unwrap();
     }
 }

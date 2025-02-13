@@ -1,5 +1,6 @@
 use crate::PathBuf;
 use fst::Error as FstError;
+use galois::error::GError;
 use jiebars::Jieba;
 use std::io;
 use std::io::Error as IOError;
@@ -58,6 +59,8 @@ pub enum GyError {
     ErrSendInvalid(String),
     #[error("term not found:{0}")]
     ErrTermNotFound(String),
+    #[error("Gerror:{0}")]
+    ErrGError(GError),
 }
 
 impl From<&str> for GyError {
@@ -117,5 +120,11 @@ impl From<serde_json::Error> for GyError {
 impl<T> From<SendError<T>> for GyError {
     fn from(e: SendError<T>) -> Self {
         GyError::ErrSendInvalid(e.to_string())
+    }
+}
+
+impl From<GError> for GyError {
+    fn from(e: GError) -> Self {
+        GyError::ErrGError(e)
     }
 }

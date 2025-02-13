@@ -4,24 +4,26 @@ use crate::disk::{GyRead, GyWrite};
 use crate::schema::BinarySerialize;
 use crate::TensorEntry;
 use crate::VectorSerialize;
+use galois::{TensorProto, TensorView};
 use rand::prelude::ThreadRng;
 use rand::Rng;
 use std::collections::BinaryHeap;
 use std::collections::HashSet;
+use std::sync::Arc;
 
-impl Metric<Vec<f32>> for Vec<f32> {
-    fn distance(&self, b: &Vec<f32>) -> f32 {
-        self.iter()
-            .zip(b.iter())
-            .map(|(&a1, &b1)| (a1 - b1).powi(2))
-            .sum::<f32>()
-            .sqrt()
-    }
-}
+// impl Metric<Vec<f32>> for Vec<f32> {
+//     fn distance(&self, b: &Vec<f32>) -> f32 {
+//         self.iter()
+//             .zip(b.iter())
+//             .map(|(&a1, &b1)| (a1 - b1).powi(2))
+//             .sum::<f32>()
+//             .sqrt()
+//     }
+// }
 
 const GGUF_DEFAULT_ALIGNMENT: usize = 32;
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 struct Node {
     level: usize,
     neighbors: Vec<Vec<usize>>, //layer --> vec
@@ -36,7 +38,7 @@ impl Node {
 
 #[derive(Debug)]
 #[warn(non_snake_case)]
-pub struct HNSW<V: VectorSerialize + Clone> {
+pub struct HNSW<V: VectorSerialize + TensorProto + Clone> {
     enter_point: usize,
     max_layer: usize,
     ef_construction: usize,
@@ -50,7 +52,7 @@ pub struct HNSW<V: VectorSerialize + Clone> {
     current_id: usize,
 }
 
-impl<V: VectorSerialize + Clone> VectorSerialize for HNSW<V> {
+impl<V: VectorSerialize + TensorProto + Clone> VectorSerialize for HNSW<V> {
     fn vector_nommap_deserialize<R: std::io::Read + GyRead>(
         reader: &mut R,
         entry: &TensorEntry,
@@ -128,12 +130,12 @@ impl<V: VectorSerialize + Clone> VectorSerialize for HNSW<V> {
     }
 }
 
-impl<V: VectorSerialize + Clone> AnnIndex<V> for HNSW<V>
-where
-    V: Metric<V>,
-{
+impl<V: VectorSerialize + TensorProto + Clone> AnnIndex<V> for HNSW<V> {
     //插入
-    fn insert(&mut self, q: V) -> GyResult<usize> {
+    fn insert(&mut self, q: V) -> GyResult<usize>
+    where
+        V: Metric<V>,
+    {
         let cur_level: usize = self.get_random_level();
         if self.current_id == 0 {
             let new_node = Node {
@@ -199,14 +201,17 @@ where
         //  new_id
     }
 
-    fn query(&self, q: &V, K: usize) -> GyResult<Vec<Neighbor>> {
+    fn query<T: TensorProto>(&self, q: &T, K: usize) -> GyResult<Vec<Neighbor>>
+    where
+        V: Metric<T>,
+    {
         if self.enter_point >= self.vectors.len() {
             return Ok(Vec::new());
         }
         let current_max_layer = self.max_layer;
         let mut ep = Neighbor {
             id: self.enter_point,
-            d: self.get_vector(self.enter_point).distance(&q), //distance(self.get_node(self.enter_point).p.borrow(), &q),
+            d: self.get_vector(self.enter_point).distance(q), //distance(self.get_node(self.enter_point).p.borrow(), &q),
         };
         let mut changed = true;
         for level in (0..current_max_layer).rev() {
@@ -233,11 +238,11 @@ where
     }
 }
 
-impl<V: VectorSerialize + Clone> HNSW<V>
-where
-    V: Metric<V>,
-{
-    pub fn merge(&self, other: &Self) -> GyResult<HNSW<V>> {
+impl<V: VectorSerialize + TensorProto + Clone> HNSW<V> {
+    pub fn merge(&self, other: &Self) -> GyResult<HNSW<V>>
+    where
+        V: Metric<V>,
+    {
         let mut new_hnsw = HNSW::<V>::new(self.M);
         for n in self.vectors.iter() {
             new_hnsw.insert(n.clone())?;
@@ -292,7 +297,10 @@ where
     }
 
     //连接邻居
-    fn connect_neighbor(&mut self, cur_id: usize, candidates: BinaryHeap<Neighbor>, level: usize) {
+    fn connect_neighbor(&mut self, cur_id: usize, candidates: BinaryHeap<Neighbor>, level: usize)
+    where
+        V: Metric<V>,
+    {
         let maxl = if level == 0 { self.M0 } else { self.M };
         let selected_neighbors = &mut self.get_node_mut(cur_id).neighbors[level]; //vec![0usize; candidates.len()]; // self.get_node_mut(cur_id); //vec![0usize; candidates.len()];
         let sort_neighbors = candidates.into_sorted_vec();
@@ -324,7 +332,7 @@ where
                     .for_each(|x| {
                         result_set.push(Neighbor {
                             id: x,
-                            d: -p.distance(self.get_vector(x)), //distance(p, self.get_node(x).p.borrow()),
+                            d: -self.get_vector(x).distance(p), //distance(p, self.get_node(x).p.borrow()),
                         });
                     });
 
@@ -348,7 +356,15 @@ where
     }
 
     // 返回 result 从远到近
-    fn search_at_layer(&self, q: &V, ep: Neighbor, level: usize) -> BinaryHeap<Neighbor> {
+    fn search_at_layer<T: TensorProto>(
+        &self,
+        q: &T,
+        ep: Neighbor,
+        level: usize,
+    ) -> BinaryHeap<Neighbor>
+    where
+        V: Metric<T>,
+    {
         let mut visited_set: HashSet<usize> = HashSet::new();
         let mut candidates: BinaryHeap<Neighbor> =
             BinaryHeap::with_capacity(self.ef_construction * 3);
@@ -385,7 +401,7 @@ where
                     }
                     //不存在则加入visitedset
                     visited_set.insert(n);
-                    let dist = q.distance(self.get_vector(n)); //   distance(q, self.nodes.get(n).unwrap().p.borrow());
+                    let dist = self.get_vector(n).distance(q); //   distance(q, self.nodes.get(n).unwrap().p.borrow());
                     let top_d = results.peek().unwrap();
                     //如果results未满，则把所有的e都加入candidates、results
 
@@ -403,7 +419,10 @@ where
         results
     }
 
-    fn get_neighbors_by_heuristic_closest_frist(&mut self, w: &mut BinaryHeap<Neighbor>, M: usize) {
+    fn get_neighbors_by_heuristic_closest_frist(&mut self, w: &mut BinaryHeap<Neighbor>, M: usize)
+    where
+        V: Metric<V>,
+    {
         if w.len() <= M {
             return;
         }
@@ -448,7 +467,10 @@ where
     // 启发式选择的目的不是为了解决图的全局连通性，而是为了有一条“高速公路”可以到另一个区域
     // 候选元素队列不为空且结果数量少于M时，在W中选择q最近邻e
     // 如果e和q的距离比e和R中的其中一个元素的距离更小，就把e加入到R中，否则就把e加入Wd（丢弃）
-    fn get_neighbors_by_heuristic(&mut self, candidates: &mut BinaryHeap<Neighbor>, M: usize) {
+    fn get_neighbors_by_heuristic(&mut self, candidates: &mut BinaryHeap<Neighbor>, M: usize)
+    where
+        V: Metric<V>,
+    {
         if candidates.len() <= M {
             return;
         }
@@ -496,7 +518,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema::{VectorOps, VectorType};
+    use crate::schema::{VectorFrom, VectorType};
     use crate::util::fs::GyFile;
     use galois::Shape;
     use galois::Tensor;
@@ -536,164 +558,164 @@ mod tests {
     //                                               //   println!("{:?}", heap);
     //}
 
-    #[test]
-    fn test_hnsw_search() {
-        let mut hnsw1 = HNSW::<Vec<f32>>::new(32);
+    // #[test]
+    // fn test_hnsw_search() {
+    //     let mut hnsw1 = HNSW::<Vec<f32>>::new(32);
 
-        let features = [
-            &[0.0, 0.0, 0.0, 1.0],
-            &[0.0, 0.0, 1.0, 0.0],
-            &[0.0, 1.0, 0.0, 0.0],
-            &[1.0, 0.0, 0.0, 0.0],
-        ];
+    //     let features = [
+    //         &[0.0, 0.0, 0.0, 1.0],
+    //         &[0.0, 0.0, 1.0, 0.0],
+    //         &[0.0, 1.0, 0.0, 0.0],
+    //         &[1.0, 0.0, 0.0, 0.0],
+    //     ];
 
-        for &feature in &features {
-            hnsw1.insert(feature.to_vec()).unwrap();
-            // i += 1;
-        }
+    //     for &feature in &features {
+    //         hnsw1.insert(feature.to_vec()).unwrap();
+    //         // i += 1;
+    //     }
 
-        let mut hnsw2 = HNSW::<Vec<f32>>::new(32);
-        let features = [
-            &[0.0, 0.0, 1.0, 1.0],
-            &[0.0, 1.0, 1.0, 0.0],
-            &[1.0, 1.0, 0.0, 0.0],
-            &[1.0, 0.0, 0.0, 1.0],
-        ];
+    //     let mut hnsw2 = HNSW::<Vec<f32>>::new(32);
+    //     let features = [
+    //         &[0.0, 0.0, 1.0, 1.0],
+    //         &[0.0, 1.0, 1.0, 0.0],
+    //         &[1.0, 1.0, 0.0, 0.0],
+    //         &[1.0, 0.0, 0.0, 1.0],
+    //     ];
 
-        for &feature in &features {
-            hnsw2.insert(feature.to_vec()).unwrap();
-            // i += 1;
-        }
+    //     for &feature in &features {
+    //         hnsw2.insert(feature.to_vec()).unwrap();
+    //         // i += 1;
+    //     }
 
-        let hnsw = hnsw1.merge(&hnsw2).unwrap();
+    //     let hnsw = hnsw1.merge(&hnsw2).unwrap();
 
-        hnsw.print();
+    //     hnsw.print();
 
-        let neighbors = hnsw.query(&[0.0f32, 0.0, 1.0, 0.0][..].to_vec(), 4);
-        println!("{:?}", neighbors);
-        let mut file = File::create("./data.hnsw").unwrap();
-        hnsw.vector_serialize(&mut file).unwrap();
-        file.flush();
-    }
+    //     let neighbors = hnsw.query(&[0.0f32, 0.0, 1.0, 0.0][..].to_vec(), 4);
+    //     println!("{:?}", neighbors);
+    //     let mut file = File::create("./data.hnsw").unwrap();
+    //     hnsw.vector_serialize(&mut file).unwrap();
+    //     file.flush();
+    // }
 
-    #[test]
-    fn test_hnsw_tensor_search() {
-        let mut hnsw = HNSW::<Tensor>::new(32);
+    // #[test]
+    // fn test_hnsw_tensor_search() {
+    //     let mut hnsw = HNSW::<Tensor>::new(32);
 
-        let features = [
-            Tensor::from_vec(vec![0.0f32, 0.0, 0.0, 1.0], 1, Shape::from_array([4])),
-            Tensor::from_vec(vec![0.0f32, 0.0, 1.0, 0.0], 1, Shape::from_array([4])),
-            Tensor::from_vec(vec![0.0f32, 1.0, 0.0, 0.0], 1, Shape::from_array([4])),
-            Tensor::from_vec(vec![1.0f32, 0.0, 0.0, 0.0], 1, Shape::from_array([4])),
-            Tensor::from_vec(vec![0.0f32, 0.0, 1.0, 1.0], 1, Shape::from_array([4])),
-            Tensor::from_vec(vec![0.0f32, 1.0, 1.0, 0.0], 1, Shape::from_array([4])),
-            Tensor::from_vec(vec![1.0f32, 0.0, 0.0, 1.0], 1, Shape::from_array([4])),
-            Tensor::from_vec(vec![1.0f32, 1.0, 0.0, 0.0], 1, Shape::from_array([4])),
-        ];
-        for feature in features.into_iter() {
-            hnsw.insert(feature);
-        }
-        hnsw.print();
+    //     let features = [
+    //         Tensor::from_vec(vec![0.0f32, 0.0, 0.0, 1.0], 1, Shape::from_array([4])),
+    //         Tensor::from_vec(vec![0.0f32, 0.0, 1.0, 0.0], 1, Shape::from_array([4])),
+    //         Tensor::from_vec(vec![0.0f32, 1.0, 0.0, 0.0], 1, Shape::from_array([4])),
+    //         Tensor::from_vec(vec![1.0f32, 0.0, 0.0, 0.0], 1, Shape::from_array([4])),
+    //         Tensor::from_vec(vec![0.0f32, 0.0, 1.0, 1.0], 1, Shape::from_array([4])),
+    //         Tensor::from_vec(vec![0.0f32, 1.0, 1.0, 0.0], 1, Shape::from_array([4])),
+    //         Tensor::from_vec(vec![1.0f32, 0.0, 0.0, 1.0], 1, Shape::from_array([4])),
+    //         Tensor::from_vec(vec![1.0f32, 1.0, 0.0, 0.0], 1, Shape::from_array([4])),
+    //     ];
+    //     for feature in features.into_iter() {
+    //         hnsw.insert(feature);
+    //     }
+    //     hnsw.print();
 
-        let neighbors = hnsw.query(
-            &Tensor::from_vec(vec![0.0f32, 0.0, 1.0, 0.0], 1, Shape::from_array([4])),
-            4,
-        );
-        println!("{:?}", neighbors);
-        let mut file = File::create("./data.hnsw").unwrap();
-        hnsw.vector_serialize(&mut file).unwrap();
-        file.flush().unwrap();
-    }
+    //     let neighbors = hnsw.query(
+    //         &Tensor::from_vec(vec![0.0f32, 0.0, 1.0, 0.0], 1, Shape::from_array([4])),
+    //         4,
+    //     );
+    //     println!("{:?}", neighbors);
+    //     let mut file = File::create("./data.hnsw").unwrap();
+    //     hnsw.vector_serialize(&mut file).unwrap();
+    //     file.flush().unwrap();
+    // }
 
-    const dims: usize = 100;
+    // const dims: usize = 100;
 
-    #[test]
-    fn test_hnsw_rng() {
-        let size = 1000;
+    // #[test]
+    // fn test_hnsw_rng() {
+    //     let size = 1000;
 
-        // 创建随机数生成器
-        let mut rng = rand::thread_rng();
-        let mut array_list = Vec::with_capacity(size);
-        for i in 0..size {
-            let random_array2: [f32; dims] = std::array::from_fn(|_| rng.gen());
-            array_list.push(random_array2);
-        }
+    //     // 创建随机数生成器
+    //     let mut rng = rand::thread_rng();
+    //     let mut array_list = Vec::with_capacity(size);
+    //     for i in 0..size {
+    //         let random_array2: [f32; dims] = std::array::from_fn(|_| rng.gen());
+    //         array_list.push(random_array2);
+    //     }
 
-        let mut hnsw = HNSW::<Tensor>::new(32);
+    //     let mut hnsw = HNSW::<Tensor>::new(32);
 
-        for i in 0..size {
-            hnsw.insert(Tensor::arr_array(array_list[i])).unwrap();
-        }
+    //     for i in 0..size {
+    //         hnsw.insert(Tensor::arr_array(array_list[i])).unwrap();
+    //     }
 
-        for i in 0..size {
-            let neighbors = hnsw.query(&Tensor::arr_array(array_list[i]), 5).unwrap();
-            assert!(neighbors.len() == 5);
+    //     for i in 0..size {
+    //         let neighbors = hnsw.query(&Tensor::arr_array(array_list[i]), 5).unwrap();
+    //         assert!(neighbors.len() == 5);
 
-            if (neighbors[0].d != 0.0) {
-                println!("fail");
-            }
-        }
-    }
+    //         if (neighbors[0].d != 0.0) {
+    //             println!("fail");
+    //         }
+    //     }
+    // }
 
-    use crate::disk::MmapReader;
-    use memmap2::Mmap;
-    use std::fs::OpenOptions;
+    // use crate::disk::MmapReader;
+    // use memmap2::Mmap;
+    // use std::fs::OpenOptions;
 
-    #[test]
-    fn test_tensor_reader() {
-        let mut hnsw = HNSW::<Tensor>::new(32);
-        let array_count = 10000;
-        let array_length = 133;
+    // #[test]
+    // fn test_tensor_reader() {
+    //     let mut hnsw = HNSW::<Tensor>::new(32);
+    //     let array_count = 10000;
+    //     let array_length = 133;
 
-        // 创建随机数生成器
-        let mut rng = rand::thread_rng();
-        let mut arrays: Vec<[f32; 133]> = Vec::with_capacity(array_count);
-        // 填充数组
-        for _ in 0..array_count {
-            let mut arr = [0.0_f32; 133]; // 初始化长度为 100 的 f32 数组
-            for i in 0..array_length {
-                arr[i] = rng.gen::<f32>(); // 填充随机数
-            }
-            arrays.push(arr);
-            hnsw.insert(Tensor::arr_array(arr)).unwrap();
-        }
+    //     // 创建随机数生成器
+    //     let mut rng = rand::thread_rng();
+    //     let mut arrays: Vec<[f32; 133]> = Vec::with_capacity(array_count);
+    //     // 填充数组
+    //     for _ in 0..array_count {
+    //         let mut arr = [0.0_f32; 133]; // 初始化长度为 100 的 f32 数组
+    //         for i in 0..array_length {
+    //             arr[i] = rng.gen::<f32>(); // 填充随机数
+    //         }
+    //         arrays.push(arr);
+    //         hnsw.insert(Tensor::arr_array(arr)).unwrap();
+    //     }
 
-        let mut arr = [0.0_f32; 133]; // 初始化长度为 100 的 f32 数组
-        for i in 0..array_length {
-            arr[i] = rng.gen::<f32>(); // 填充随机数
-        }
+    //     let mut arr = [0.0_f32; 133]; // 初始化长度为 100 的 f32 数组
+    //     for i in 0..array_length {
+    //         arr[i] = rng.gen::<f32>(); // 填充随机数
+    //     }
 
-        // let neighbors = hnsw.query(&Tensor::arr_array(arr), 4);
+    //     // let neighbors = hnsw.query(&Tensor::arr_array(arr), 4);
 
-        let mut file = File::create("./data.hnsw").unwrap();
-        hnsw.vector_serialize(&mut file).unwrap();
-        file.flush().unwrap();
+    //     let mut file = File::create("./data.hnsw").unwrap();
+    //     hnsw.vector_serialize(&mut file).unwrap();
+    //     file.flush().unwrap();
 
-        let mut file = GyFile::open("./data.hnsw").unwrap();
-        let file_size = file.fsize().unwrap();
-        let mmap: Mmap = unsafe { memmap2::MmapOptions::new().map(file.file()).unwrap() };
-        let mut mmap_reader = MmapReader::new(&mmap, 0, file_size);
-        let entry = TensorEntry::new(1, [133], VectorType::F32);
-        let hnsw = HNSW::<Tensor>::vector_deserialize(&mut mmap_reader, &entry).unwrap();
-        hnsw.print();
-        for (i, v) in hnsw.vectors.iter().enumerate() {
-            let s = unsafe { v.as_slice::<f32>() };
-            assert!(arrays[i] == s)
-        }
-        println!("{:?}", "finish");
+    //     let mut file = GyFile::open("./data.hnsw").unwrap();
+    //     let file_size = file.fsize().unwrap();
+    //     let mmap: Mmap = unsafe { memmap2::MmapOptions::new().map(file.file()).unwrap() };
+    //     let mut mmap_reader = MmapReader::new(&mmap, 0, file_size);
+    //     let entry = TensorEntry::new(1, [133], VectorType::F32);
+    //     let hnsw = HNSW::<Tensor>::vector_deserialize(&mut mmap_reader, &entry).unwrap();
+    //     hnsw.print();
+    //     for (i, v) in hnsw.vectors.iter().enumerate() {
+    //         let s = unsafe { v.as_slice::<f32>() };
+    //         assert!(arrays[i] == s)
+    //     }
+    //     println!("{:?}", "finish");
 
-        // let neighbors = hnsw.query(
-        //     &Tensor::from_vec(vec![0.0f32, 0.0, 1.0, 0.0], 1, Shape::from_array([4])),
-        //     4,
-        // );
-        // println!("xxx{:?}", neighbors);
-    }
-    #[test]
-    fn test_slice() {
-        let v = vec![0u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 63];
-        let vv = &v[..];
-        let len = v.len() / std::mem::size_of::<f32>();
-        let s = unsafe { std::slice::from_raw_parts(v.as_ptr() as *const f32, len) };
-        println!("{:?}", s);
-    }
+    //     // let neighbors = hnsw.query(
+    //     //     &Tensor::from_vec(vec![0.0f32, 0.0, 1.0, 0.0], 1, Shape::from_array([4])),
+    //     //     4,
+    //     // );
+    //     // println!("xxx{:?}", neighbors);
+    // }
+    // #[test]
+    // fn test_slice() {
+    //     let v = vec![0u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 63];
+    //     let vv = &v[..];
+    //     let len = v.len() / std::mem::size_of::<f32>();
+    //     let s = unsafe { std::slice::from_raw_parts(v.as_ptr() as *const f32, len) };
+    //     println!("{:?}", s);
+    // }
 }

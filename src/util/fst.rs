@@ -48,7 +48,7 @@ impl<'a> FstReader<'a> {
 }
 
 #[derive(Clone)]
-pub struct FstItem(pub Cow, pub u64);
+pub struct FstItem(pub FstCow, pub u64);
 
 impl PartialOrd for FstItem {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
@@ -72,12 +72,12 @@ impl Ord for FstItem {
 
 use core::ptr::NonNull;
 #[derive(Clone)]
-pub struct Cow {
+pub struct FstCow {
     ptr: NonNull<u8>,
     len: usize,
 }
 
-impl Cow {
+impl FstCow {
     fn from_raw_parts(ptr: *mut u8, length: usize) -> Self {
         unsafe {
             Self {
@@ -88,7 +88,7 @@ impl Cow {
     }
 }
 
-impl AsRef<[u8]> for Cow {
+impl AsRef<[u8]> for FstCow {
     fn as_ref(&self) -> &[u8] {
         unsafe { std::slice::from_raw_parts(self.ptr.as_ptr() as *const u8, self.len) }
     }
@@ -101,7 +101,7 @@ impl<'a> Iterator for FstReaderIter<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         let (k, v) = self.0.next()?;
         return Some(FstItem(
-            Cow::from_raw_parts(k.as_ptr() as *mut u8, k.len()),
+            FstCow::from_raw_parts(k.as_ptr() as *mut u8, k.len()),
             v.value(),
         ));
     }

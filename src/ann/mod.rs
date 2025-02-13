@@ -10,6 +10,8 @@ use crate::TensorEntry;
 use crate::VectorSerialize;
 use byteorder::LittleEndian;
 use core::cmp::Ordering;
+use galois::TensorProto;
+use galois::TensorView;
 use serde::Deserialize;
 use serde::Serialize;
 use std::io::{Read, Write};
@@ -36,11 +38,21 @@ impl AnnType {
 }
 
 #[derive(Debug)]
-pub enum Ann<V: VectorSerialize + Clone> {
+pub enum Ann<V: VectorSerialize + TensorProto + Clone> {
     HNSW(HNSW<V>),
 }
 
-impl<V: VectorSerialize + Clone> VectorSerialize for Ann<V> {
+// impl<V> ToOwned for Ann<V>
+// where
+//     V: VectorSerialize + TensorProto + Clone,
+// {
+//     type Owned = Ann<V>;
+//     fn to_owned(&self) -> Self::Owned {
+//         self.clone()
+//     }
+// }
+
+impl<V: VectorSerialize + TensorProto + Clone> VectorSerialize for Ann<V> {
     fn vector_deserialize<R: Read + GyRead>(reader: &mut R, entry: &TensorEntry) -> GyResult<Self> {
         let n = usize::binary_deserialize(reader)?;
         let ann_type = AnnType::from_usize(n);
@@ -67,25 +79,31 @@ impl<V: VectorSerialize + Clone> VectorSerialize for Ann<V> {
     }
 }
 
-impl<V: VectorSerialize + Clone> Ann<V>
-where
-    V: Metric<V>,
-{
-    pub fn insert(&mut self, q: V) -> GyResult<usize> {
+impl<V: VectorSerialize + TensorProto + Clone> Ann<V> {
+    pub fn insert(&mut self, q: V) -> GyResult<usize>
+    where
+        V: Metric<V>,
+    {
         match self {
             Ann::HNSW(v) => v.insert(q),
             _ => todo!(),
         }
     }
 
-    pub fn query(&self, q: &V, k: usize) -> GyResult<Vec<Neighbor>> {
+    pub fn query<T: TensorProto>(&self, q: &T, k: usize) -> GyResult<Vec<Neighbor>>
+    where
+        V: Metric<T>,
+    {
         match self {
             Ann::HNSW(v) => v.query(q, k),
             _ => todo!(),
         }
     }
 
-    pub fn merge(&self, other: &Self) -> GyResult<Self> {
+    pub fn merge(&self, other: &Self) -> GyResult<Ann<V>>
+    where
+        V: Metric<V>,
+    {
         match (self, other) {
             (Ann::HNSW(a), Ann::HNSW(b)) => Ok(Ann::HNSW(a.merge(b)?)),
             _ => todo!(),
@@ -93,7 +111,7 @@ where
     }
 }
 
-pub trait Metric<P = Self> {
+pub trait Metric<P: TensorProto> {
     fn distance(&self, b: &P) -> f32;
 }
 
@@ -145,10 +163,11 @@ impl Eq for Neighbor {}
 //     }
 // }
 
-pub trait AnnIndex<V: VectorSerialize>
-where
-    V: Metric<V>,
-{
-    fn insert(&mut self, q: V) -> GyResult<usize>;
-    fn query(&self, q: &V, k: usize) -> GyResult<Vec<Neighbor>>;
+pub trait AnnIndex<V: VectorSerialize + TensorProto> {
+    fn insert(&mut self, q: V) -> GyResult<usize>
+    where
+        V: Metric<V>;
+    fn query<T: TensorProto>(&self, q: &T, k: usize) -> GyResult<Vec<Neighbor>>
+    where
+        V: Metric<T>;
 }
