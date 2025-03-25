@@ -4,6 +4,9 @@ use super::util::error::{GyError, GyResult};
 use super::util::fs::{self};
 use super::util::fst::{FstBuilder, FstReader, FstReaderIter};
 use super::{EngineReader, IndexReader, Meta};
+use crate::ann::AnnFilter;
+use crate::ann::AnnPrioritizer;
+use crate::ann::Emptyer;
 use crate::config::DiskFileMeta;
 use crate::config::TermRange;
 use crate::config::DATA_FILE;
@@ -27,11 +30,11 @@ use crate::Vector;
 use art_tree::Key;
 use bytes::BytesMut;
 use bytes::{Buf, BufMut};
+use galois::similarity::TensorSimilar;
 use galois::TensorView;
 use galois::{Tensor, TensorProto};
 use memmap2::Mmap;
 use std::borrow::Borrow;
-use std::borrow::Cow;
 use std::fs::{read, File};
 use std::io::{BufWriter, Read};
 use std::io::{Seek, SeekFrom, Write};
@@ -187,6 +190,10 @@ where
     }
 }
 
+// struct BufferFileWriter {
+//     BufWriter<File>
+// }
+
 fn open_file_stream(fname: &str) -> GyResult<BufWriter<File>> {
     let file = File::open(fname)?;
     let buf_writer = BufWriter::new(file);
@@ -232,24 +239,9 @@ pub fn merge_much(readers: &[VectorStore], new_fname: &Path, level: usize) -> Gy
     let mut x: &Ann<TensorView<'static>> = Arc::as_ref(&readers[0].get_store().vector_field);
     for e in &readers[1..] {
         let merged: Ann<TensorView<'static>> = x.merge(&e.get_store().vector_field)?;
-        // Now that the merge is done, we can safely reassign x
         v = Some(merged);
         x = v.as_ref().unwrap();
     }
-
-    // let mut x: &Ann<TensorView> = Arc::as_ref(&readers[0].get_store().vector_field);
-    // let mut x = readers[0].get_store().vector_field.clone();
-
-    // // 使用 fold 进行迭代
-    // x = readers[1..]
-    //     .iter()
-    //     .try_fold(x, |accumulated_x, e| -> GyResult<Arc<Ann<TensorView>>> {
-    //         let merged = accumulated_x
-    //             .clone()
-    //             .merge(&e.get_store().vector_field)
-    //             .unwrap();
-    //         Ok(Arc::new(merged))
-    //     })?;
 
     writer.write_vector(x)?;
 
@@ -530,11 +522,6 @@ impl BlockReader for VectorStoreReader {
     }
 }
 
-// pub struct OwnedTensorView {
-//     mmap: Arc<Mmap>,             // 直接持有 Mmap，保证数据存活
-//     tensor: TensorView<'static>, // 让 TensorView 持有 'static 数据
-// }
-
 unsafe impl Send for DiskStoreReader {}
 
 pub struct DiskStoreReader {
@@ -585,7 +572,6 @@ impl DiskStoreReader {
             let bloom = Self::read_at_bh::<GyBloom>(&mmap, meta.bloom_bh)?;
             blooms.push(Arc::new(bloom));
         }
-
         let mut mmap_reader = MmapReader::new(&mmap, vector_meta_bh.start(), vector_meta_bh.end());
         let vector_index =
             Self::read_vector_index::<Ann<TensorView>>(&mut mmap_reader, meta.tensor_entry())?;
@@ -609,7 +595,6 @@ impl DiskStoreReader {
         r: &mut MmapReader,
         entry: &TensorEntry,
     ) -> GyResult<T> {
-        //let mut r = mmap[bh.start()..bh.end()].reader();
         let v = T::vector_deserialize(r, entry)?;
         Ok(v)
     }
@@ -641,7 +626,8 @@ impl DiskStoreReader {
         if let Some(t) = term {
             todo!()
         } else {
-            self.vector_field.query(v, k)
+            self.vector_field
+                .query::<Tensor, Emptyer, Emptyer>(v, k, None, None)
         }
     }
 
@@ -1115,7 +1101,7 @@ impl DiskStoreWriter {
     //     Ok(())
     // }
 
-    fn write_vector<T: TensorProto + VectorSerialize + Clone>(
+    fn write_vector<T: TensorSimilar + VectorSerialize + Clone>(
         &mut self,
         vector_index: &Ann<T>,
     ) -> GyResult<()> {

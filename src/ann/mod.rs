@@ -10,12 +10,60 @@ use crate::TensorEntry;
 use crate::VectorSerialize;
 use byteorder::LittleEndian;
 use core::cmp::Ordering;
-use galois::TensorProto;
-use galois::TensorView;
+use galois::similarity::TensorSimilar;
+use roaring::RoaringBitmap;
 use serde::Deserialize;
 use serde::Serialize;
+use std::collections::HashSet;
 use std::io::{Read, Write};
+
 type Endian = LittleEndian;
+
+pub(crate) struct Emptyer;
+
+impl AnnPrioritizer for Emptyer {
+    fn contains(&self, _id: usize) -> bool {
+        true
+    }
+}
+
+impl AnnFilter for Emptyer {
+    fn filter(&self, _id: usize) -> bool {
+        true
+    }
+}
+
+pub trait AnnPrioritizer {
+    fn contains(&self, id: usize) -> bool;
+}
+
+pub trait AnnFilter {
+    fn filter(&self, id: usize) -> bool;
+}
+
+impl AnnPrioritizer for HashSet<usize> {
+    fn contains(&self, id: usize) -> bool {
+        self.contains(&id)
+    }
+}
+
+impl AnnFilter for HashSet<usize> {
+    fn filter(&self, id: usize) -> bool {
+        self.contains(&id)
+    }
+}
+
+impl AnnPrioritizer for RoaringBitmap {
+    fn contains(&self, id: usize) -> bool {
+        self.contains(id as u32)
+    }
+}
+
+impl AnnFilter for RoaringBitmap {
+    fn filter(&self, id: usize) -> bool {
+        self.contains(id as u32)
+    }
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
 #[repr(usize)]
@@ -38,21 +86,11 @@ impl AnnType {
 }
 
 #[derive(Debug)]
-pub enum Ann<V: VectorSerialize + TensorProto + Clone> {
+pub enum Ann<V: VectorSerialize + TensorSimilar + Clone> {
     HNSW(HNSW<V>),
 }
 
-// impl<V> ToOwned for Ann<V>
-// where
-//     V: VectorSerialize + TensorProto + Clone,
-// {
-//     type Owned = Ann<V>;
-//     fn to_owned(&self) -> Self::Owned {
-//         self.clone()
-//     }
-// }
-
-impl<V: VectorSerialize + TensorProto + Clone> VectorSerialize for Ann<V> {
+impl<V: VectorSerialize + TensorSimilar + Clone> VectorSerialize for Ann<V> {
     fn vector_deserialize<R: Read + GyRead>(reader: &mut R, entry: &TensorEntry) -> GyResult<Self> {
         let n = usize::binary_deserialize(reader)?;
         let ann_type = AnnType::from_usize(n);
@@ -79,7 +117,7 @@ impl<V: VectorSerialize + TensorProto + Clone> VectorSerialize for Ann<V> {
     }
 }
 
-impl<V: VectorSerialize + TensorProto + Clone> Ann<V> {
+impl<V: VectorSerialize + TensorSimilar + Clone> Ann<V> {
     pub fn insert(&mut self, q: V) -> GyResult<usize>
     where
         V: Metric<V>,
@@ -90,12 +128,18 @@ impl<V: VectorSerialize + TensorProto + Clone> Ann<V> {
         }
     }
 
-    pub fn query<T: TensorProto>(&self, q: &T, k: usize) -> GyResult<Vec<Neighbor>>
+    pub fn query<T: TensorSimilar, P: AnnPrioritizer, F: AnnFilter>(
+        &self,
+        q: &T,
+        k: usize,
+        prioritizer: Option<P>,
+        filter: Option<F>,
+    ) -> GyResult<Vec<Neighbor>>
     where
         V: Metric<T>,
     {
         match self {
-            Ann::HNSW(v) => v.query(q, k),
+            Ann::HNSW(v) => v.query(q, k, prioritizer, filter),
             _ => todo!(),
         }
     }
@@ -111,7 +155,7 @@ impl<V: VectorSerialize + TensorProto + Clone> Ann<V> {
     }
 }
 
-pub trait Metric<P: TensorProto> {
+pub trait Metric<P: TensorSimilar> {
     fn distance(&self, b: &P) -> f32;
 }
 
@@ -149,25 +193,17 @@ impl PartialOrd for Neighbor {
 
 impl Eq for Neighbor {}
 
-// pub struct BoxedAnnIndex<V: BinarySerialize>(pub Box<dyn AnnIndex<V>>);
-
-// impl<V: BinarySerialize> BoxedAnnIndex<V>
-// where
-//     V: Metric<V>,
-// {
-//     pub fn insert(&mut self, q: V) -> GyResult<usize> {
-//         self.0.insert(q)
-//     }
-//     pub fn query(&self, q: &V, k: usize) -> GyResult<Vec<Neighbor>> {
-//         self.0.query(q, k)
-//     }
-// }
-
-pub trait AnnIndex<V: VectorSerialize + TensorProto> {
+pub trait AnnIndex<V: VectorSerialize + TensorSimilar> {
     fn insert(&mut self, q: V) -> GyResult<usize>
     where
         V: Metric<V>;
-    fn query<T: TensorProto>(&self, q: &T, k: usize) -> GyResult<Vec<Neighbor>>
+    fn query<T: TensorSimilar, P: AnnPrioritizer, F: AnnFilter>(
+        &self,
+        q: &T,
+        k: usize,
+        prioritizer: Option<P>,
+        filter: Option<F>,
+    ) -> GyResult<Vec<Neighbor>>
     where
         V: Metric<T>;
 }

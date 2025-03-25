@@ -1,15 +1,14 @@
 use super::super::util::error::GyResult;
-use super::{AnnIndex, Metric, Neighbor};
+use super::{AnnFilter, AnnIndex, AnnPrioritizer, Emptyer, Metric, Neighbor};
 use crate::disk::{GyRead, GyWrite};
 use crate::schema::BinarySerialize;
 use crate::TensorEntry;
 use crate::VectorSerialize;
-use galois::{TensorProto, TensorView};
+use galois::similarity::TensorSimilar;
 use rand::prelude::ThreadRng;
 use rand::Rng;
 use std::collections::BinaryHeap;
 use std::collections::HashSet;
-use std::sync::Arc;
 
 // impl Metric<Vec<f32>> for Vec<f32> {
 //     fn distance(&self, b: &Vec<f32>) -> f32 {
@@ -38,7 +37,7 @@ impl Node {
 
 #[derive(Debug)]
 #[warn(non_snake_case)]
-pub struct HNSW<V: VectorSerialize + TensorProto + Clone> {
+pub struct HNSW<V: VectorSerialize + TensorSimilar + Clone> {
     enter_point: usize,
     max_layer: usize,
     ef_construction: usize,
@@ -52,7 +51,7 @@ pub struct HNSW<V: VectorSerialize + TensorProto + Clone> {
     current_id: usize,
 }
 
-impl<V: VectorSerialize + TensorProto + Clone> VectorSerialize for HNSW<V> {
+impl<V: VectorSerialize + TensorSimilar + Clone> VectorSerialize for HNSW<V> {
     fn vector_nommap_deserialize<R: std::io::Read + GyRead>(
         reader: &mut R,
         entry: &TensorEntry,
@@ -73,13 +72,11 @@ impl<V: VectorSerialize + TensorProto + Clone> VectorSerialize for HNSW<V> {
         let node_len = usize::binary_deserialize(reader)?;
         let mut nodes: Vec<Node> = Vec::with_capacity(node_len);
         for _ in 0..node_len {
-            // let p = V::vector_deserialize(reader, entry)?;
             let level = usize::binary_deserialize(reader)?;
             let neighbors: Vec<Vec<usize>> = Vec::<Vec<usize>>::binary_deserialize(reader)?;
             nodes.push(Node {
                 level: level,
                 neighbors: neighbors,
-                //  p: p,
             });
         }
         let position = reader.offset();
@@ -114,15 +111,12 @@ impl<V: VectorSerialize + TensorProto + Clone> VectorSerialize for HNSW<V> {
         self.enter_point.binary_serialize(writer)?;
         self.nodes.len().binary_serialize(writer)?;
         for n in self.nodes.iter() {
-            // n.p.vector_serialize(writer)?;
             n.level.binary_serialize(writer)?;
             n.neighbors.binary_serialize(writer)?;
         }
         let position = writer.get_pos()?;
         let next_position = position - (position % GGUF_DEFAULT_ALIGNMENT) + GGUF_DEFAULT_ALIGNMENT;
-        // println!("position:{},next_position:{}", position, next_position);
         writer.write(&vec![0u8; next_position - position])?;
-        //self.vectors.len().binary_serialize(writer)?;
         for v in self.vectors.iter() {
             v.vector_serialize(writer)?;
         }
@@ -130,7 +124,7 @@ impl<V: VectorSerialize + TensorProto + Clone> VectorSerialize for HNSW<V> {
     }
 }
 
-impl<V: VectorSerialize + TensorProto + Clone> AnnIndex<V> for HNSW<V> {
+impl<V: VectorSerialize + TensorSimilar + Clone> AnnIndex<V> for HNSW<V> {
     //插入
     fn insert(&mut self, q: V) -> GyResult<usize>
     where
@@ -185,7 +179,13 @@ impl<V: VectorSerialize + TensorProto + Clone> AnnIndex<V> for HNSW<V> {
             //从curlevel依次开始往下，每一层寻找离data_point最接近的ef_construction_（构建HNSW是可指定）个节点构成候选集
             for level in (0..core::cmp::min(cur_level, current_max_layer)).rev() {
                 //在每层选择data_point最接近的ef_construction_（构建HNSW是可指定）个节点构成候选集
-                let candidates = self.search_at_layer(self.get_vector(new_id), ep, level);
+                let candidates = self.search_at_layer::<V, Emptyer, Emptyer>(
+                    self.get_vector(new_id),
+                    ep,
+                    level,
+                    &None,
+                    &None,
+                );
                 //连接邻居?
                 self.connect_neighbor(new_id, candidates, level);
             }
@@ -201,7 +201,13 @@ impl<V: VectorSerialize + TensorProto + Clone> AnnIndex<V> for HNSW<V> {
         //  new_id
     }
 
-    fn query<T: TensorProto>(&self, q: &T, K: usize) -> GyResult<Vec<Neighbor>>
+    fn query<T: TensorSimilar, P: AnnPrioritizer, F: AnnFilter>(
+        &self,
+        q: &T,
+        K: usize,
+        prioritizer: Option<P>,
+        filter: Option<F>,
+    ) -> GyResult<Vec<Neighbor>>
     where
         V: Metric<T>,
     {
@@ -230,7 +236,7 @@ impl<V: VectorSerialize + TensorProto + Clone> AnnIndex<V> for HNSW<V> {
                 }
             }
         }
-        let mut x = self.search_at_layer(&q, ep, 0);
+        let mut x = self.search_at_layer(&q, ep, 0, &prioritizer, &filter);
         while x.len() > K {
             x.pop();
         }
@@ -238,7 +244,7 @@ impl<V: VectorSerialize + TensorProto + Clone> AnnIndex<V> for HNSW<V> {
     }
 }
 
-impl<V: VectorSerialize + TensorProto + Clone> HNSW<V> {
+impl<V: VectorSerialize + TensorSimilar + Clone> HNSW<V> {
     pub fn merge(&self, other: &Self) -> GyResult<HNSW<V>>
     where
         V: Metric<V>,
@@ -355,12 +361,32 @@ impl<V: VectorSerialize + TensorProto + Clone> HNSW<V> {
         self.get_node(n).get_neighbors(level)
     }
 
+    // 定义一个辅助函数，根据是否在 prioritized 集合中调整距离
+    fn effective_distance<T: TensorSimilar>(
+        &self,
+        id: usize,
+        q: &T,
+        prioritized: &HashSet<usize>,
+    ) -> f32
+    where
+        V: Metric<T>,
+    {
+        let mut d = self.get_vector(id).distance(q);
+        // 如果该 id 在优先匹配集合中，降低其距离（比如乘以 0.8）
+        if prioritized.contains(&id) {
+            d *= 0.8;
+        }
+        d
+    }
+
     // 返回 result 从远到近
-    fn search_at_layer<T: TensorProto>(
+    fn search_at_layer<T: TensorSimilar, P: AnnPrioritizer, F: AnnFilter>(
         &self,
         q: &T,
         ep: Neighbor,
         level: usize,
+        prioritizer: &Option<P>,
+        filter: &Option<F>,
     ) -> BinaryHeap<Neighbor>
     where
         V: Metric<T>,
@@ -399,9 +425,23 @@ impl<V: VectorSerialize + TensorProto + Clone> HNSW<V> {
                     if visited_set.contains(&n) {
                         return;
                     }
+                    if let Some(fil) = filter {
+                        if fil.filter(n) {
+                            return;
+                        }
+                    }
+
                     //不存在则加入visitedset
                     visited_set.insert(n);
-                    let dist = self.get_vector(n).distance(q); //   distance(q, self.nodes.get(n).unwrap().p.borrow());
+                    let mut dist = self.get_vector(n).distance(q); //   distance(q, self.nodes.get(n).unwrap().p.borrow());
+
+                    // **混合匹配逻辑：如果在 preferred_ids 中，降低它的距离**
+                    if let Some(pri) = prioritizer {
+                        if pri.contains(n) {
+                            dist *= 0.7;
+                        } // 可以调整这个权重，使其更容易进入候选队列
+                    }
+
                     let top_d = results.peek().unwrap();
                     //如果results未满，则把所有的e都加入candidates、results
 
@@ -597,35 +637,46 @@ mod tests {
     //     hnsw.vector_serialize(&mut file).unwrap();
     //     file.flush();
     // }
+    use galois::Device;
+    #[test]
+    fn test_hnsw_tensor_search() {
+        let cpu = Device::Cpu;
+        let mut hnsw = HNSW::<Tensor>::new(32);
 
-    // #[test]
-    // fn test_hnsw_tensor_search() {
-    //     let mut hnsw = HNSW::<Tensor>::new(32);
+        let features = [
+            Tensor::from_vec(vec![0.0f32, 0.0, 0.0, 1.0], 1, Shape::from_array([4]), &cpu).unwrap(),
+            Tensor::from_vec(vec![0.0f32, 0.0, 1.0, 0.0], 1, Shape::from_array([4]), &cpu).unwrap(),
+            Tensor::from_vec(vec![0.0f32, 1.0, 0.0, 0.0], 1, Shape::from_array([4]), &cpu).unwrap(),
+            Tensor::from_vec(vec![1.0f32, 0.0, 0.0, 0.0], 1, Shape::from_array([4]), &cpu).unwrap(),
+            Tensor::from_vec(vec![0.0f32, 0.0, 1.0, 1.0], 1, Shape::from_array([4]), &cpu).unwrap(),
+            Tensor::from_vec(vec![0.0f32, 1.0, 1.0, 0.0], 1, Shape::from_array([4]), &cpu).unwrap(),
+            Tensor::from_vec(vec![1.0f32, 0.0, 0.0, 1.0], 1, Shape::from_array([4]), &cpu).unwrap(),
+            Tensor::from_vec(vec![1.0f32, 1.0, 0.0, 0.0], 1, Shape::from_array([4]), &cpu).unwrap(),
+        ];
+        for feature in features.into_iter() {
+            hnsw.insert(feature);
+        }
+        hnsw.print();
 
-    //     let features = [
-    //         Tensor::from_vec(vec![0.0f32, 0.0, 0.0, 1.0], 1, Shape::from_array([4])),
-    //         Tensor::from_vec(vec![0.0f32, 0.0, 1.0, 0.0], 1, Shape::from_array([4])),
-    //         Tensor::from_vec(vec![0.0f32, 1.0, 0.0, 0.0], 1, Shape::from_array([4])),
-    //         Tensor::from_vec(vec![1.0f32, 0.0, 0.0, 0.0], 1, Shape::from_array([4])),
-    //         Tensor::from_vec(vec![0.0f32, 0.0, 1.0, 1.0], 1, Shape::from_array([4])),
-    //         Tensor::from_vec(vec![0.0f32, 1.0, 1.0, 0.0], 1, Shape::from_array([4])),
-    //         Tensor::from_vec(vec![1.0f32, 0.0, 0.0, 1.0], 1, Shape::from_array([4])),
-    //         Tensor::from_vec(vec![1.0f32, 1.0, 0.0, 0.0], 1, Shape::from_array([4])),
-    //     ];
-    //     for feature in features.into_iter() {
-    //         hnsw.insert(feature);
-    //     }
-    //     hnsw.print();
+        let mut prioritizer = HashSet::<usize>::new();
+        prioritizer.insert(5);
 
-    //     let neighbors = hnsw.query(
-    //         &Tensor::from_vec(vec![0.0f32, 0.0, 1.0, 0.0], 1, Shape::from_array([4])),
-    //         4,
-    //     );
-    //     println!("{:?}", neighbors);
-    //     let mut file = File::create("./data.hnsw").unwrap();
-    //     hnsw.vector_serialize(&mut file).unwrap();
-    //     file.flush().unwrap();
-    // }
+        let mut filter = HashSet::<usize>::new();
+        filter.insert(4);
+        filter.insert(0);
+
+        let neighbors = hnsw.query::<Tensor, HashSet<usize>, HashSet<usize>>(
+            &Tensor::from_vec(vec![0.0f32, 0.0, 1.0, 0.0], 1, Shape::from_array([4]), &cpu)
+                .unwrap(),
+            4,
+            Some(prioritizer),
+            None,
+        );
+        println!("{:?}", neighbors);
+        // let mut file = File::create("./data.hnsw").unwrap();
+        // hnsw.vector_serialize(&mut file).unwrap();
+        // file.flush().unwrap();
+    }
 
     // const dims: usize = 100;
 

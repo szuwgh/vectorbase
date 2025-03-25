@@ -13,13 +13,7 @@ use crate::{
 };
 use lock_api::RawMutex;
 use parking_lot::Mutex;
-use std::{
-    borrow::BorrowMut,
-    cell::RefCell,
-    mem,
-    path::Path,
-    sync::{Arc, RwLock},
-};
+use std::{borrow::BorrowMut, cell::RefCell, mem, sync::Arc};
 use tokio::sync::{mpsc, oneshot, RwLock as ToyRwLock};
 
 enum CompAck {
