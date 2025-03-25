@@ -1,6 +1,6 @@
 use crate::schema::BinarySerialize;
 use crate::GyResult;
-use bloomfilter::{reexports::bit_vec::BitVec, Bloom};
+use bloomfilter::Bloom;
 
 impl BinarySerialize for [(u64, u64); 2] {
     fn binary_deserialize<R: std::io::Read>(reader: &mut R) -> GyResult<Self> {

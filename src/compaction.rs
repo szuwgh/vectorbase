@@ -57,7 +57,6 @@ impl Compaction {
         //重命名文件夹
         fs::rename(tmp_table_dir, &table_dir)?;
         let reader = VectorStore::open(&table_dir)?;
-        //println!("path cur level:{}", self.cur_level);
         self.cur_level = (self.cur_level + 1) % self.max_files_per_level.len();
         Ok(reader)
     }

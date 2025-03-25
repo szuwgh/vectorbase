@@ -7,7 +7,9 @@ pub mod disk;
 pub mod query;
 pub mod schema;
 mod searcher;
-use galois::TensorProto;
+use crate::ann::{AnnFilter, AnnPrioritizer};
+use ann::Emptyer;
+use galois::similarity::TensorSimilar;
 mod tokenize;
 pub mod util;
 use crate::config::Config;
@@ -99,14 +101,14 @@ impl Index {
     pub fn close() {}
 }
 
-unsafe impl<V: VectorSerialize + ValueSized + VectorFrom + Clone + TensorProto + 'static> Send
+unsafe impl<V: VectorSerialize + ValueSized + VectorFrom + Clone + TensorSimilar + 'static> Send
     for VectorEngine<V>
 where
     V: Metric<V>,
 {
 }
 
-unsafe impl<V: VectorSerialize + ValueSized + VectorFrom + Clone + TensorProto + 'static> Sync
+unsafe impl<V: VectorSerialize + ValueSized + VectorFrom + Clone + TensorSimilar + 'static> Sync
     for VectorEngine<V>
 where
     V: Metric<V>,
@@ -128,7 +130,8 @@ impl BlockReader for EngineReader {
             let posing = self.search(t)?;
             todo!()
         } else {
-            self.vector_field.query(v, k)
+            self.vector_field
+                .query::<Emptyer, Emptyer>(v, k, None, None)
         }
     }
 
@@ -140,7 +143,7 @@ impl BlockReader for EngineReader {
         let doc_offset = self.index_reader.index_base.doc_offset(doc_id)?;
         let v: Vector = {
             let wal = self.index_reader.wal.get_borrow();
-            let mut wal_read = WalReader::new(wal, doc_offset, wal.offset());
+            let mut wal_read = WalReader::new(wal, doc_offset);
             Vector::vector_deserialize(&mut wal_read, self.tensor_entry())?
         };
         Ok(v)
@@ -217,14 +220,20 @@ impl Engine {
     }
 }
 
-struct VectorIndexBase<V: VectorSerialize + TensorProto + Clone>(RwLock<Ann<V>>);
+struct VectorIndexBase<V: VectorSerialize + TensorSimilar + Clone>(RwLock<Ann<V>>);
 
-impl<V: VectorSerialize + TensorProto + Clone> VectorIndexBase<V>
+impl<V: VectorSerialize + TensorSimilar + Clone> VectorIndexBase<V>
 where
     V: Metric<V>,
 {
-    pub fn query(&self, v: &V, k: usize) -> GyResult<Vec<Neighbor>> {
-        self.0.read()?.query(&v, k)
+    pub fn query<P: AnnPrioritizer, F: AnnFilter>(
+        &self,
+        v: &V,
+        k: usize,
+        prioritizer: Option<P>,
+        filter: Option<F>,
+    ) -> GyResult<Vec<Neighbor>> {
+        self.0.read()?.query(&v, k, prioritizer, filter)
     }
 
     pub fn insert(&self, v: V) -> GyResult<usize> {
@@ -236,7 +245,7 @@ where
     }
 }
 
-impl<V: VectorSerialize + TensorProto + Clone> VectorSerialize for VectorIndexBase<V> {
+impl<V: VectorSerialize + TensorSimilar + Clone> VectorSerialize for VectorIndexBase<V> {
     fn vector_deserialize<R: std::io::Read + GyRead>(
         reader: &mut R,
         entry: &TensorEntry,
@@ -259,7 +268,7 @@ impl<V: VectorSerialize + TensorProto + Clone> VectorSerialize for VectorIndexBa
 
 //向量搜索
 pub struct VectorEngine<
-    V: VectorSerialize + TensorProto + ValueSized + VectorFrom + Clone + 'static,
+    V: VectorSerialize + TensorSimilar + ValueSized + VectorFrom + Clone + 'static,
 > where
     V: Metric<V>,
 {
@@ -270,7 +279,7 @@ pub struct VectorEngine<
     rw_lock: Mutex<()>,
 }
 
-impl<V: VectorSerialize + TensorProto + ValueSized + VectorFrom + Clone + 'static> VectorEngine<V>
+impl<V: VectorSerialize + TensorSimilar + ValueSized + VectorFrom + Clone + 'static> VectorEngine<V>
 where
     V: Metric<V>,
 {
@@ -433,10 +442,6 @@ impl Meta {
 
 impl IndexBase {
     fn new(schema: &Schema, config: EngineConfig) -> GyResult<IndexBase> {
-        // let index_path = config.get_data_path().join(config.get_index_name());
-        // fs::mkdir(&index_path)?;
-        // FileManager::to_json_file(schema, config.get_schema_path())?;
-
         let buffer_pool = Arc::new(RingBuffer::new());
         let mut field_cache: Vec<FieldCache> = Vec::new();
         for _ in 0..schema.fields.len() {
@@ -453,7 +458,6 @@ impl IndexBase {
                 config.get_io_type(),
             )?)),
             doc_offset: ThreadVec::new(Vec::with_capacity(1024)), // Max memory doc
-            //config: config,
             last_offset: AtomicUsize::new(0),
             jieba: Jieba::new().unwrap(),
         })
@@ -485,14 +489,6 @@ impl IndexBase {
             jieba: Jieba::new().unwrap(),
         })
     }
-
-    // pub(crate) fn get_meta(&self) -> &Meta {
-    //     &self.meta
-    // }
-
-    // fn get_config(&self) -> &Config {
-    //     &self.config
-    // }
 
     fn inner_add(&self, doc_id: DocID, doc: &Document) -> GyResult<()> {
         for field in doc.get_field_values().iter() {
@@ -580,9 +576,6 @@ impl IndexBase {
     fn get_wal_mut(&self) -> &mut Wal {
         self.wal.get_borrow_mut()
     }
-
-    // 手动flush到磁盘中
-    // fn flush(&mut self, path: PathBuf) {}
 }
 
 type Posting = Arc<RwLock<_Posting>>;
@@ -940,7 +933,7 @@ impl IndexReader {
         let doc_offset = self.index_base.doc_offset(doc_id)?;
         let doc: Document = {
             let wal = self.wal.get_borrow();
-            let mut wal_read = WalReader::new(wal, doc_offset, self.last_doc_offset);
+            let mut wal_read = WalReader::new(wal, doc_offset);
             Document::binary_deserialize(&mut wal_read)?
         };
         Ok(doc)
@@ -1163,7 +1156,7 @@ mod tests {
         disk::persist_collection(reader, &schema, &PathBuf::from("./data1").join(DATA_FILE))
             .unwrap();
     }
-
+    use galois::TensorProto;
     #[test]
     fn test_add_vector2() {
         let mut schema = Schema::with_vector(VectorEntry::new(

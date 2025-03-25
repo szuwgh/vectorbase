@@ -72,14 +72,11 @@ impl<'a, V: VectorSerialize> Iterator for WalIter<'a, V> {
 pub struct WalReader<'a> {
     wal: &'a Wal,
     offset: usize,
-    end: usize,
+    //end: usize,
 }
 
 impl<'a> Read for WalReader<'a> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        // if self.offset > self.end {
-        //     return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof));
-        // }
         let i = self
             .wal
             .io_selector
@@ -91,11 +88,11 @@ impl<'a> Read for WalReader<'a> {
 }
 
 impl<'a> WalReader<'a> {
-    pub(crate) fn new(wal: &'a Wal, offset: usize, end: usize) -> WalReader<'a> {
+    pub(crate) fn new(wal: &'a Wal, offset: usize) -> WalReader<'a> {
         WalReader {
             wal: wal,
             offset: offset,
-            end: end,
+            // end: end,
         }
     }
 }
@@ -232,7 +229,7 @@ impl Wal {
     }
 
     pub(crate) fn iter<'a, V: VectorSerialize>(&'a self, entry: TensorEntry) -> WalIter<'a, V> {
-        WalIter::<V>::new(WalReader::new(self, 0, self.offset()), entry)
+        WalIter::<V>::new(WalReader::new(self, 0), entry)
     }
 
     pub(crate) fn get_fname(&self) -> &Path {
@@ -337,7 +334,7 @@ mod tests {
         doc1.binary_serialize(&mut wal).unwrap();
         wal.flush().unwrap();
 
-        let mut wal_read = WalReader::new(&wal, offset, wal.offset());
+        let mut wal_read = WalReader::new(&wal, offset);
         let doc2 = Document::binary_deserialize(&mut wal_read).unwrap();
         println!("doc2:{:?}", doc2);
         assert_eq!(doc1, doc2);
