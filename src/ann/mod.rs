@@ -10,7 +10,7 @@ use crate::TensorEntry;
 use crate::VectorSerialize;
 use byteorder::LittleEndian;
 use core::cmp::Ordering;
-use galois::similarity::TensorSimilar;
+use wwml::similarity::TensorSimilar;
 use roaring::RoaringBitmap;
 use serde::Deserialize;
 use serde::Serialize;

@@ -1,4 +1,4 @@
-use galois::Tensor;
+use wwml::Tensor;
 
 use super::query::{Query, Term};
 use super::schema::{DocID, Document};
