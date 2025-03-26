@@ -1,15 +1,15 @@
 use crate::util::common;
-use galois::TensorProto;
+use wwml::TensorProto;
 // 每一行数据
 use super::ann::{AnnType, Metric};
 use super::disk::{GyRead, GyWrite};
 use super::util::error::{GyError, GyResult};
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use chrono::{TimeZone, Utc};
-use galois::similarity::Similarity;
-use galois::TensorView;
-use galois::{GGmlType, TensorType};
-use galois::{Shape, Tensor};
+use wwml::similarity::Similarity;
+use wwml::TensorView;
+use wwml::{GGmlType, TensorType};
+use wwml::{Shape, Tensor};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Cursor;
@@ -399,7 +399,7 @@ impl VectorSerialize for Tensor {
                 entry.n_dims(),
                 Shape::from_slice(entry.dims()),
                 entry.vector_type().to_ggml_type(),
-                &galois::Device::Cpu,
+                &wwml::Device::Cpu,
             )?
         };
 
@@ -417,7 +417,7 @@ impl VectorSerialize for Tensor {
             entry.n_dims(),
             Shape::from_slice(entry.dims()),
             entry.vector_type().to_ggml_type(),
-            &galois::Device::Cpu,
+            &wwml::Device::Cpu,
         )?;
         Ok(t)
     }
@@ -455,17 +455,17 @@ impl ValueSized for Tensor {
 
 impl VectorFrom for Tensor {
     fn from_arr<T: TensorType, const N: usize>(v: [T; N]) -> GyResult<Self> {
-        let v = Tensor::arr_array(v, &galois::Device::Cpu)?;
+        let v = Tensor::arr_array(v, &wwml::Device::Cpu)?;
         Ok(v)
     }
 
     fn from_vec<T: TensorType>(v: Vec<T>) -> GyResult<Self> {
-        let v = Tensor::arr(v, &galois::Device::Cpu)?;
+        let v = Tensor::arr(v, &wwml::Device::Cpu)?;
         Ok(v)
     }
 
     fn from_slice<T: TensorType>(v: &[T]) -> GyResult<Self> {
-        let v = Tensor::arr_slice(v, &galois::Device::Cpu)?;
+        let v = Tensor::arr_slice(v, &wwml::Device::Cpu)?;
         Ok(v)
     }
 }
@@ -1149,14 +1149,14 @@ mod tests {
             vec![0.0f32, 0.0, 0.0, 1.0],
             1,
             Shape::from_array([4]),
-            &galois::Device::Cpu,
+            &wwml::Device::Cpu,
         )
         .unwrap();
         let v2 = Tensor::from_vec(
             vec![1.0f32, 0.0, 0.0, 1.0],
             1,
             Shape::from_array([4]),
-            &galois::Device::Cpu,
+            &wwml::Device::Cpu,
         )
         .unwrap();
         v1.vector_serialize(&mut cursor).unwrap();

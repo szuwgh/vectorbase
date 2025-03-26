@@ -1,6 +1,6 @@
 use crate::PathBuf;
 use fst::Error as FstError;
-use galois::error::GError;
+use wwml::error::GError;
 use jiebars::Jieba;
 use std::io;
 use std::io::Error as IOError;

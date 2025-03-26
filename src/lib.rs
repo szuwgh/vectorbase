@@ -9,7 +9,7 @@ pub mod schema;
 mod searcher;
 use crate::ann::{AnnFilter, AnnPrioritizer};
 use ann::Emptyer;
-use galois::similarity::TensorSimilar;
+use wwml::similarity::TensorSimilar;
 mod tokenize;
 pub mod util;
 use crate::config::Config;
@@ -19,7 +19,6 @@ use ann::Neighbor;
 use art_tree::{Art, ByteString};
 use core::cell::UnsafeCell;
 use disk::GyRead;
-use galois::Tensor;
 use jiebars::Jieba;
 use query::Term;
 use schema::TensorEntry;
@@ -32,6 +31,7 @@ use util::asyncio::WaitGroup;
 use util::error::{GyError, GyResult};
 use wal::ThreadWal;
 use wal::WalIter;
+use wwml::Tensor;
 mod macros;
 use crate::buffer::SafeAddr;
 use crate::schema::VectorBase;
@@ -973,11 +973,11 @@ mod tests {
     use super::{schema::FieldEntry, *};
     use crate::config::ConfigBuilder;
     use config::{DATA_FILE, WAL_FILE};
-    use galois::Shape;
     use schema::{BinarySerialize, VectorEntry};
     use std::thread;
     use tests::disk::DiskStoreReader;
     use wal::WalIter;
+    use wwml::Shape;
     #[test]
     fn test_add_doc() {
         let mut schema = Schema::new();
@@ -1156,7 +1156,7 @@ mod tests {
         disk::persist_collection(reader, &schema, &PathBuf::from("./data1").join(DATA_FILE))
             .unwrap();
     }
-    use galois::TensorProto;
+    use wwml::TensorProto;
     #[test]
     fn test_add_vector2() {
         let mut schema = Schema::with_vector(VectorEntry::new(
@@ -1235,7 +1235,7 @@ mod tests {
                     vec![0.0f32, 0.0, 1.0, 0.0],
                     1,
                     Shape::from_array([4]),
-                    &galois::Device::Cpu,
+                    &wwml::Device::Cpu,
                 )
                 .unwrap(),
                 4,
@@ -1286,7 +1286,7 @@ mod tests {
                     vec![0.0f32, 0.0, 1.0, 0.0],
                     1,
                     Shape::from_array([4]),
-                    &galois::Device::Cpu,
+                    &wwml::Device::Cpu,
                 )
                 .unwrap(),
                 4,
@@ -1323,7 +1323,7 @@ mod tests {
                     vec![1.0f32, 0.0, 0.0, 1.0],
                     1,
                     Shape::from_array([4]),
-                    &galois::Device::Cpu,
+                    &wwml::Device::Cpu,
                 )
                 .unwrap(),
                 4,
@@ -1768,7 +1768,7 @@ mod tests {
                     vec![0.0f32, 0.0, 1.0, 0.0],
                     1,
                     Shape::from_array([4]),
-                    &galois::Device::Cpu,
+                    &wwml::Device::Cpu,
                 )
                 .unwrap(),
                 4,

@@ -4,7 +4,7 @@ use crate::disk::{GyRead, GyWrite};
 use crate::schema::BinarySerialize;
 use crate::TensorEntry;
 use crate::VectorSerialize;
-use galois::similarity::TensorSimilar;
+use wwml::similarity::TensorSimilar;
 use rand::prelude::ThreadRng;
 use rand::Rng;
 use std::collections::BinaryHeap;
@@ -560,8 +560,8 @@ mod tests {
     use super::*;
     use crate::schema::{VectorFrom, VectorType};
     use crate::util::fs::GyFile;
-    use galois::Shape;
-    use galois::Tensor;
+    use wwml::Shape;
+    use wwml::Tensor;
     use rand::{thread_rng, Rng};
     use std::fs::File;
     use std::{collections::HashMap, io::Write};
@@ -637,7 +637,7 @@ mod tests {
     //     hnsw.vector_serialize(&mut file).unwrap();
     //     file.flush();
     // }
-    use galois::Device;
+    use wwml::Device;
     #[test]
     fn test_hnsw_tensor_search() {
         let cpu = Device::Cpu;
