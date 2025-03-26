@@ -338,8 +338,6 @@ impl CollectionImpl {
         if self.mem.read().await.check_room_for_write(size) {
             return Ok(());
         } else {
-            //wait mem comp
-            //println!("需要进行内存压缩");
             self.wait_mem_compaction().await?;
             let mem_wal = FileManager::get_mem_wal_fname(self.config.get_collection_path())?;
             let imm_wal = FileManager::get_imm_wal_fname(self.config.get_collection_path())?;
@@ -392,8 +390,6 @@ impl CollectionImpl {
                 }
             }
         }
-
-        // let seacher =
 
         Ok(Searcher::new(block_reader_list))
     }
