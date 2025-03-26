@@ -111,7 +111,6 @@ impl Searcher {
     }
 
     pub fn search(&self, term: Term) -> GyResult<impl Iterator<Item = DocumentSet> + '_> {
-        //GyResult<impl Iterator<Item = DocumentSet>> {
         Ok(self.blocks.iter().enumerate().flat_map(move |(i, block)| {
             block
                 .search(&term)
