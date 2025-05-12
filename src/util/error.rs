@@ -1,12 +1,12 @@
 use crate::PathBuf;
 use fst::Error as FstError;
-use wwml::error::GError;
 use jiebars::Jieba;
 use std::io;
 use std::io::Error as IOError;
 use std::sync::{PoisonError, TryLockError};
 use thiserror::Error;
 use tokio::sync::mpsc::error::SendError;
+use wwml::error::GError;
 pub type GyResult<T> = Result<T, GyError>;
 
 #[derive(Error, Debug)]

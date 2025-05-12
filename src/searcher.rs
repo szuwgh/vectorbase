@@ -6,12 +6,10 @@ use super::GyResult;
 use crate::disk::{DiskPostingReader, DiskStoreReader};
 use crate::schema::DocFreq;
 use crate::MemPostingReader;
+use crate::Neighbor;
 use crate::Vector;
-use crate::{EngineReader, Neighbor};
-use std::cmp::Reverse;
 
 use std::collections::BinaryHeap;
-use std::sync::Arc;
 
 // 1. 定义 BlockReader trait
 pub trait BlockReader: Send {
