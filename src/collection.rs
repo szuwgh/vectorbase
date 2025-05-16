@@ -14,7 +14,7 @@ use crate::{
 use lock_api::RawMutex;
 use parking_lot::Mutex;
 use std::{borrow::BorrowMut, cell::RefCell, mem, sync::Arc};
-use tokio::sync::{mpsc, oneshot, RwLock as ToyRwLock};
+use tokio::sync::{mpsc, oneshot, RwLock as TokRwLock};
 
 enum CompAck {
     Done,
@@ -93,9 +93,9 @@ pub struct CollectionImpl {
     config: Config,
     _id_field_id: FieldID,
     id_gen: RefCell<IdGenerator>,
-    mem: ToyRwLock<Engine>,
-    imm: ToyRwLock<Option<Engine>>,
-    disk_reader: ToyRwLock<Option<Vec<VectorStore>>>,
+    mem: TokRwLock<Engine>,
+    imm: TokRwLock<Option<Engine>>,
+    disk_reader: TokRwLock<Option<Vec<VectorStore>>>,
     mcomp_cmd_tx: mpsc::Sender<Command>, //mpsc::Sender<Command>,
     tcomp_cmd_tx: UnbufferedSender<Command>, //mpsc::Sender<Command>,
     mcomp_close_tx: mpsc::Sender<()>,
@@ -150,13 +150,13 @@ impl CollectionImpl {
             config: config,
             _id_field_id: field_id,
             id_gen: RefCell::new(IdGenerator::new()),
-            mem: ToyRwLock::new(mem),
-            imm: ToyRwLock::new(imm),
+            mem: TokRwLock::new(mem),
+            imm: TokRwLock::new(imm),
             mcomp_cmd_tx: mcomp_cmd_tx,
             tcomp_cmd_tx: tcomp_cmd_tx,
             mcomp_close_tx: mcomp_close_tx,
             tcomp_close_tx: tcomp_close_tx,
-            disk_reader: ToyRwLock::new(Some(readers)),
+            disk_reader: TokRwLock::new(Some(readers)),
             mem_lock: Mutex::new(()),
         };
         Ok(colletion)

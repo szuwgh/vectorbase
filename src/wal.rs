@@ -92,7 +92,6 @@ impl<'a> WalReader<'a> {
         WalReader {
             wal: wal,
             offset: offset,
-            // end: end,
         }
     }
 }
