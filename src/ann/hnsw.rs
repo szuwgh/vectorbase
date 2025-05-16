@@ -4,11 +4,11 @@ use crate::disk::{GyRead, GyWrite};
 use crate::schema::BinarySerialize;
 use crate::TensorEntry;
 use crate::VectorSerialize;
-use wwml::similarity::TensorSimilar;
 use rand::prelude::ThreadRng;
 use rand::Rng;
 use std::collections::BinaryHeap;
 use std::collections::HashSet;
+use wwml::similarity::TensorSimilar;
 
 // impl Metric<Vec<f32>> for Vec<f32> {
 //     fn distance(&self, b: &Vec<f32>) -> f32 {
@@ -560,11 +560,11 @@ mod tests {
     use super::*;
     use crate::schema::{VectorFrom, VectorType};
     use crate::util::fs::GyFile;
-    use wwml::Shape;
-    use wwml::Tensor;
     use rand::{thread_rng, Rng};
     use std::fs::File;
     use std::{collections::HashMap, io::Write};
+    use wwml::Shape;
+    use wwml::Tensor;
     #[test]
     fn test_rng() {
         let mut rng = rand::thread_rng();

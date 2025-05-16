@@ -1177,35 +1177,8 @@ mod tests {
             config.get_engine_config(PathBuf::from("./data2").join(WAL_FILE)),
         )
         .unwrap();
-        //let mut writer1 = index.writer().unwrap();
+
         {
-            //writer1.add(1, &d).unwrap();
-
-            // let mut d1 = Document::new();
-            // d1.add_text(field_id_title.clone(), "aa");
-
-            // let v1 = Vector::from_array([0.0, 0.0, 0.0, 1.0], d1);
-
-            // collect.add(v1).unwrap();
-
-            // let mut d2 = Document::new();
-            // d2.add_text(field_id_title.clone(), "cc");
-            // let v2 = Vector::from_array([0.0, 0.0, 1.0, 0.0], d2);
-
-            // collect.add(v2).unwrap();
-
-            // let mut d3 = Document::new();
-            // d3.add_text(field_id_title.clone(), "aa");
-
-            // let v3 = Vector::from_array([0.0, 1.0, 0.0, 0.0], d3);
-
-            // collect.add(v3).unwrap();
-
-            // let mut d4 = Document::new();
-            // d4.add_text(field_id_title.clone(), "aa");
-            // let v4 = Vector::from_array([1.0, 0.0, 0.0, 0.0], d4);
-            // collect.add(v4).unwrap();
-
             let mut d5 = Document::new();
             d5.add_text(field_id_title.clone(), "cc");
             let v5 = Vector::from_array([0.0, 0.0, 1.0, 1.0], d5).unwrap();
