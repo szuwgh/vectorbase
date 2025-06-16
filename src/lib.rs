@@ -4,6 +4,7 @@ pub mod collection;
 mod compaction;
 pub mod config;
 pub mod disk;
+pub mod graph;
 pub mod query;
 pub mod schema;
 mod searcher;
