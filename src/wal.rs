@@ -18,7 +18,7 @@ use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock, Weak};
 
-pub(crate) const DEFAULT_WAL_FILE_SIZE: usize = 2 * 1024 * 1024; //2MB
+pub(crate) const DEFAULT_WAL_FILE_SIZE: usize = 2 * 1024; //2MB
 
 #[derive(Copy, Clone)]
 pub enum IOType {

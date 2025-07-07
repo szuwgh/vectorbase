@@ -22,6 +22,10 @@ impl Compaction {
         }
     }
 
+    pub(crate) fn cur_level(&self) -> usize {
+        self.cur_level
+    }
+
     pub(crate) fn need_table_compact(&mut self, list: &Vec<VectorStore>) -> bool {
         let count = list.iter().filter(|f| f.level() == self.cur_level).count();
         let need = count > self.max_files_per_level[self.cur_level];
@@ -30,6 +34,10 @@ impl Compaction {
             self.cur_level = 0;
         }
         need
+    }
+
+    pub(crate) fn reset(&mut self) {
+        self.cur_level = 0;
     }
 
     /**

@@ -138,6 +138,9 @@ pub(crate) struct DiskFileMeta {
 }
 
 impl DiskFileMeta {
+    //从磁盘加载
+    pub(crate) fn from_path() {}
+
     pub(crate) fn new(
         meta: Meta,
         collection_name: &str,
