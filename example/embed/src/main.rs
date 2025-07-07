@@ -1,5 +1,6 @@
-use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
-use galois::Tensor;
+//use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
+use embed_anything::embeddings::embed::{Embedder, TextEmbedder};
+use embed_anything::embeddings::local::jina::JinaEmbedder;
 use std::path::PathBuf;
 use std::thread;
 use tokio::runtime::Builder;
@@ -16,46 +17,47 @@ use vectorbase::schema::Vector;
 use vectorbase::schema::VectorEntry;
 use vectorbase::schema::VectorType;
 
-async fn test_query(_id_field_id: FieldID) {
-    // With custom InitOptions
-    let model = TextEmbedding::try_new(
-        InitOptions::new(EmbeddingModel::AllMiniLML6V2)
-            .with_show_download_progress(true)
-            .with_cache_dir(PathBuf::from("/opt/rsproject/chappie/rust-lib/model")),
-    )
-    .unwrap();
-    let mut schema = Schema::with_vector(VectorEntry::new(
-        "vector",
-        AnnType::HNSW,
-        TensorEntry::new(1, [384], VectorType::F32),
-    ));
-    schema.add_field(FieldEntry::str("content"));
-    let config = ConfigBuilder::default()
-        .data_path(PathBuf::from("./data"))
-        .collect_name("vector1")
-        .build();
+// async fn test_query(_id_field_id: FieldID) {
+//     // With custom InitOptions
+//     let model = TextEmbedding::try_new(
+//         InitOptions::new(EmbeddingModel::AllMiniLML6V2)
+//             .with_show_download_progress(true)
+//             .with_cache_dir(PathBuf::from("/opt/rsproject/chappie/rust-lib/model")),
+//     )
+//     .unwrap();
+//     let mut schema = Schema::with_vector(VectorEntry::new(
+//         "vector",
+//         AnnType::HNSW,
+//         TensorEntry::new(1, [384], VectorType::F32),
+//     ));
+//     schema.add_field(FieldEntry::str("content"));
+//     let config = ConfigBuilder::default()
+//         .data_path(PathBuf::from("./data"))
+//         .collect_name("vector1")
+//         .build();
 
-    let collection = Collection::new(schema, config).unwrap();
-    let test_doc = vec!["She couldn't remember where she put her glasses"];
-    let embeddings = model.embed(test_doc, None).unwrap();
-    let seacher = collection.searcher().await.unwrap();
-    for ds in seacher
-        .search(Term::from_field_text(_id_field_id, "AAAAAGc8xKcACmIqJoHo"))
-        .unwrap()
-    {
-        let vc = seacher.vector(&ds).unwrap();
-        println!("content:{:?}", vc.doc().get_field_values())
-    }
-}
+//     let collection = Collection::new(schema, config).unwrap();
+//     let test_doc = vec!["She couldn't remember where she put her glasses"];
+//     let embeddings = model.embed(test_doc, None).unwrap();
+//     let seacher = collection.searcher().await.unwrap();
+//     for ds in seacher
+//         .search(Term::from_field_text(_id_field_id, "AAAAAGc8xKcACmIqJoHo"))
+//         .unwrap()
+//     {
+//         let vc = seacher.vector(&ds).unwrap();
+//         println!("content:{:?}", vc.doc().get_field_values())
+//     }
+// }
 
 async fn test_insert(collection: Collection, field_id_content: FieldID) {
     // With custom InitOptions
-    let model = TextEmbedding::try_new(
-        InitOptions::new(EmbeddingModel::AllMiniLML6V2)
-            .with_show_download_progress(true)
-            .with_cache_dir(PathBuf::from("/opt/rsproject/chappie/rust-lib/model")),
-    )
-    .unwrap();
+    // let model = TextEmbedding::try_new(
+    //     InitOptions::new(EmbeddingModel::AllMiniLML6V2)
+    //         .with_show_download_progress(true)
+    //         .with_cache_dir(PathBuf::from("/opt/rsproject/chappie/rust-lib/model")),
+    // )
+    // .unwrap();
+    let embedder = Embedder::Text(TextEmbedder::Jina(Box::new(JinaEmbedder::default())));
 
     let documents = vec![
         "The cat is sleeping under the table.",
@@ -161,15 +163,18 @@ async fn test_insert(collection: Collection, field_id_content: FieldID) {
     ];
     let doc2 = documents.clone();
     // Generate embeddings with the default batch size, 256
-    let embeddings = model.embed(documents, None).unwrap();
+    let embeddings = embedder.embed(&documents, None, None).await.unwrap();
 
     println!("Embeddings length: {}", embeddings.len()); // -> Embeddings length: 4
-    println!("Embedding dimension: {}", embeddings[0].len()); // -> Embedding dimension: 384
+    println!(
+        "Embedding dimension: {}",
+        embeddings[0].to_dense().unwrap().len()
+    ); // -> Embedding dimension: 384
 
     for (i, v) in embeddings.iter().enumerate() {
         let mut d: Document = Document::new();
         d.add_text(field_id_content, doc2[i]);
-        let v6 = Vector::from_slice(v, d);
+        let v6 = Vector::from_slice(&v.to_dense().unwrap(), d).unwrap();
         collection.add(v6).await.unwrap();
         // std::thread::sleep(std::time::Duration::from_secs(1));
     }
@@ -211,6 +216,6 @@ fn main() {
 
     let collection = Collection::new(schema, config).unwrap();
     let _id_field_id = collection.get_schema().get_field("_id").unwrap();
-    pool.block_on(async move { test_query(_id_field_id).await });
-    // pool.block_on(async move { test_insert(collection, field_id_content).await });
+    //pool.block_on(async move { test_query(_id_field_id).await });
+    pool.block_on(async move { test_insert(collection, field_id_content).await });
 }

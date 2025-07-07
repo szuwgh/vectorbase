@@ -1,13 +1,10 @@
-use std::borrow::BorrowMut;
 use std::io::{Read, Write};
 use std::sync::atomic::AtomicUsize;
-use std::sync::RwLock;
 
 use super::util::error::GyResult;
-use std::cell::RefCell;
 use std::cell::UnsafeCell;
 use std::sync::Arc;
-use std::sync::Weak;
+
 use varintrs::{Binary, ReadBytesVarExt, WriteBytesVarExt};
 //参考 lucene 设计 缓存管理
 //https://www.cnblogs.com/forfuture1978/archive/2010/02/02/1661441.html

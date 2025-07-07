@@ -34,7 +34,7 @@ use std::fs::{read, File};
 use std::io::{BufWriter, Read};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use wwml::similarity::TensorSimilar;
 use wwml::TensorView;
@@ -474,6 +474,10 @@ impl VectorStore {
         }
     }
 
+    pub fn delete_id(&self, doc_id: DocID) -> GyResult<()> {
+        todo!("delete_id not implemented for VectorStore");
+    }
+
     pub async fn wait(&self) {
         self.0.wg.wait().await
     }
@@ -533,6 +537,7 @@ pub struct DiskStoreReader {
     fsize: usize,
     mmap: Arc<Mmap>,
     wg: WaitGroup,
+    is_merge: AtomicBool,
 }
 
 impl DiskStoreReader {
