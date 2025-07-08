@@ -28,17 +28,19 @@ use crate::Vector;
 use art_tree::Key;
 use bytes::BytesMut;
 use bytes::{Buf, BufMut};
+use core::slice::Iter;
 use memmap2::Mmap;
 use std::borrow::Borrow;
-use std::fs::{read, File};
+use std::fs::File;
 use std::io::{BufWriter, Read};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use ulid::Ulid;
 use wwml::similarity::TensorSimilar;
+use wwml::Tensor;
 use wwml::TensorView;
-use wwml::{Tensor, TensorProto};
 
 use std::cmp::Ordering as CmpOrdering;
 use std::iter::Peekable;
@@ -200,7 +202,12 @@ fn open_file_stream(fname: &str) -> GyResult<BufWriter<File>> {
 
 struct MergeStore {}
 
-pub fn merge_much(readers: &[VectorStore], new_fname: &Path, level: usize) -> GyResult<()> {
+pub fn merge_much(
+    readers: &[VectorStore],
+    new_fname: &Path,
+    level: usize,
+    segment_name: &Ulid,
+) -> GyResult<()> {
     let mut schema = readers[0].get_store().meta.get_schema();
     let mut new_schema: Option<Schema> = None;
     for e in &readers[1..] {
@@ -212,7 +219,7 @@ pub fn merge_much(readers: &[VectorStore], new_fname: &Path, level: usize) -> Gy
     let doc_num = readers.iter().map(|r| r.get_store().doc_num()).sum();
     let parant: Vec<String> = readers
         .iter()
-        .map(|r| r.get_store().meta.get_collection_name().to_string())
+        .map(|r| r.get_store().meta.get_segment_name().to_string())
         .collect();
     let mut doc_meta: Vec<usize> =
         Vec::with_capacity(readers.iter().map(|r| r.get_store().doc_size()).sum());
@@ -339,7 +346,7 @@ pub fn merge_much(readers: &[VectorStore], new_fname: &Path, level: usize) -> Gy
     if let Some(dir_path) = new_fname.parent() {
         let meta = DiskFileMeta::new(
             Meta::new(new_schema.unwrap()),
-            dir_path.file_name().unwrap().to_str().unwrap(),
+            segment_name.to_string(),
             parant,
             term_range_list,
             newfsize,
@@ -356,6 +363,7 @@ pub fn persist_collection(
     reader: EngineReader,
     schema: &Schema,
     refname: &Path,
+    seg_name: &Ulid,
 ) -> GyResult<usize> {
     let index_reader = reader.index_reader();
     let fname = index_reader.get_wal_path();
@@ -439,11 +447,10 @@ pub fn persist_collection(
     index_reader.reopen_wal(newfsize)?;
     drop(writer);
     if let Some(dir_path) = refname.parent() {
-        //println!("fname:{:?},rename:{:?}", fname, refname);
         std::fs::rename(&fname, &refname)?;
         let meta = DiskFileMeta::new(
             Meta::new(schema.clone()),
-            dir_path.file_name().unwrap().to_str().unwrap(),
+            seg_name.to_string(),
             Vec::new(),
             term_range_list,
             newfsize,
@@ -591,6 +598,7 @@ impl DiskStoreReader {
             fsize: file_size as usize,
             mmap: Arc::new(mmap),
             wg: WaitGroup::new(),
+            is_merge: AtomicBool::new(false),
         })
     }
 
@@ -692,7 +700,7 @@ impl DiskStoreReader {
     }
 
     pub fn collection_name(&self) -> &str {
-        self.meta.get_collection_name()
+        self.meta.get_segment_name()
     }
 
     pub(crate) fn doc_block(&self) -> &[u8] {
@@ -720,7 +728,6 @@ impl DiskStoreReader {
     }
 }
 
-use core::slice::Iter;
 pub struct DiskStoreReaderIter<'a> {
     reader: &'a DiskStoreReader,
     handle_iter: Iter<'a, FieldHandle>,

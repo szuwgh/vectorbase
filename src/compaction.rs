@@ -57,11 +57,12 @@ impl Compaction {
 
     pub(crate) fn compact(&mut self, p: &Path, list: &[VectorStore]) -> GyResult<VectorStore> {
         let level = std::cmp::min(self.cur_level + 1, 4);
-        let table_dir = FileManager::get_next_table_dir(p)?;
+        let segment_name = FileManager::get_segment_name().unwrap();
+        let table_dir = FileManager::get_segment_dir(p, &segment_name)?;
         let tmp_table_dir = table_dir.with_extension("tmp");
         FileManager::mkdir(&tmp_table_dir)?;
         let data_fname = tmp_table_dir.join(DATA_FILE);
-        disk::merge_much(list, &data_fname, level)?;
+        disk::merge_much(list, &data_fname, level, &segment_name)?;
         //重命名文件夹
         fs::rename(tmp_table_dir, &table_dir)?;
         let reader = VectorStore::open(&table_dir)?;

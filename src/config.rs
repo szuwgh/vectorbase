@@ -1,6 +1,8 @@
-use crate::schema::DocID;
+use crate::fs::FileManager;
 use crate::schema::Schema;
+use crate::util::error::GyResult;
 use crate::FieldEntry;
+use crate::GyError;
 use crate::IOType;
 use crate::Meta;
 use crate::PathBuf;
@@ -129,7 +131,7 @@ impl EngineConfig {
 #[derive(Serialize, Deserialize, Debug)]
 pub(crate) struct DiskFileMeta {
     meta: Meta,
-    collection_name: String,
+    segment_name: String,
     parent: Vec<String>,
     field_range: Vec<TermRange>,
     file_size: usize, //文件大小
@@ -139,11 +141,15 @@ pub(crate) struct DiskFileMeta {
 
 impl DiskFileMeta {
     //从磁盘加载
-    pub(crate) fn from_path() {}
+    pub(crate) fn open(seg_path: &Path) -> GyResult<Self> {
+        let meta_path = seg_path.join(META_FILE);
+        let t: DiskFileMeta = FileManager::from_json_file(&meta_path)?;
+        Ok(t)
+    }
 
     pub(crate) fn new(
         meta: Meta,
-        collection_name: &str,
+        segment_name: String,
         parent: Vec<String>,
         field_range: Vec<TermRange>,
         file_size: usize,
@@ -152,7 +158,7 @@ impl DiskFileMeta {
     ) -> DiskFileMeta {
         DiskFileMeta {
             meta,
-            collection_name: collection_name.to_string(),
+            segment_name: segment_name,
             parent,
             field_range,
             file_size: file_size,
@@ -161,8 +167,8 @@ impl DiskFileMeta {
         }
     }
 
-    pub fn get_collection_name(&self) -> &str {
-        &self.collection_name
+    pub fn get_segment_name(&self) -> &str {
+        &self.segment_name
     }
 
     pub fn get_schema(&self) -> &Schema {

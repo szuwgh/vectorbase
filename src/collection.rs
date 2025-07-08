@@ -1,4 +1,4 @@
-use crate::config::DATA_FILE;
+use crate::config::{DiskFileMeta, DATA_FILE};
 use crate::wal::DEFAULT_WAL_FILE_SIZE;
 use crate::{
     compaction::Compaction,
@@ -167,10 +167,12 @@ impl CollectionImpl {
     }
 
     pub fn reload(&self) -> GyResult<()> {
-        let dirs = FileManager::get_table_directories(dir)?;
+        let dirs = FileManager::get_table_directories(self.config.get_collection_path())?;
         let deleteable: HashMap<Ulid, ()> = HashMap::new();
         let opened: HashMap<Ulid, ()> = HashMap::new();
-        for path in dirs {}
+        for seg_path in dirs {
+            let meta = DiskFileMeta::open(&seg_path)?;
+        }
         Ok(())
     }
 
@@ -205,46 +207,47 @@ impl CollectionImpl {
                     // 如果两个通道都没有消息，继续循环
                     (Err(_), Err(_)) => {}
                 }
-                //let (new_list, path_list) = {
-                let disk_reader = self.disk_reader.read().await;
-                let old_list = disk_reader.as_ref().unwrap();
-                // 获取需要压缩的 path_list
-                let path_list = comp.plan(old_list);
-                comp.compact(self.config.get_collection_path(), &path_list)
-                    .unwrap();
-                //}
-                self.reload();
-                //     //从old_list 过滤掉 path_list
-                //     let mut new_list: Vec<VectorStore> = old_list
-                //         .iter()
-                //         .filter(|&x| {
-                //             !path_list
-                //                 .iter()
-                //                 .any(|y| x.collection_name() == y.collection_name())
-                //         })
-                //         .cloned() // 将引用转换为值
-                //         .collect();
-                //     new_list.push(new_vector_store);
-                //     (new_list, path_list)
-                // };
-                // {
-                //     let old = self.disk_reader.write().await.replace(new_list);
-                //     if let Some(old_list) = old {
-                //         for v in old_list.into_iter() {
-                //             drop(v);
-                //         }
-                //     }
-                // }
-                // //删除 path_list
-                // for v in path_list.into_iter() {
-                //     v.wait().await;
-                //     let dir_path = v.file_path().parent().unwrap().to_path_buf();
-                //     drop(v);
-                //     if dir_path.exists() {
-                //         // 删除文件
-                //         std::fs::remove_dir_all(&dir_path);
-                //     }
-                // }
+                let (new_list, path_list) = {
+                    let disk_reader = self.disk_reader.read().await;
+                    let old_list = disk_reader.as_ref().unwrap();
+                    // 获取需要压缩的 path_list
+                    let path_list = comp.plan(old_list);
+                    let new_vector_store = comp
+                        .compact(self.config.get_collection_path(), &path_list)
+                        .unwrap();
+                    // self.reload().unwrap();
+
+                    //从old_list 过滤掉 path_list
+                    let mut new_list: Vec<VectorStore> = old_list
+                        .iter()
+                        .filter(|&x| {
+                            !path_list
+                                .iter()
+                                .any(|y| x.collection_name() == y.collection_name())
+                        })
+                        .cloned() // 将引用转换为值
+                        .collect();
+                    new_list.push(new_vector_store);
+                    (new_list, path_list)
+                };
+                {
+                    let old = self.disk_reader.write().await.replace(new_list);
+                    if let Some(old_list) = old {
+                        for v in old_list.into_iter() {
+                            drop(v);
+                        }
+                    }
+                }
+                //删除 path_list
+                for v in path_list.into_iter() {
+                    v.wait().await;
+                    let dir_path = v.file_path().parent().unwrap().to_path_buf();
+                    drop(v);
+                    if dir_path.exists() {
+                        // 删除文件
+                        std::fs::remove_dir_all(&dir_path);
+                    }
+                }
                 tokio::task::yield_now().await;
                 continue;
             }
@@ -308,11 +311,13 @@ impl CollectionImpl {
             .send(Command::PauseComp(tcomp_pause_tx))
             .await;
         let c = imm.as_ref().unwrap();
-        let table_dir = FileManager::get_next_table_dir(self.config.get_collection_path())?;
+        let segemnt_name = FileManager::get_segment_name()?;
+        let table_dir =
+            FileManager::get_segment_dir(self.config.get_collection_path(), &segemnt_name)?;
         let tmp_table_dir = table_dir.with_extension("tmp");
         FileManager::mkdir(&tmp_table_dir)?;
         let data_fname = tmp_table_dir.join(DATA_FILE);
-        disk::persist_collection(c.reader(), &self.meta.schema, &data_fname)?;
+        disk::persist_collection(c.reader(), &self.meta.schema, &data_fname, &segemnt_name)?;
         std::fs::rename(tmp_table_dir, &table_dir)?;
         drop(imm);
         let new_disk_reader = VectorStore::open(table_dir);

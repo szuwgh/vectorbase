@@ -27,7 +27,6 @@ use schema::TensorEntry;
 use schema::ValueSized;
 use searcher::BlockReader;
 use std::io::{Cursor, Write};
-use std::option;
 use std::sync::atomic::AtomicU64;
 use util::asyncio::WaitGroup;
 use util::error::{GyError, GyResult};
@@ -1155,8 +1154,14 @@ mod tests {
         //     println!("docid:{},doc{:?}", n.doc_id(), doc.v.to_vec::<f32>());
         // }
         // //  println!("doc vec:{:?}", reader.get_doc_offset().read().unwrap());
-        disk::persist_collection(reader, &schema, &PathBuf::from("./data1").join(DATA_FILE))
-            .unwrap();
+        let segment_name = FileManager::get_segment_name().unwrap();
+        disk::persist_collection(
+            reader,
+            &schema,
+            &PathBuf::from("./data1").join(DATA_FILE),
+            &segment_name,
+        )
+        .unwrap();
     }
     use wwml::TensorProto;
     #[test]
@@ -1224,9 +1229,15 @@ mod tests {
                 doc.v.as_slice::<f32>()
             });
         }
+        let segment_name = FileManager::get_segment_name().unwrap();
         //  println!("doc vec:{:?}", reader.get_doc_offset().read().unwrap());
-        disk::persist_collection(reader, &schema, &PathBuf::from("./data2").join(DATA_FILE))
-            .unwrap();
+        disk::persist_collection(
+            reader,
+            &schema,
+            &PathBuf::from("./data2").join(DATA_FILE),
+            &segment_name,
+        )
+        .unwrap();
     }
 
     #[test]
@@ -1402,10 +1413,12 @@ mod tests {
         let disk_reader2 =
             VectorStore::open(PathBuf::from("/opt/rsproject/chappie/vectorbase/data2")).unwrap();
         FileManager::mkdir(&PathBuf::from("/opt/rsproject/chappie/vectorbase/data3")).unwrap();
+        let segment_name = FileManager::get_segment_name().unwrap();
         disk::merge_much(
             &[disk_reader1, disk_reader2],
             &PathBuf::from("/opt/rsproject/chappie/vectorbase/data3/data.gy"),
             1,
+            &segment_name,
         )
         .unwrap();
     }
@@ -1422,11 +1435,12 @@ mod tests {
             VectorStore::open(PathBuf::from("/opt/rsproject/chappie/vectorbase/data3")).unwrap();
 
         FileManager::mkdir(&PathBuf::from("/opt/rsproject/chappie/vectorbase/data4")).unwrap();
-
+        let segment_name = FileManager::get_segment_name().unwrap();
         disk::merge_much(
             &[disk_reader1, disk_reader2, disk_reader3],
             &PathBuf::from("/opt/rsproject/chappie/vectorbase/data4/data.gy"),
             1,
+            &segment_name,
         )
         .unwrap();
     }
