@@ -1,24 +1,20 @@
 use super::disk::GyWrite;
-use super::util::error::{GyError, GyResult};
-use super::util::fs::{FileIOSelector, IoSelector, MmapSelector};
+use super::util::error::GyResult;
+use super::util::fs::{IoSelector, MmapSelector};
 use crate::disk::GyRead;
 use crate::iocopy;
 use crate::schema::{TensorEntry, VectorSerialize};
 use crate::ValueSized;
-use crate::Vector;
-use core::arch::x86_64::*;
 use core::cell::UnsafeCell;
-use memmap2::{self, Mmap, MmapMut};
-use rand::seq::IteratorRandom;
-use serde::de::value;
-use std::fs::{self, File};
+use memmap2::{self};
+use std::fs;
 use std::io::Read;
 use std::io::Write;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock, Weak};
+use std::sync::RwLock;
 
-pub(crate) const DEFAULT_WAL_FILE_SIZE: usize = 2 * 1024; //2MB
+pub(crate) const DEFAULT_WAL_FILE_SIZE: usize = 1 * 1024 * 5; //2MB
 
 #[derive(Copy, Clone)]
 pub enum IOType {

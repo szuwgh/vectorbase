@@ -6,16 +6,16 @@ use super::disk::{GyRead, GyWrite};
 use super::util::error::{GyError, GyResult};
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use chrono::{TimeZone, Utc};
-use wwml::similarity::Similarity;
-use wwml::TensorView;
-use wwml::{GGmlType, TensorType};
-use wwml::{Shape, Tensor};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::io::Read;
 use std::io::Write;
 use varintrs::{Binary, ReadBytesVarExt, WriteBytesVarExt};
+use wwml::similarity::Similarity;
+use wwml::TensorView;
+use wwml::{GGmlType, TensorType};
+use wwml::{Shape, Tensor};
 pub type DateTime = chrono::DateTime<chrono::Utc>;
 
 pub trait VectorSerialize: Sized {
@@ -347,10 +347,21 @@ pub enum FieldType {
 
 impl<'a> VectorSerialize for TensorView<'a> {
     fn vector_deserialize<R: Read + GyRead>(reader: &mut R, entry: &TensorEntry) -> GyResult<Self> {
-        todo!()
+        let v = reader.read_bytes(entry.nbytes())?;
+        let t = unsafe {
+            TensorView::from_bytes(
+                v,
+                entry.n_dims(),
+                Shape::from_slice(entry.dims()),
+                entry.vector_type().to_ggml_type(),
+                &wwml::Device::Cpu,
+            )?
+        };
+        Ok(t)
     }
     fn vector_serialize<W: Write + GyWrite>(&self, writer: &mut W) -> GyResult<()> {
-        todo!()
+        writer.write(self.as_bytes())?;
+        Ok(())
     }
     fn vector_nommap_deserialize<R: Read + GyRead>(
         reader: &mut R,

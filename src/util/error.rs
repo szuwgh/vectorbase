@@ -1,6 +1,5 @@
 use crate::PathBuf;
 use fst::Error as FstError;
-use jiebars::Jieba;
 use std::io;
 use std::io::Error as IOError;
 use std::sync::{PoisonError, TryLockError};
