@@ -10,16 +10,6 @@ use std::collections::BinaryHeap;
 use std::collections::HashSet;
 use wwml::similarity::TensorSimilar;
 
-// impl Metric<Vec<f32>> for Vec<f32> {
-//     fn distance(&self, b: &Vec<f32>) -> f32 {
-//         self.iter()
-//             .zip(b.iter())
-//             .map(|(&a1, &b1)| (a1 - b1).powi(2))
-//             .sum::<f32>()
-//             .sqrt()
-//     }
-// }
-
 const GGUF_DEFAULT_ALIGNMENT: usize = 32;
 
 #[derive(Default, Debug, Clone)]
@@ -197,8 +187,6 @@ impl<V: VectorSerialize + TensorSimilar + Clone> AnnIndex<V> for HNSW<V> {
             }
             return Ok(new_id);
         }
-
-        //  new_id
     }
 
     fn query<T: TensorSimilar, P: AnnPrioritizer, F: AnnFilter>(

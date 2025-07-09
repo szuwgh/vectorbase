@@ -119,11 +119,13 @@ impl Schema {
     }
 
     pub fn with_vector(vector_field: VectorEntry) -> Schema {
-        Self {
+        let mut s = Self {
             vector_field: vector_field,
             fields: Vec::new(),
             fields_map: HashMap::new(),
-        }
+        };
+        s.add_field(FieldEntry::str("_id"));
+        s
     }
 
     pub fn tensor_entry(&self) -> &TensorEntry {
@@ -394,16 +396,11 @@ impl<'a> VectorFrom for TensorView<'a> {
 impl VectorSerialize for Tensor {
     fn vector_serialize<W: Write>(&self, writer: &mut W) -> GyResult<()> {
         writer.write(self.as_bytes())?;
-        //self.as_bytes().binary_serialize(writer)?;
-        //  println!("nbytes:{:?}", self.as_bytes());
         Ok(())
     }
 
     fn vector_deserialize<R: Read + GyRead>(reader: &mut R, entry: &TensorEntry) -> GyResult<Self> {
-        //  println!("nbytes:{}", entry.nbytes());
-        let v = reader.read_bytes(entry.nbytes())?; //Vec::<u8>::binary_deserialize(reader)?;
-                                                    //  println!("v:{:?}", v);
-                                                    //  let v = Vec::<u8>::binary_deserialize(reader)?;
+        let v = reader.read_bytes(entry.nbytes())?;
         let t = unsafe {
             Tensor::from_bytes(
                 v,
@@ -413,8 +410,6 @@ impl VectorSerialize for Tensor {
                 &wwml::Device::Cpu,
             )?
         };
-
-        //  println!("t:{:?}", unsafe { t.as_slice::<f32>() });
         Ok(t)
     }
 

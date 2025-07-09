@@ -505,8 +505,12 @@ impl VectorStore {
         &self.0
     }
 
-    pub fn collection_name(&self) -> &str {
-        self.0.collection_name()
+    pub fn get_segment_name(&self) -> &str {
+        self.0.get_segment_name()
+    }
+
+    pub fn get_segment_path(&self) -> PathBuf {
+        self.0.file_path().parent().unwrap().to_path_buf()
     }
 }
 
@@ -679,6 +683,10 @@ impl DiskStoreReader {
         })
     }
 
+    pub fn get_meta(&self) -> &DiskFileMeta {
+        &self.meta
+    }
+
     pub fn doc_size(&self) -> usize {
         self.doc_meta.len()
     }
@@ -699,7 +707,7 @@ impl DiskStoreReader {
         self.meta.file_size()
     }
 
-    pub fn collection_name(&self) -> &str {
+    pub fn get_segment_name(&self) -> &str {
         self.meta.get_segment_name()
     }
 

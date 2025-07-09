@@ -15,7 +15,6 @@ use crate::{
 use lock_api::RawMutex;
 use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::path::Path;
 use std::{borrow::BorrowMut, cell::RefCell, mem, sync::Arc};
 use tokio::sync::{mpsc, oneshot, RwLock as TokRwLock};
 use ulid::Ulid;
@@ -64,6 +63,14 @@ impl Collection {
         self.0.add(v).await
     }
 
+    pub async fn delete(&self, id: &str) -> GyResult<()> {
+        todo!()
+    }
+
+    pub async fn update(&self, id: &str) -> GyResult<()> {
+        todo!()
+    }
+
     pub async fn searcher(&self) -> GyResult<Searcher> {
         self.0.searcher().await
     }
@@ -99,7 +106,7 @@ pub struct CollectionImpl {
     id_gen: RefCell<IdGenerator>,
     mem: TokRwLock<Engine>,
     imm: TokRwLock<Option<Engine>>,
-    disk_reader: TokRwLock<Option<Vec<VectorStore>>>,
+    disk_reader: TokRwLock<Vec<VectorStore>>,
     mcomp_cmd_tx: mpsc::Sender<Command>, //mpsc::Sender<Command>,
     tcomp_cmd_tx: UnbufferedSender<Command>, //mpsc::Sender<Command>,
     mcomp_close_tx: mpsc::Sender<()>,
@@ -109,7 +116,7 @@ pub struct CollectionImpl {
 
 impl CollectionImpl {
     fn new(
-        mut schema: Schema,
+        schema: Schema,
         config: Config,
         mcomp_cmd_tx: mpsc::Sender<Command>,
         tcomp_cmd_tx: asyncio::UnbufferedSender<Command>,
@@ -123,7 +130,7 @@ impl CollectionImpl {
         if !data_path.is_dir() {
             return Err(GyError::DataPathNotDir(data_path.to_path_buf()));
         }
-        let field_id = schema.add_field(FieldEntry::str("_id"));
+
         let collection_path = config.get_collection_path();
         // 如果这个文件存在 则代表数据库存在
         let (mem, imm, readers) = if collection_path.exists() {
@@ -149,10 +156,11 @@ impl CollectionImpl {
             let mem = Engine::new(&schema, config.get_engine_config(mem_wal))?;
             (mem, None, Vec::new())
         };
+        let _id_field_id = schema.get_field("_id").unwrap();
         let colletion = Self {
             meta: Meta::new(schema),
             config: config,
-            _id_field_id: field_id,
+            _id_field_id: _id_field_id,
             id_gen: RefCell::new(IdGenerator::new()),
             mem: TokRwLock::new(mem),
             imm: TokRwLock::new(imm),
@@ -160,18 +168,68 @@ impl CollectionImpl {
             tcomp_cmd_tx: tcomp_cmd_tx,
             mcomp_close_tx: mcomp_close_tx,
             tcomp_close_tx: tcomp_close_tx,
-            disk_reader: TokRwLock::new(Some(readers)),
+            disk_reader: TokRwLock::new(readers),
             mem_lock: Mutex::new(()),
         };
         Ok(colletion)
     }
 
-    pub fn reload(&self) -> GyResult<()> {
+    async fn get_block(&self, seg_name: &str) -> Option<VectorStore> {
+        let guard = self.disk_reader.read().await;
+        for v in guard.iter() {
+            if v.get_segment_name() == seg_name {
+                return Some(v.clone());
+            }
+        }
+        drop(guard);
+        None
+    }
+
+    async fn reload(&self) -> GyResult<()> {
         let dirs = FileManager::get_table_directories(self.config.get_collection_path())?;
-        let deleteable: HashMap<Ulid, ()> = HashMap::new();
-        let opened: HashMap<Ulid, ()> = HashMap::new();
+        let corrupted: HashMap<Ulid, ()> = HashMap::new();
+        let mut deleteable: HashMap<String, ()> = HashMap::new();
+        let mut opened: HashMap<String, ()> = HashMap::new();
+        let mut new_vector_stores: Vec<VectorStore> = Vec::new();
+        for seg_path in &dirs {
+            let meta = DiskFileMeta::open(&seg_path)?;
+            // parent segemtns 可以删除
+            for b in meta.get_parent() {
+                deleteable.insert(b.clone(), ());
+            }
+        }
+
         for seg_path in dirs {
             let meta = DiskFileMeta::open(&seg_path)?;
+            // 过滤可以删除的
+            if deleteable.contains_key(meta.get_segment_name()) {
+                continue;
+            }
+            if let Some(v) = self.get_block(meta.get_segment_name()).await {
+                new_vector_stores.push(v);
+            } else {
+                new_vector_stores.push(VectorStore::open(seg_path)?);
+            }
+            opened.insert(meta.get_segment_name().to_string(), ());
+        }
+
+        let old_list = {
+            let mut guard = self.disk_reader.write().await;
+            std::mem::replace(guard.as_mut(), new_vector_stores)
+        };
+        for v in old_list.into_iter() {
+            if opened.contains_key(v.get_segment_name()) {
+                continue;
+            }
+            if deleteable.contains_key(v.get_segment_name()) {
+                v.wait().await;
+                let dir_path = v.get_segment_path();
+                drop(v);
+                if dir_path.exists() {
+                    // 删除文件
+                    std::fs::remove_dir_all(&dir_path);
+                }
+            }
         }
         Ok(())
     }
@@ -187,7 +245,7 @@ impl CollectionImpl {
     ) {
         let mut comp = Compaction::new();
         loop {
-            if comp.need_table_compact(self.disk_reader.read().await.as_ref().unwrap()) {
+            if comp.need_table_compact(self.disk_reader.read().await.as_ref()) {
                 let cmd_opt = tcomp_cmd_rx.try_recv();
                 let close_opt = tcomp_close_rx.try_recv();
                 match (cmd_opt, close_opt) {
@@ -207,50 +265,60 @@ impl CollectionImpl {
                     // 如果两个通道都没有消息，继续循环
                     (Err(_), Err(_)) => {}
                 }
-                let (new_list, path_list) = {
-                    let disk_reader = self.disk_reader.read().await;
-                    let old_list = disk_reader.as_ref().unwrap();
-                    // 获取需要压缩的 path_list
-                    let path_list = comp.plan(old_list);
-                    let new_vector_store = comp
-                        .compact(self.config.get_collection_path(), &path_list)
-                        .unwrap();
-                    // self.reload().unwrap();
 
-                    //从old_list 过滤掉 path_list
-                    let mut new_list: Vec<VectorStore> = old_list
-                        .iter()
-                        .filter(|&x| {
-                            !path_list
-                                .iter()
-                                .any(|y| x.collection_name() == y.collection_name())
-                        })
-                        .cloned() // 将引用转换为值
-                        .collect();
-                    new_list.push(new_vector_store);
-                    (new_list, path_list)
-                };
-                {
-                    let old = self.disk_reader.write().await.replace(new_list);
-                    if let Some(old_list) = old {
-                        for v in old_list.into_iter() {
-                            drop(v);
-                        }
-                    }
-                }
-                //删除 path_list
-                for v in path_list.into_iter() {
-                    v.wait().await;
-                    let dir_path = v.file_path().parent().unwrap().to_path_buf();
-                    drop(v);
-                    if dir_path.exists() {
-                        // 删除文件
-                        std::fs::remove_dir_all(&dir_path);
-                    }
-                }
+                let disk_reader = self.disk_reader.read().await;
+                let old_list = disk_reader.as_ref();
+                // 获取需要压缩的 path_list
+                let path_list = comp.plan(old_list);
+                comp.compact(self.config.get_collection_path(), &path_list)
+                    .unwrap();
+
+                // let (new_list, path_list) = {
+                //     let disk_reader = self.disk_reader.read().await;
+                //     let old_list = disk_reader.as_ref();
+                //     // 获取需要压缩的 path_list
+                //     let path_list = comp.plan(old_list);
+                //     let new_vector_store = comp
+                //         .compact(self.config.get_collection_path(), &path_list)
+                //         .unwrap();
+                //     // self.reload().unwrap();
+
+                //     //从old_list 过滤掉 path_list
+                //     let mut new_list: Vec<VectorStore> = old_list
+                //         .iter()
+                //         .filter(|&x| {
+                //             !path_list
+                //                 .iter()
+                //                 .any(|y| x.get_segment_name() == y.get_segment_name())
+                //         })
+                //         .cloned() // 将引用转换为值
+                //         .collect();
+                //     new_list.push(new_vector_store);
+                //     (new_list, path_list)
+                // };
+                // {
+                //     let old_list = mem::replace(self.disk_reader.write().await.as_mut(), new_list);
+                //     //if let Some(old_list) = old {
+                //     for v in old_list.into_iter() {
+                //         drop(v);
+                //     }
+                //     //}
+                // }
+                // //删除 path_list
+                // for v in path_list.into_iter() {
+                //     v.wait().await;
+                //     let dir_path = v.file_path().parent().unwrap().to_path_buf();
+                //     drop(v);
+                //     if dir_path.exists() {
+                //         // 删除文件
+                //         std::fs::remove_dir_all(&dir_path);
+                //     }
+                // }
                 tokio::task::yield_now().await;
-                continue;
+                //continue;
             }
+
+            self.reload().await.unwrap();
 
             if comp.cur_level() > 0 {
                 continue;
@@ -325,12 +393,7 @@ impl CollectionImpl {
             Ok(reader) => {
                 let mut imm_lock = self.imm.write().await;
                 let imm_engine = imm_lock.take().unwrap();
-                self.disk_reader
-                    .write()
-                    .await
-                    .as_mut()
-                    .unwrap()
-                    .push(reader);
+                self.disk_reader.write().await.push(reader);
                 drop(imm_lock);
                 let _ = mcomp_pause_rx.recv().await;
                 //通知进行磁盘文件合并
@@ -396,21 +459,22 @@ impl CollectionImpl {
         {
             if let Some(imm) = self.imm.read().await.as_ref() {
                 block_reader_list.push(Box::new(imm.reader()));
-                if let Some(disk_readers) = self.disk_reader.read().await.as_ref() {
-                    block_reader_list.extend(
-                        disk_readers
-                            .iter()
-                            .map(|d| Box::new(d.reader()) as Box<dyn BlockReader>),
-                    );
-                }
+
+                block_reader_list.extend(
+                    self.disk_reader
+                        .read()
+                        .await
+                        .iter()
+                        .map(|d| Box::new(d.reader()) as Box<dyn BlockReader>),
+                );
             } else {
-                if let Some(disk_readers) = self.disk_reader.read().await.as_ref() {
-                    block_reader_list.extend(
-                        disk_readers
-                            .iter()
-                            .map(|d| Box::new(d.reader()) as Box<dyn BlockReader>),
-                    );
-                }
+                block_reader_list.extend(
+                    self.disk_reader
+                        .read()
+                        .await
+                        .iter()
+                        .map(|d| Box::new(d.reader()) as Box<dyn BlockReader>),
+                );
             }
         }
 
