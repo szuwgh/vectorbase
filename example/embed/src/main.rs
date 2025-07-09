@@ -7,7 +7,6 @@ use tokio::runtime::Builder;
 use vectorbase::ann::AnnType;
 use vectorbase::collection::Collection;
 use vectorbase::config::ConfigBuilder;
-use vectorbase::query::Term;
 use vectorbase::schema::Document;
 use vectorbase::schema::FieldEntry;
 use vectorbase::schema::FieldID;
@@ -16,38 +15,46 @@ use vectorbase::schema::TensorEntry;
 use vectorbase::schema::Vector;
 use vectorbase::schema::VectorEntry;
 use vectorbase::schema::VectorType;
+use wwml::{Device, Shape, Tensor};
+async fn test_query(_id_field_id: FieldID, collection: Collection) {
+    // With custom InitOptions
+    let embedder = Embedder::Text(TextEmbedder::Jina(Box::new(JinaEmbedder::default())));
+    // let mut schema = Schema::with_vector(VectorEntry::new(
+    //     "vector",
+    //     AnnType::HNSW,
+    //     TensorEntry::new(1, [384], VectorType::F32),
+    // ));
+    // schema.add_field(FieldEntry::str("content"));
+    // let config = ConfigBuilder::default()
+    //     .data_path(PathBuf::from("./data"))
+    //     .collect_name("vector1")
+    //     .build();
 
-// async fn test_query(_id_field_id: FieldID) {
-//     // With custom InitOptions
-//     let model = TextEmbedding::try_new(
-//         InitOptions::new(EmbeddingModel::AllMiniLML6V2)
-//             .with_show_download_progress(true)
-//             .with_cache_dir(PathBuf::from("/opt/rsproject/chappie/rust-lib/model")),
-//     )
-//     .unwrap();
-//     let mut schema = Schema::with_vector(VectorEntry::new(
-//         "vector",
-//         AnnType::HNSW,
-//         TensorEntry::new(1, [384], VectorType::F32),
-//     ));
-//     schema.add_field(FieldEntry::str("content"));
-//     let config = ConfigBuilder::default()
-//         .data_path(PathBuf::from("./data"))
-//         .collect_name("vector1")
-//         .build();
-
-//     let collection = Collection::new(schema, config).unwrap();
-//     let test_doc = vec!["She couldn't remember where she put her glasses"];
-//     let embeddings = model.embed(test_doc, None).unwrap();
-//     let seacher = collection.searcher().await.unwrap();
-//     for ds in seacher
-//         .search(Term::from_field_text(_id_field_id, "AAAAAGc8xKcACmIqJoHo"))
-//         .unwrap()
-//     {
-//         let vc = seacher.vector(&ds).unwrap();
-//         println!("content:{:?}", vc.doc().get_field_values())
-//     }
-// }
+    // let collection = Collection::new(schema, config).unwrap();
+    let test_doc = vec!["She couldn't remember where she put her glasses"];
+    let embeddings = embedder.embed(&test_doc, None, None).await.unwrap();
+    let seacher = collection.searcher().await.unwrap();
+    println!("searcher");
+    for e in embeddings.iter() {
+        let t = Tensor::from_vec(
+            e.to_dense().unwrap(),
+            1,
+            Shape::from_array([512]),
+            &Device::Cpu,
+        )
+        .unwrap();
+        // println!("query: {:?}", query);
+        let v = seacher.query(&t, 5, None).unwrap();
+        for vs in v {
+            let vc = seacher.vector(&vs).unwrap();
+            println!("content:{:?}", vc.doc().get_field_values())
+        }
+    }
+    // for ds in seacher.query().unwrap() {
+    //     let vc = seacher.vector(&ds).unwrap();
+    //     println!("content:{:?}", vc.doc().get_field_values())
+    // }
+}
 
 async fn test_insert(collection: Collection, field_id_content: FieldID) {
     // With custom InitOptions
@@ -169,7 +176,7 @@ async fn test_insert(collection: Collection, field_id_content: FieldID) {
     println!(
         "Embedding dimension: {}",
         embeddings[0].to_dense().unwrap().len()
-    ); // -> Embedding dimension: 384
+    );
 
     for (i, v) in embeddings.iter().enumerate() {
         let mut d: Document = Document::new();
@@ -206,7 +213,7 @@ fn main() {
     let mut schema = Schema::with_vector(VectorEntry::new(
         "vector",
         AnnType::HNSW,
-        TensorEntry::new(1, [384], VectorType::F32),
+        TensorEntry::new(1, [512], VectorType::F32),
     ));
     let field_id_content = schema.add_field(FieldEntry::str("content"));
     let config = ConfigBuilder::default()
@@ -216,6 +223,6 @@ fn main() {
 
     let collection = Collection::new(schema, config).unwrap();
     let _id_field_id = collection.get_schema().get_field("_id").unwrap();
-    //pool.block_on(async move { test_query(_id_field_id).await });
-    pool.block_on(async move { test_insert(collection, field_id_content).await });
+    pool.block_on(async move { test_query(_id_field_id, collection).await });
+    //pool.block_on(async move { test_insert(collection, field_id_content).await });
 }

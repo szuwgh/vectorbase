@@ -2,7 +2,6 @@ use crate::fs::FileManager;
 use crate::schema::Schema;
 use crate::util::error::GyResult;
 use crate::FieldEntry;
-use crate::GyError;
 use crate::IOType;
 use crate::Meta;
 use crate::PathBuf;
@@ -10,6 +9,7 @@ use crate::TensorEntry;
 use crate::DEFAULT_WAL_FILE_SIZE;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use ulid::Ulid;
 
 pub(crate) const WAL_FILE: &'static str = ".wal"; // 数据
 pub(crate) const DATA_FILE: &'static str = "data.gy"; // 数据
@@ -165,6 +165,10 @@ impl DiskFileMeta {
             doc_num: doc_num,
             level,
         }
+    }
+
+    pub fn get_parent(&self) -> &[String] {
+        &self.parent
     }
 
     pub fn get_segment_name(&self) -> &str {
