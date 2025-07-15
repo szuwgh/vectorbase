@@ -5,9 +5,9 @@ use crate::disk::GyRead;
 use crate::iocopy;
 use crate::schema::{TensorEntry, VectorSerialize};
 use crate::ValueSized;
+use chrono::Utc;
 use core::cell::UnsafeCell;
 use memmap2::{self};
-use std::fs;
 use std::io::Read;
 use std::io::Write;
 use std::marker::PhantomData;
@@ -24,8 +24,8 @@ pub enum IOType {
 
 const BLOCK_SIZE: usize = 1 << 15; //32KB
 
-unsafe impl Send for Wal {}
-unsafe impl Sync for Wal {}
+unsafe impl Send for SyncWal {}
+unsafe impl Sync for SyncWal {}
 
 pub struct WalIter<'a, V: VectorSerialize> {
     wal_reader: WalReader<'a>,
@@ -55,9 +55,6 @@ impl<'a, V: VectorSerialize> Iterator for WalIter<'a, V> {
     type Item = (usize, V);
     fn next(&mut self) -> Option<Self::Item> {
         let offset = self.offset();
-        // if (offset + 4 >= self.fsize()) {
-        //     return None;
-        // }
         match V::vector_nommap_deserialize(&mut self.wal_reader, &self.tensor_entry) {
             Ok(v) => Some((offset, v)),
             Err(_) => None,
@@ -66,9 +63,8 @@ impl<'a, V: VectorSerialize> Iterator for WalIter<'a, V> {
 }
 
 pub struct WalReader<'a> {
-    wal: &'a Wal,
+    wal: &'a SyncWal,
     offset: usize,
-    //end: usize,
 }
 
 impl<'a> Read for WalReader<'a> {
@@ -84,7 +80,7 @@ impl<'a> Read for WalReader<'a> {
 }
 
 impl<'a> WalReader<'a> {
-    pub(crate) fn new(wal: &'a Wal, offset: usize) -> WalReader<'a> {
+    pub(crate) fn new(wal: &'a SyncWal, offset: usize) -> WalReader<'a> {
         WalReader {
             wal: wal,
             offset: offset,
@@ -109,24 +105,24 @@ impl<'a> GyRead for WalReader<'a> {
 }
 
 pub struct ThreadWal {
-    wal: UnsafeCell<Wal>,
+    wal: UnsafeCell<SyncWal>,
     rw_lock: RwLock<()>,
 }
 
 impl ThreadWal {
-    pub(crate) fn new(w: Wal) -> ThreadWal {
+    pub(crate) fn new(w: SyncWal) -> ThreadWal {
         Self {
             wal: UnsafeCell::new(w),
             rw_lock: RwLock::new(()),
         }
     }
 
-    pub(crate) fn get_borrow(&self) -> &Wal {
+    pub(crate) fn get_borrow(&self) -> &SyncWal {
         let _unused = self.rw_lock.read().unwrap();
         unsafe { &*self.wal.get() }
     }
 
-    pub(crate) fn get_borrow_mut(&self) -> &mut Wal {
+    pub(crate) fn get_borrow_mut(&self) -> &mut SyncWal {
         let _unused = self.rw_lock.read().unwrap();
         unsafe { &mut *self.wal.get() }
     }
@@ -140,7 +136,7 @@ impl ThreadWal {
     }
 }
 
-pub(crate) struct Wal {
+pub(crate) struct SyncWal {
     io_selector: Box<dyn IoSelector>,
     i: usize,
     j: usize,
@@ -149,14 +145,14 @@ pub(crate) struct Wal {
     fname: PathBuf,
 }
 
-impl GyWrite for Wal {
+impl GyWrite for SyncWal {
     fn get_pos(&mut self) -> GyResult<usize> {
         Ok(self.i)
     }
 }
 
-impl Wal {
-    pub(crate) fn new(fname: &Path, fsize: usize, io_type: &IOType) -> GyResult<Wal> {
+impl SyncWal {
+    pub(crate) fn new(fname: &Path, fsize: usize, io_type: &IOType) -> GyResult<SyncWal> {
         let io_selector: Box<dyn IoSelector> = match io_type {
             IOType::FILEIO => todo!(),
             IOType::MMAP => Box::new(MmapSelector::new(fname, fsize)?),
@@ -181,7 +177,7 @@ impl Wal {
         Ok(())
     }
 
-    pub(crate) fn open(fname: &Path, fsize: usize, io_type: &IOType) -> GyResult<Wal> {
+    pub(crate) fn open(fname: &Path, fsize: usize, io_type: &IOType) -> GyResult<SyncWal> {
         let io_selector: Box<dyn IoSelector> = match io_type {
             IOType::FILEIO => todo!(),
             IOType::MMAP => Box::new(MmapSelector::open(fname, fsize)?),
@@ -232,7 +228,7 @@ impl Wal {
     }
 }
 
-impl Write for Wal {
+impl Write for SyncWal {
     fn write(&mut self, mut buf: &[u8]) -> std::io::Result<usize> {
         let total = buf.len();
         while buf.len() > 0 {
@@ -259,6 +255,12 @@ impl Write for Wal {
     }
 }
 
+struct ImmutWal {
+    io_selector: Box<dyn IoSelector>,
+    fsize: usize,
+    fname: PathBuf,
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -283,7 +285,7 @@ mod tests {
 
     #[test]
     fn test_wal() {
-        let mut wal = Wal::new(
+        let mut wal = SyncWal::new(
             &PathBuf::from("/opt/rsproject/gptgrep/searchlite/00.wal"),
             1 * 1024 * 1024, //512MB
             &IOType::MMAP,
@@ -298,7 +300,7 @@ mod tests {
     use chrono::{TimeZone, Utc};
     #[test]
     fn test_document() {
-        let mut wal = Wal::new(
+        let mut wal = SyncWal::new(
             &PathBuf::from("/opt/rsproject/gptgrep/searchlite/00.wal"),
             1 * 1024 * 1024, //512MB
             &IOType::MMAP,

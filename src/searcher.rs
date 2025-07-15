@@ -18,6 +18,10 @@ pub trait BlockReader: Send {
     fn vector(&self, doc_id: DocID) -> GyResult<Vector>;
 }
 
+pub trait BlockWriter: Send {
+    fn delete() -> GyResult<()>;
+}
+
 pub enum PostingReader {
     Mem(MemPostingReader),
     Disk(DiskPostingReader),

@@ -3,6 +3,7 @@ mod buffer;
 pub mod collection;
 mod compaction;
 pub mod config;
+pub mod del;
 pub mod disk;
 pub mod graph;
 pub mod query;
@@ -65,7 +66,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock, Weak};
 use tokio::runtime::Builder;
-use wal::{IOType, Wal, DEFAULT_WAL_FILE_SIZE};
+use wal::{IOType, SyncWal, DEFAULT_WAL_FILE_SIZE};
 
 // 单例的 Tokio runtime
 pub(crate) static RUNTIME: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
@@ -413,7 +414,7 @@ pub struct IndexBase {
 #[derive(Serialize, Deserialize, Debug)]
 pub(crate) struct Meta {
     schema: Schema,
-    create_time: i64,
+    create_time: u64,
 }
 
 impl Meta {
@@ -453,7 +454,7 @@ impl IndexBase {
             doc_id: AtomicU64::new(0),
             buffer: buffer_pool,
             rw_lock: Mutex::new(()),
-            wal: Arc::new(ThreadWal::new(Wal::new(
+            wal: Arc::new(ThreadWal::new(SyncWal::new(
                 &config.get_wal_path(), //&index_path.join(&config.wal_fname),
                 config.get_fsize(),
                 config.get_io_type(),
@@ -474,7 +475,7 @@ impl IndexBase {
         for _ in 0..schema.fields.len() {
             field_cache.push(FieldCache::new(Arc::downgrade(&buffer_pool)));
         }
-        let wal = Wal::open(
+        let wal = SyncWal::open(
             index_path, //&index_path.join(&config.wal_fname),
             config.get_fsize(),
             config.get_io_type(),
@@ -574,7 +575,7 @@ impl IndexBase {
         Ok(offset)
     }
 
-    fn get_wal_mut(&self) -> &mut Wal {
+    fn get_wal_mut(&self) -> &mut SyncWal {
         self.wal.get_borrow_mut()
     }
 }
@@ -1725,7 +1726,7 @@ mod tests {
         schema.add_field(FieldEntry::str("body"));
         schema.add_field(FieldEntry::i32("title"));
         let p = PathBuf::from("./data_wal/my_index/data.wal");
-        let wal = Wal::open(&p, DEFAULT_WAL_FILE_SIZE, &IOType::MMAP).unwrap();
+        let wal = SyncWal::open(&p, DEFAULT_WAL_FILE_SIZE, &IOType::MMAP).unwrap();
 
         let mut wal_iter = wal.iter::<Vector>(TensorEntry::new(1, [4], schema::VectorType::F32));
         while let Some((doc_offset, v)) = wal_iter.next() {

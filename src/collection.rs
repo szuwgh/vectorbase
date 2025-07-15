@@ -439,6 +439,10 @@ impl CollectionImpl {
         Ok(())
     }
 
+    pub async fn delete(&self, mut v: Vector) -> GyResult<()> {
+        todo!()
+    }
+
     pub async fn add(&self, mut v: Vector) -> GyResult<String> {
         unsafe {
             self.mem_lock.raw().lock();
