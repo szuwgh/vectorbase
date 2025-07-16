@@ -1,5 +1,5 @@
 use crate::config::{DiskFileMeta, DATA_FILE};
-use crate::wal::DEFAULT_WAL_FILE_SIZE;
+use crate::thread_wal::DEFAULT_WAL_FILE_SIZE;
 use crate::{
     compaction::Compaction,
     disk::{self, VectorStore},
