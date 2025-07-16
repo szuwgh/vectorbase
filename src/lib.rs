@@ -15,6 +15,7 @@ use ann::Emptyer;
 use wwml::similarity::TensorSimilar;
 mod tokenize;
 pub mod util;
+pub mod wal;
 use crate::config::Config;
 use crate::config::EngineConfig;
 use crate::searcher::PostingReader;
@@ -29,16 +30,16 @@ use schema::ValueSized;
 use searcher::BlockReader;
 use std::io::{Cursor, Write};
 use std::sync::atomic::AtomicU64;
+use thread_wal::ThreadWal;
+use thread_wal::WalIter;
 use util::asyncio::WaitGroup;
 use util::error::{GyError, GyResult};
-use wal::ThreadWal;
-use wal::WalIter;
 use wwml::Tensor;
 mod macros;
 use crate::buffer::SafeAddr;
 use crate::schema::VectorBase;
 use crate::util::asyncio::Worker;
-pub mod wal;
+pub mod thread_wal;
 use crate::ann::Ann;
 use crate::ann::HNSW;
 use crate::disk::GyWrite;
@@ -56,8 +57,8 @@ use self::schema::DocFreq;
 use self::util::fs;
 use crate::schema::FieldEntry;
 use crate::schema::Vector;
+use crate::thread_wal::WalReader;
 use crate::util::time::Time;
-use crate::wal::WalReader;
 use lock_api::RawMutex;
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
@@ -65,8 +66,8 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock, Weak};
+use thread_wal::{IOType, SyncWal, DEFAULT_WAL_FILE_SIZE};
 use tokio::runtime::Builder;
-use wal::{IOType, SyncWal, DEFAULT_WAL_FILE_SIZE};
 
 // 单例的 Tokio runtime
 pub(crate) static RUNTIME: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
@@ -978,7 +979,7 @@ mod tests {
     use schema::{BinarySerialize, VectorEntry};
     use std::thread;
     use tests::disk::DiskStoreReader;
-    use wal::WalIter;
+    use thread_wal::WalIter;
     use wwml::Shape;
     #[test]
     fn test_add_doc() {

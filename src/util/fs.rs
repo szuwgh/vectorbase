@@ -86,51 +86,6 @@ impl FileManager {
         return Ok(dir);
     }
 
-    // pub(crate) fn get_rename_wal_path<P: AsRef<Path>>(p: P) -> GyResult<PathBuf> {
-    //     let path = p.as_ref();
-    //     let parent_dir = path.parent().unwrap();
-    //     if let Some(name_str) = path.to_str() {
-    //         // 去掉文件扩展名
-    //         let base_name = name_str
-    //             .strip_suffix(".wal")
-    //             .expect("File name format is incorrect");
-    //         return Ok(PathBuf::new()
-    //             .join(parent_dir)
-    //             .join(base_name)
-    //             .join(DATA_FILE));
-    //     }
-    //     todo!()
-    // }
-
-    // pub(crate) fn get_next_wal_name<P: AsRef<Path>>(dir: P) -> GyResult<PathBuf> {
-    //     let list = Self::get_files_with_extension(dir.as_ref(), "wal")?;
-    //     if list.len() == 0 {
-    //         return Ok(PathBuf::new()
-    //             .join(dir.as_ref())
-    //             .join(format!("{:0>20}{}", 0, WAL_FILE)));
-    //     } else {
-    //         let last_name = list.first().unwrap().file_name().unwrap();
-    //         if let Some(name_str) = last_name.to_str() {
-    //             // 去掉文件扩展名
-    //             let base_name = name_str
-    //                 .strip_suffix(".wal")
-    //                 .expect("File name format is incorrect");
-    //             // 将字符串转换为数字
-    //             println!("base_name:{}", base_name);
-    //             let number: u64 = base_name
-    //                 .parse()
-    //                 .expect("Unable to parse string into number");
-    //             // 打印结果
-    //             return Ok(PathBuf::new().join(dir.as_ref()).join(format!(
-    //                 "{:0>20}{}",
-    //                 number + 1,
-    //                 WAL_FILE
-    //             )));
-    //         }
-    //     }
-    //     return Err(GyError::EOF);
-    // }
-
     pub(crate) fn get_2wal_file_name<P: AsRef<Path>>(
         dir: P,
         extension: &str,
@@ -263,13 +218,12 @@ pub(crate) struct MmapSelector {
 }
 
 impl MmapSelector {
-    pub(crate) fn new(fname: &Path, fsize: usize) -> GyResult<MmapSelector> {
+    pub(crate) fn new<P: AsRef<Path>>(fname: P, fsize: usize) -> GyResult<MmapSelector> {
         let file = OpenOptions::new()
             .create(true)
             .read(true)
             .write(true)
             .open(fname)?;
-        //  println!("fsize:{}", fsize);
         file.allocate(fsize as u64)?;
         let nmmap = unsafe {
             memmap2::MmapOptions::new()

@@ -255,12 +255,6 @@ impl Write for SyncWal {
     }
 }
 
-struct ImmutWal {
-    io_selector: Box<dyn IoSelector>,
-    fsize: usize,
-    fname: PathBuf,
-}
-
 #[cfg(test)]
 mod tests {
 
