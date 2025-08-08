@@ -38,7 +38,7 @@ fs2 = "0.4.3"
 bytes = "1.4.0"
 chrono = "0.4"
 serde_json = "1.0.122"
-wwml =  {version ="0.1.2",features = ["cpu"]}
+wwml =  {path = "../wwml",features = ["cpu"]}
 bloomfilter = "2"
 regex = "1.10.6"
 tokio = {version ="1.40.0",features = ["full"]}
