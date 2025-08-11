@@ -1,16 +1,21 @@
+use byteorder::LittleEndian;
+use byteorder::ReadBytesExt;
 use pgrx::prelude::*;
-use pgrx::PgMemoryContexts;
-use serde::ser::Error;
-use serde::ser::SerializeTuple;
+use serde::de;
+use serde::ser;
 use serde::Deserialize;
 use serde::Deserializer;
 use serde::Serialize;
 use serde::Serializer;
-use std::ptr::copy_nonoverlapping;
+use std::io::BufRead;
+use std::io::Cursor;
 use wwml::shape::MAX_DIM;
+use wwml::GGmlType;
+use wwml::Shape;
 use wwml::StorageProto;
 use wwml::Tensor as WWTensor;
 use wwml::TensorProto;
+
 ::pgrx::pg_module_magic!(name, version);
 
 #[derive(PostgresType)]
@@ -29,27 +34,25 @@ impl Serialize for Tensor {
             let shape = ww.shape();
             let shape_len = shape.len();
             if shape_len > MAX_DIM {
-                return Err(S::Error::custom("Shape length exceeds 255 dimensions"));
-            }
-
-            // 手动构建紧凑二进制格式
-            // 初始化元组序列化器
-            let mut seq = serializer.serialize_tuple(0)?;
-
-            // 1. 写入dtype（1字节）
-            seq.serialize_element(&ww.dtype().as_u8())?;
-
-            // 2. 写入shape维度数（1字节）
-            seq.serialize_element(&(shape_len as u8))?;
-
-            // 3. 写入shape每个维度（变长LEB128编码）
-            for dim in shape {
-                seq.serialize_element(dim)?;
+                return Err(ser::Error::custom("Shape length exceeds 255 dimensions"));
             }
             let data = ww.storage().as_bytes();
-            let data_len = data.len();
+            // 创建一个字节缓冲区
+            let total_len = 1 + 1 + shape_len * 4 + data.len();
+            let mut buffer = Vec::with_capacity(total_len);
+            // 写入 dtype（1 字节）
+            buffer.push(ww.dtype().as_u8());
+            // 写入 shape 长度（1 字节）
+            buffer.push(shape_len as u8);
 
-            seq.end()
+            // 写入 shape 的每个维度（每个 4 字节）
+            for &dim in shape {
+                buffer.extend_from_slice(&(dim as u32).to_le_bytes());
+            }
+            // 写入数据本身
+            buffer.extend_from_slice(data);
+            // 使用 serializer 序列化字节缓冲区
+            serializer.serialize_bytes(&buffer)
         }
     }
 }
@@ -63,7 +66,38 @@ impl<'de> Deserialize<'de> for Tensor {
             let ww = WWTensor::deserialize(deserializer)?;
             Ok(Tensor(ww))
         } else {
-            todo!()
+            //todo!();
+            // 读取原始字节流
+            let bytes: &[u8] = serde::Deserialize::deserialize(deserializer)?;
+            let mut cursor = Cursor::new(bytes);
+            let dtype = GGmlType::from_u8(cursor.read_u8().map_err(serde::de::Error::custom)?);
+            let n_dims = cursor.read_u8().map_err(serde::de::Error::custom)? as usize;
+            if n_dims > MAX_DIM {
+                return Err(serde::de::Error::custom(
+                    "Shape length exceeds 255 dimensions",
+                ));
+            }
+            let mut shape = [1; MAX_DIM];
+            for i in 0..n_dims {
+                let dim = cursor
+                    .read_u32::<LittleEndian>()
+                    .map_err(serde::de::Error::custom)?;
+                shape[i] = dim as usize;
+            }
+            let data = cursor.fill_buf().map_err(serde::de::Error::custom)?;
+            let ww = unsafe {
+                WWTensor::from_bytes(
+                    data,
+                    n_dims,
+                    Shape::from_array(shape),
+                    dtype,
+                    &wwml::Device::Cpu,
+                )
+                .map_err(|e| {
+                    de::Error::custom(format!("WWTensor::from_bytes failed:{}", e.to_string()))
+                })?
+            };
+            Ok(Tensor(ww))
         }
     }
 }
