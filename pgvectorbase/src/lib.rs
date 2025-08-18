@@ -1,3 +1,5 @@
+mod hnsw;
+
 use byteorder::LittleEndian;
 use byteorder::ReadBytesExt;
 use pgrx::prelude::*;
@@ -10,12 +12,12 @@ use serde::Serializer;
 use std::io::BufRead;
 use std::io::Cursor;
 use wwml::shape::MAX_DIM;
+use wwml::similarity::Similarity;
 use wwml::GGmlType;
 use wwml::Shape;
 use wwml::StorageProto;
 use wwml::Tensor as WWTensor;
 use wwml::TensorProto;
-
 ::pgrx::pg_module_magic!(name, version);
 
 #[derive(PostgresType)]
@@ -66,8 +68,6 @@ impl<'de> Deserialize<'de> for Tensor {
             let ww = WWTensor::deserialize(deserializer)?;
             Ok(Tensor(ww))
         } else {
-            //todo!();
-            // 读取原始字节流
             let bytes: &[u8] = serde::Deserialize::deserialize(deserializer)?;
             let mut cursor = Cursor::new(bytes);
             let dtype = GGmlType::from_u8(cursor.read_u8().map_err(serde::de::Error::custom)?);
@@ -101,6 +101,27 @@ impl<'de> Deserialize<'de> for Tensor {
         }
     }
 }
+
+#[pg_extern(immutable, parallel_safe)]
+fn euclidean_distance(a: Tensor, b: Tensor) -> f32 {
+    // 自定义距离逻辑
+    a.0.euclidean(&b.0)
+}
+
+#[pg_operator(immutable, parallel_safe)]
+#[opname(<->)]
+fn operator_euclidean_distance(a: Tensor, b: Tensor) -> f32 {
+    euclidean_distance(a, b)
+}
+
+// #[pg_extern]
+// fn hnswbuild(
+//     heap: pg_sys::Relation,
+//     index: pg_sys::Relation,
+//     index_info: pg_sys::IndexInfo,
+// ) -> *mut pg_sys::IndexBuildResult {
+//     return None;
+// }
 
 #[pg_extern]
 fn hello_pgvectorbase() -> &'static str {
