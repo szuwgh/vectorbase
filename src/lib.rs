@@ -18,7 +18,7 @@ pub mod util;
 pub mod wal;
 use crate::config::Config;
 use crate::config::EngineConfig;
-use crate::searcher::PostingReader;   
+use crate::searcher::PostingReader;
 use ann::Neighbor;
 use art_tree::{Art, ByteString};
 use core::cell::UnsafeCell;

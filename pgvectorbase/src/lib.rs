@@ -1,5 +1,5 @@
+mod error;
 mod hnsw;
-
 use byteorder::LittleEndian;
 use byteorder::ReadBytesExt;
 use pgrx::prelude::*;

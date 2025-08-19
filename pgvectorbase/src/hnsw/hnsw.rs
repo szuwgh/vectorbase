@@ -1,8 +1,10 @@
+use crate::hnsw::option::HnswBuildState;
+use crate::index_build;
 use pgrx::pg_extern;
 use pgrx::pg_guard;
 use pgrx::pg_sys;
+use pgrx::pg_sys::ForkNumber::MAIN_FORKNUM;
 use pgrx::PgBox;
-
 /// 简化：统一的错误抛出工具
 #[inline(always)]
 fn unimplemented_err(func: &str) -> ! {
@@ -19,7 +21,10 @@ unsafe extern "C-unwind" fn hnsw_ambuild(
     _index_rel: pg_sys::Relation,
     _index_info: *mut pg_sys::IndexInfo,
 ) -> *mut pg_sys::IndexBuildResult {
-    unimplemented_err("ambuild")
+    let mut state = HnswBuildState::new();
+    index_build(_heap_rel, _index_rel, _index_info, &mut state, MAIN_FORKNUM);
+
+    //unimplemented_err("ambuild")
 }
 
 #[pg_guard]
