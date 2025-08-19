@@ -45,6 +45,14 @@ pub(crate) struct HnswBuildState {
     tmp_ctx: MemoryContext,
 }
 
+/// HNSW 页面特殊数据
+#[repr(C)]
+pub struct HnswPageOpaqueData {
+    pub nextblkno: pg_sys::BlockNumber, // PostgreSQL 块号类型
+    pub unused: u16,                    // 未使用字段
+    pub page_id: u16,                   // 页面标识符
+}
+
 impl HnswBuildState {
     pub(crate) fn new() -> Self {
         Self {
@@ -125,11 +133,11 @@ impl HnswBuildState {
     /// 创建索引元数据页
     pub(crate) fn create_meta_page(&mut self) {
         unsafe {
-            let index = self.index;
+            let index: pg_sys::Relation = self.index;
             let fork_num = self.fork_num;
-
             let buf = hnsw_new_buffer(index, fork_num);
-
+            let (state, page): (*mut pg_sys::GenericXLogState, pg_sys::Page) =
+                hnsw_init_register_page(index, buf);
             // l
         }
     }
@@ -137,6 +145,7 @@ impl HnswBuildState {
 
 const HNSW_DEFAULT_M: i32 = 16; // 默认 M 参数
 const HNSW_MAX_DIM: i32 = 2000; // 最大支持维度
+const HNSW_PAGE_ID: u16 = 0xFF90;
 
 unsafe fn hnsw_new_buffer(
     index: pg_sys::Relation,
@@ -150,11 +159,39 @@ unsafe fn hnsw_new_buffer(
         pg_sys::ReadBufferMode::RBM_NORMAL,
         ptr::null_mut(),
     );
-
     // 锁定缓冲区
     pg_sys::LockBuffer(buf, pg_sys::BUFFER_LOCK_EXCLUSIVE as i32);
-
     buf
+}
+
+/// 初始化并注册页面 (替代 HnswInitRegisterPage)
+///
+/// # 安全
+/// 调用者必须确保所有指针有效
+unsafe fn hnsw_init_register_page(
+    index: pg_sys::Relation,
+    buf: pg_sys::Buffer,
+) -> (*mut pg_sys::GenericXLogState, pg_sys::Page) {
+    // 1. 开始通用 XLog
+    let state = pg_sys::GenericXLogStart(index);
+
+    // 2. 注册缓冲区
+    let page = pg_sys::GenericXLogRegisterBuffer(state, buf, pg_sys::GENERIC_XLOG_FULL_IMAGE as i32)
+        as pg_sys::Page;
+    // 3. 初始化页面
+    hnsw_init_page(buf, page);
+    (state, page)
+}
+
+unsafe fn hnsw_init_page(buf: pg_sys::Buffer, page: pg_sys::Page) {
+    // 1. 获取页面大小
+    let page_size = pg_sys::BufferGetPageSize(buf);
+    // 2. 初始化页面结构
+    pg_sys::PageInit(page, page_size, std::mem::size_of::<HnswPageOpaqueData>());
+    // 3. 设置特殊数据
+    let opaque = pg_sys::PageGetSpecialPointer(page) as *mut HnswPageOpaqueData;
+    (*opaque).nextblkno = pg_sys::InvalidBlockNumber;
+    (*opaque).page_id = HNSW_PAGE_ID;
 }
 
 pub fn hnsw_get_dim(index_rel: pg_sys::Relation) -> i32 {

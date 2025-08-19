@@ -1,5 +1,4 @@
 use crate::hnsw::option::HnswBuildState;
-use crate::index_build;
 use pgrx::pg_extern;
 use pgrx::pg_guard;
 use pgrx::pg_sys;
@@ -22,9 +21,9 @@ unsafe extern "C-unwind" fn hnsw_ambuild(
     _index_info: *mut pg_sys::IndexInfo,
 ) -> *mut pg_sys::IndexBuildResult {
     let mut state = HnswBuildState::new();
-    index_build(_heap_rel, _index_rel, _index_info, &mut state, MAIN_FORKNUM);
+    state.build_index(_heap_rel, _index_rel, _index_info, MAIN_FORKNUM);
 
-    //unimplemented_err("ambuild")
+    unimplemented_err("ambuild")
 }
 
 #[pg_guard]
