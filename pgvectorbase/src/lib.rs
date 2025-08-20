@@ -20,6 +20,8 @@ use wwml::Tensor as WWTensor;
 use wwml::TensorProto;
 ::pgrx::pg_module_magic!(name, version);
 
+pgrx::extension_sql_file!("./sql/op_class.sql", finalize);
+
 #[derive(PostgresType)]
 pub struct Tensor(WWTensor);
 
@@ -102,13 +104,13 @@ impl<'de> Deserialize<'de> for Tensor {
     }
 }
 
-#[pg_extern(immutable, parallel_safe)]
+#[pg_extern(immutable, strict, parallel_safe)]
 fn euclidean_distance(a: Tensor, b: Tensor) -> f32 {
     // 自定义距离逻辑
     a.0.euclidean(&b.0)
 }
 
-#[pg_operator(immutable, parallel_safe)]
+#[pg_operator(immutable, strict, parallel_safe)]
 #[opname(<->)]
 fn operator_euclidean_distance(a: Tensor, b: Tensor) -> f32 {
     euclidean_distance(a, b)

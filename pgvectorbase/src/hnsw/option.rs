@@ -109,7 +109,7 @@ impl HnswBuildState {
         self.heap = heap_rel;
         self.index = index_rel;
         self.index_info = index_info;
-        self.fork_num = fork_num; // 赋值枚举值
+        self.fork_num = fork_num;
 
         // 获取索引参数
         self.m = hnsw_get_M(index_rel);
@@ -194,10 +194,9 @@ impl HnswBuildState {
         unsafe {
             let index: pg_sys::Relation = self.index;
             let fork_num = self.fork_num;
-            let buf = hnsw_new_buffer(index, fork_num);
+            let buf: pg_sys::Buffer = hnsw_new_buffer(index, fork_num);
             let (state, page): (*mut pg_sys::GenericXLogState, pg_sys::Page) =
                 hnsw_init_register_page(index, buf);
-
             let metap = hnsw_page_get_meta(page);
             (*metap).magic_number = HNSW_MAGIC_NUMBER; // HNSW 魔数
             (*metap).version = 1; // 版本号
@@ -247,7 +246,7 @@ unsafe fn hnsw_new_buffer(
     fork_num: pg_sys::ForkNumber::Type,
 ) -> pg_sys::Buffer {
     // 使用 pgrx 的缓冲区分配函数
-    let buf = pg_sys::ReadBufferExtended(
+    let buf: pg_sys::Buffer = pg_sys::ReadBufferExtended(
         index,
         fork_num,
         pg_sys::InvalidBlockNumber,
@@ -260,7 +259,6 @@ unsafe fn hnsw_new_buffer(
 }
 
 /// 初始化并注册页面 (替代 HnswInitRegisterPage)
-///
 /// # 安全
 /// 调用者必须确保所有指针有效
 unsafe fn hnsw_init_register_page(

@@ -15,8 +15,8 @@ fn unimplemented_err(func: &str) -> ! {
 /// ------------------------------
 
 //_heap_rel 指向​​堆表关系​​的指针，表示需要构建索引的原始数据表
-// 指向​​索引关系​​的指针，表示正在构建的 HNSW 索引结构
-// 提供索引的元数据（如维度、m参数、ef_construction参数）
+// _index_rel 指向​​索引关系​​的指针，表示正在构建的 HNSW 索引结构
+// _index_info 提供索引的元数据（如维度、m参数、ef_construction参数）
 // 指向​​索引描述信息​​的指针，包含索引的键和约束信息
 #[pg_guard]
 unsafe extern "C-unwind" fn hnsw_ambuild(
@@ -210,9 +210,7 @@ unsafe extern "C-unwind" fn hnswvalidate(opclassoid: pg_sys::Oid) -> bool {
     PARALLEL SAFE IMMUTABLE STRICT LANGUAGE c AS 'MODULE_PATHNAME', '@FUNCTION_NAME@';
     CREATE ACCESS METHOD hnsw_am TYPE INDEX HANDLER hnsw_am_handler;
 ")]
-pub fn hnsw_am_handler(
-    fcinfo: pgrx::PgBox<pg_sys::FunctionCallInfo>,
-) -> pgrx::PgBox<pg_sys::IndexAmRoutine> {
+pub fn hnsw_am_handler(_fcinfo: pg_sys::FunctionCallInfo) -> pgrx::PgBox<pg_sys::IndexAmRoutine> {
     // 分配 IndexAmRoutine（放在 PG 的内存中）
     let mut am =
         unsafe { PgBox::<pg_sys::IndexAmRoutine>::alloc_node(pg_sys::NodeTag::T_IndexAmRoutine) };
