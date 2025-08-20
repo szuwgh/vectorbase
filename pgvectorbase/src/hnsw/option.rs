@@ -4,6 +4,11 @@ use pgrx::pg_sys;
 use pgrx::pg_sys::FmgrInfo;
 use pgrx::pg_sys::MemoryContext;
 use std::ptr;
+
+const HNSW_MAGIC_NUMBER: u32 = 0xA953A953;
+const HNSW_DEFAULT_M: i32 = 16; // 默认 M 参数
+const HNSW_MAX_DIM: i32 = 2000; // 最大支持维度
+const HNSW_PAGE_ID: u16 = 0xFF90;
 /// HNSW 索引选项结构体（与 C 端完全兼容）
 #[repr(C)]
 struct HnswOptions {
@@ -13,7 +18,7 @@ struct HnswOptions {
 }
 
 pub(crate) struct HnswBuildState {
-    heap: Option<pg_sys::Relation>,
+    heap: pg_sys::Relation,
     index: pg_sys::Relation,
     index_info: *mut pg_sys::IndexInfo,
     fork_num: pg_sys::ForkNumber::Type, //用于标识表或索引的不同物理文件分支 MAIN_FORKNUM 主数据文件分支，存储实际数据
@@ -24,8 +29,8 @@ pub(crate) struct HnswBuildState {
     dimensions: i32,
 
     // 统计信息
-    reltuples: f64,
-    indtuples: f64,
+    pub(crate) reltuples: f64,
+    pub(crate) indtuples: f64,
 
     // 图结构
     elements: Vec<HnswElement>,
@@ -45,6 +50,20 @@ pub(crate) struct HnswBuildState {
     tmp_ctx: MemoryContext,
 }
 
+/// HNSW 元页面数据结构
+#[repr(C)]
+pub struct HnswMetaPageData {
+    pub magic_number: u32,                 // 魔数标识
+    pub version: u32,                      // 版本号
+    pub dimensions: u32,                   // 向量维度
+    pub m: u16,                            // 最大连接数
+    pub ef_construction: u16,              // 构建时候选集大小
+    pub entry_blkno: pg_sys::BlockNumber,  // 入口点块号
+    pub entry_offno: pg_sys::OffsetNumber, // 入口点偏移
+    pub entry_level: i16,                  // 入口点层级
+    pub insert_page: pg_sys::BlockNumber,  // 插入页面
+}
+
 /// HNSW 页面特殊数据
 #[repr(C)]
 pub struct HnswPageOpaqueData {
@@ -56,7 +75,7 @@ pub struct HnswPageOpaqueData {
 impl HnswBuildState {
     pub(crate) fn new() -> Self {
         Self {
-            heap: None,
+            heap: ptr::null_mut(),
             index: ptr::null_mut(),
             index_info: ptr::null_mut(),
             fork_num: pg_sys::ForkNumber::MAIN_FORKNUM, // 初始化为主分支
@@ -87,7 +106,7 @@ impl HnswBuildState {
         fork_num: pg_sys::ForkNumber::Type,
     ) -> VBResult<()> {
         // 保存基础关系
-        self.heap = Some(heap_rel);
+        self.heap = heap_rel;
         self.index = index_rel;
         self.index_info = index_info;
         self.fork_num = fork_num; // 赋值枚举值
@@ -116,6 +135,17 @@ impl HnswBuildState {
         self.reltuples = 0.0;
         self.indtuples = 0.0;
 
+        // 7. 创建临时内存上下文
+        unsafe {
+            self.tmp_ctx = pg_sys::AllocSetContextCreateInternal(
+                pg_sys::CurrentMemoryContext,
+                "Hnsw build temporary context".as_ptr() as *const _,
+                pg_sys::ALLOCSET_DEFAULT_MINSIZE as usize,
+                pg_sys::ALLOCSET_DEFAULT_INITSIZE as usize,
+                pg_sys::ALLOCSET_DEFAULT_MAXSIZE as usize,
+            );
+        }
+
         Ok(())
     }
 
@@ -127,25 +157,90 @@ impl HnswBuildState {
         fork_num: pg_sys::ForkNumber::Type,
     ) -> VBResult<()> {
         self.init(heap_rel, index_rel, index_info, fork_num)?;
+        self.flush_page()?;
+        self.free()?;
         Ok(())
     }
 
+    pub(crate) fn free(&mut self) -> VBResult<()> {
+        // 释放内存上下文
+        if !self.tmp_ctx.is_null() {
+            unsafe {
+                pgrx::pg_sys::MemoryContextDelete(self.tmp_ctx);
+            }
+            self.tmp_ctx = std::ptr::null_mut();
+        }
+        // 清理元素列表
+        self.elements.clear();
+        self.entry_point = None;
+        Ok(())
+    }
+
+    // PostgreSQL 页面布局：
+    // +-------------------+ <-- page (0x1000)
+    // | PageHeaderData    | 24字节
+    // +-------------------+ <-- metap (0x1018)
+    // | HnswMetaPageData  | 40字节
+    // +-------------------+ <-- metap_end (0x1040) pd_lower
+    // | 空闲空间          |
+    // |                   |
+    // | ...               |
+    // |                   |
+    // +-------------------+ <-- pd_upper
+    // | 未使用空间        |
+    // +-------------------+
     /// 创建索引元数据页
-    pub(crate) fn create_meta_page(&mut self) {
+    pub(crate) fn create_meta_page(&self) -> VBResult<()> {
         unsafe {
             let index: pg_sys::Relation = self.index;
             let fork_num = self.fork_num;
             let buf = hnsw_new_buffer(index, fork_num);
             let (state, page): (*mut pg_sys::GenericXLogState, pg_sys::Page) =
                 hnsw_init_register_page(index, buf);
-            // l
+
+            let metap = hnsw_page_get_meta(page);
+            (*metap).magic_number = HNSW_MAGIC_NUMBER; // HNSW 魔数
+            (*metap).version = 1; // 版本号
+            (*metap).dimensions = self.dimensions as u32;
+            (*metap).m = self.m as u16;
+            (*metap).ef_construction = self.ef_construction as u16;
+            (*metap).entry_blkno = pg_sys::InvalidBlockNumber;
+            (*metap).entry_offno = pg_sys::InvalidOffsetNumber;
+            (*metap).entry_level = -1; // 初始入口点层级为 -1
+            (*metap).insert_page = pg_sys::InvalidBlockNumber;
+            //设置页面头部的 pd_lower 指向页面内空闲空间的起始位置
+            let page_header = page as *mut pg_sys::PageHeaderData;
+            let metap_end = (metap as *mut u8).add(std::mem::size_of::<HnswMetaPageData>());
+            let page_start = page as *mut u8;
+            let pd_lower = metap_end.offset_from(page_start) as usize;
+            (*page_header).pd_lower = pd_lower as u16;
+            hnsw_commit_buffer(buf, state)
         }
+    }
+
+    pub(crate) fn flush_page(&mut self) -> VBResult<()> {
+        self.create_meta_page()?;
+        self.flushed = true;
+        Ok(())
     }
 }
 
-const HNSW_DEFAULT_M: i32 = 16; // 默认 M 参数
-const HNSW_MAX_DIM: i32 = 2000; // 最大支持维度
-const HNSW_PAGE_ID: u16 = 0xFF90;
+// Rust 函数:
+unsafe fn hnsw_page_get_meta(page: pg_sys::Page) -> *mut HnswMetaPageData {
+    pg_sys::PageGetContents(page) as *mut HnswMetaPageData
+}
+
+/// # 安全
+/// 调用者必须确保缓冲区和状态指针有效
+pub unsafe fn hnsw_commit_buffer(
+    buf: pg_sys::Buffer,
+    state: *mut pg_sys::GenericXLogState,
+) -> VBResult<()> {
+    pg_sys::MarkBufferDirty(buf);
+    pg_sys::GenericXLogFinish(state);
+    pg_sys::UnlockReleaseBuffer(buf);
+    Ok(())
+}
 
 unsafe fn hnsw_new_buffer(
     index: pg_sys::Relation,

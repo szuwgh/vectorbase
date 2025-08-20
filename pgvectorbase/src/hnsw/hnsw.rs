@@ -14,6 +14,10 @@ fn unimplemented_err(func: &str) -> ! {
 /// 必要的回调“占位”实现（均抛错）
 /// ------------------------------
 
+//_heap_rel 指向​​堆表关系​​的指针，表示需要构建索引的原始数据表
+// 指向​​索引关系​​的指针，表示正在构建的 HNSW 索引结构
+// 提供索引的元数据（如维度、m参数、ef_construction参数）
+// 指向​​索引描述信息​​的指针，包含索引的键和约束信息
 #[pg_guard]
 unsafe extern "C-unwind" fn hnsw_ambuild(
     _heap_rel: pg_sys::Relation,
@@ -21,9 +25,16 @@ unsafe extern "C-unwind" fn hnsw_ambuild(
     _index_info: *mut pg_sys::IndexInfo,
 ) -> *mut pg_sys::IndexBuildResult {
     let mut state = HnswBuildState::new();
-    state.build_index(_heap_rel, _index_rel, _index_info, MAIN_FORKNUM);
+    state
+        .build_index(_heap_rel, _index_rel, _index_info, MAIN_FORKNUM)
+        .unwrap();
 
-    unimplemented_err("ambuild")
+    // 3. 创建并返回构建结果
+    let mut result = PgBox::<pg_sys::IndexBuildResult>::alloc0();
+    result.heap_tuples = state.reltuples as f64;
+    result.index_tuples = state.indtuples as f64;
+
+    result.into_pg()
 }
 
 #[pg_guard]
