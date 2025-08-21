@@ -216,10 +216,10 @@ pub fn hnsw_am_handler(_fcinfo: pg_sys::FunctionCallInfo) -> pgrx::PgBox<pg_sys:
         unsafe { PgBox::<pg_sys::IndexAmRoutine>::alloc_node(pg_sys::NodeTag::T_IndexAmRoutine) };
 
     // 固定属性（可按需修改）
-    am.amstrategies = 0; // 无策略（如 B-Tree 的策略编号）
+    am.amstrategies = 1; // 无策略（如 B-Tree 的策略编号）
     am.amsupport = 0; // 无支持函数个数
     am.amcanorder = false.into();
-    am.amcanorderbyop = false.into();
+    am.amcanorderbyop = true.into();
     am.amcanbackward = false.into();
     am.amcanunique = false.into();
     am.amcanmulticol = true.into(); // 示例：允许多列
@@ -234,6 +234,7 @@ pub fn hnsw_am_handler(_fcinfo: pg_sys::FunctionCallInfo) -> pgrx::PgBox<pg_sys:
     //am.amsupports_bitmap = false.into();
     // am.amvalidate_opclass = false.into();
     am.amkeytype = pg_sys::InvalidOid; // "generic" key type
+                                       // am.amcanorder = true;
 
     // 必要回调函数指针
     am.ambuild = Some(hnsw_ambuild);
