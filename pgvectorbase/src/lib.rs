@@ -6,6 +6,7 @@ use pgrx::ffi::CString;
 use pgrx::opname;
 use pgrx::pg_extern;
 use pgrx::pg_operator;
+use pgrx::pg_schema;
 use pgrx::pg_sys::Datum;
 use pgrx::pg_sys::Oid;
 use pgrx::pgrx_sql_entity_graph::metadata::ArgumentError;
@@ -44,7 +45,7 @@ CREATE TYPE vector (
 );
 
 #[repr(C, align(8))]
-pub(crate) struct VectorImpl {
+pub struct VectorImpl {
     varlena: u32,
     len: u16,
     phantom: [f32; 0],
@@ -81,9 +82,22 @@ impl VectorImpl {
     }
 }
 
-pub struct Vector(NonNull<VectorImpl>);
+pub enum Vector<'a> {
+    Owned(NonNull<VectorImpl>),
+    Borrowed(&'a mut VectorImpl),
+}
 
-unsafe impl SqlTranslatable for Vector {
+impl Vector<'_> {
+    pub unsafe fn new(ptr: NonNull<VectorImpl>) -> Self {
+        Vector::Owned(ptr)
+    }
+
+    pub fn data(&self) -> &[f32] {
+        self.deref().data()
+    }
+}
+
+unsafe impl<'a> SqlTranslatable for Vector<'a> {
     fn argument_sql() -> Result<SqlMapping, ArgumentError> {
         Ok(SqlMapping::As(String::from("vector")))
     }
@@ -92,7 +106,7 @@ unsafe impl SqlTranslatable for Vector {
     }
 }
 
-impl IntoDatum for Vector {
+impl<'a> IntoDatum for Vector<'a> {
     fn into_datum(self) -> Option<Datum> {
         Some(Datum::from(self.into_raw() as *mut ()))
     }
@@ -102,37 +116,61 @@ impl IntoDatum for Vector {
     }
 }
 
-impl Vector {
+impl<'a> Vector<'a> {
     pub fn into_raw(self) -> *mut VectorImpl {
-        let result = self.0.as_ptr();
-        std::mem::forget(self);
-        result
+        match &self {
+            Vector::Owned(x) => {
+                let result = x.as_ptr();
+                std::mem::forget(self);
+                result
+            }
+            Vector::Borrowed(x) => todo!(),
+        }
+    }
+
+    pub fn euclidean(&self, other: &Self) -> f32 {
+        assert_eq!(self.as_slice().len(), other.as_slice().len());
+        self.as_slice()
+            .iter()
+            .zip(other.as_slice().iter()) // 将两个切片的元素配对
+            .map(|(l, r)| (l - r).powi(2)) // 计算差值的平方
+            .sum::<f32>() // 求和
+            .sqrt() // 计算平方根
     }
 }
 
-impl Deref for Vector {
+impl Deref for Vector<'_> {
     type Target = VectorImpl;
 
     fn deref(&self) -> &Self::Target {
-        unsafe { self.0.as_ref() }
-    }
-}
-
-impl DerefMut for Vector {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        unsafe { self.0.as_mut() }
-    }
-}
-
-impl Drop for Vector {
-    fn drop(&mut self) {
-        unsafe {
-            pgrx::pg_sys::pfree(self.0.as_ptr() as _);
+        match self {
+            Vector::Owned(x) => unsafe { x.as_ref() },
+            Vector::Borrowed(x) => x,
         }
     }
 }
 
-unsafe impl pgrx::callconv::BoxRet for Vector {
+impl<'a> DerefMut for Vector<'a> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        match self {
+            Vector::Owned(x) => unsafe { x.as_mut() },
+            Vector::Borrowed(x) => x,
+        }
+    }
+}
+
+impl<'a> Drop for Vector<'a> {
+    fn drop(&mut self) {
+        match self {
+            Vector::Owned(x) => unsafe {
+                pgrx::pg_sys::pfree(x.as_ptr() as _);
+            },
+            Vector::Borrowed(x) => {}
+        }
+    }
+}
+
+unsafe impl<'a> pgrx::callconv::BoxRet for Vector<'a> {
     unsafe fn box_into<'fcx>(
         self,
         fcinfo: &mut pgrx::callconv::FcInfo<'fcx>,
@@ -141,27 +179,19 @@ unsafe impl pgrx::callconv::BoxRet for Vector {
     }
 }
 
-unsafe impl<'fcx> pgrx::callconv::ArgAbi<'fcx> for Vector {
+unsafe impl<'fcx> pgrx::callconv::ArgAbi<'fcx> for Vector<'fcx> {
     unsafe fn unbox_arg_unchecked(arg: pgrx::callconv::Arg<'_, 'fcx>) -> Self {
         unsafe { arg.unbox_arg_using_from_datum().unwrap() }
     }
 }
 
-impl FromDatum for Vector {
+impl<'a> FromDatum for Vector<'a> {
     unsafe fn from_polymorphic_datum(datum: Datum, is_null: bool, _typoid: Oid) -> Option<Self> {
         if is_null {
             None
         } else {
-            let p = NonNull::new(datum.cast_mut_ptr::<VectorImpl>())?;
-            let q =
-                unsafe { NonNull::new(pgrx::pg_sys::pg_detoast_datum(p.cast().as_ptr()).cast())? };
-            if p != q {
-                Some(Vector(q))
-            } else {
-                let header = p.as_ptr();
-                let vector = unsafe { (*header).as_borrowed() };
-                Some(Vector(vector))
-            }
+            let ptr = NonNull::new(datum.cast_mut_ptr::<VectorImpl>()).unwrap();
+            unsafe { Some(Vector::new(ptr)) }
         }
     }
 }
@@ -189,7 +219,7 @@ fn vector_in(input: &CStr, _oid: Oid, typmod: i32) -> Vector {
         std::ptr::addr_of_mut!((*ptr).varlena).write(VectorImpl::varlena(layout.size()));
         std::ptr::addr_of_mut!((*ptr).len).write(value.len() as u16);
         std::ptr::copy_nonoverlapping(value.as_ptr(), (*ptr).phantom.as_mut_ptr(), value.len());
-        Vector(NonNull::new(ptr).unwrap())
+        Vector::Owned(NonNull::new(ptr).unwrap())
     }
 }
 
@@ -228,78 +258,10 @@ fn tensor_typmod_out(typmod: i32) -> String {
     }
 }
 
-// #[pg_extern]
-// fn tensor_typmod_in(typmod_str: &std::ffi::CStr) -> i32 {
-//     use pgrx::spi::Spi;
-//     // accept forms like [768,512] or (768,512) or 768
-//     let s = typmod_str.to_str().unwrap_or("").trim();
-//     if s.is_empty() {
-//         return -1;
-//     }
-//     // normalize: allow surrounding () or []
-//     let inner = s
-//         .trim_start_matches('(')
-//         .trim_end_matches(')')
-//         .trim_start_matches('[')
-//         .trim_end_matches(']')
-//         .trim();
-
-//     // single number also allowed
-//     let parts: Vec<&str> = inner
-//         .split(',')
-//         .map(|p| p.trim())
-//         .filter(|p| !p.is_empty())
-//         .collect();
-//     if parts.is_empty() {
-//         return -1;
-//     }
-//     // validate all positive integers
-//     for p in &parts {
-//         if p.parse::<i32>().ok().filter(|v| *v > 0).is_none() {
-//             return -1;
-//         }
-//     }
-//     let canonical = format!("[{}]", parts.join(","));
-
-//     // lookup or insert in mapping table
-//     let esc = canonical.replace('\'', "''");
-//     // try select
-//     if let Ok(Some(id)) = Spi::get_one::<i32>(&format!(
-//         "SELECT id FROM tensor_typmod_map WHERE dims = '{}' LIMIT 1",
-//         esc
-//     )) {
-//         return id;
-//     }
-//     // insert
-//     match Spi::get_one::<i32>(&format!(
-//         "INSERT INTO tensor_typmod_map(dims) VALUES ('{}') RETURNING id",
-//         esc
-//     )) {
-//         Ok(Some(id)) => id,
-//         _ => -1,
-//     }
-// }
-
-// #[pg_extern]
-// fn tensor_typmod_out(typmod: i32) -> String {
-//     use pgrx::spi::Spi;
-//     if typmod <= 0 {
-//         return String::from("(unspecified)");
-//     }
-//     let q = format!(
-//         "SELECT dims FROM tensor_typmod_map WHERE id = {} LIMIT 1",
-//         typmod
-//     );
-//     match Spi::get_one::<String>(&q) {
-//         Ok(Some(dims)) => dims,
-//         _ => String::from("(unspecified)"),
-//     }
-// }
-
 #[pg_extern(immutable, strict, parallel_safe)]
 fn euclidean_distance(a: Vector, b: Vector) -> f32 {
     // 自定义距离逻辑
-    a.0.euclidean(&b.0)
+    a.euclidean(&b)
 }
 
 #[pg_operator(immutable, strict, parallel_safe)]
