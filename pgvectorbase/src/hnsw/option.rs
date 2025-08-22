@@ -1,6 +1,5 @@
 use crate::error::VBResult;
 use crate::Vector;
-use crate::VectorImpl;
 use pgrx::pg_sys;
 use pgrx::pg_sys::FmgrInfo;
 use pgrx::pg_sys::MemoryContext;
@@ -40,7 +39,7 @@ pub(crate) struct HnswBuildState {
     max_level: i32,
     max_in_memory_elements: f64,
     flushed: bool,
-    normvec: Option<VectorImpl>,
+    normvec: Option<Vector>,
 
     // 支持函数
     procinfo: Option<FmgrInfo>,
@@ -354,7 +353,7 @@ pub struct HnswElementData {
     pub neighbor_page: pg_sys::BlockNumber,
 
     /// 向量数据
-    pub vec: *mut VectorImpl,
+    pub vec: *mut Vector,
 }
 
 /// 邻居数组结构
