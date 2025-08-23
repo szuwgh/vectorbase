@@ -1,5 +1,5 @@
+use crate::datatype::Vector;
 use crate::error::VBResult;
-use crate::Vector;
 use pgrx::pg_sys;
 use pgrx::pg_sys::FmgrInfo;
 use pgrx::pg_sys::MemoryContext;

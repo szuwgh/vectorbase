@@ -1,6 +1,6 @@
 use std::io;
+use std::num::ParseFloatError;
 use thiserror::Error;
-
 pub type VBResult<T> = Result<T, VBError>;
 
 #[derive(Error, Debug)]
@@ -28,5 +28,11 @@ impl From<(&str, io::Error)> for VBError {
 impl From<String> for VBError {
     fn from(e: String) -> Self {
         VBError::Unexpected(e)
+    }
+}
+
+impl From<ParseFloatError> for VBError {
+    fn from(e: ParseFloatError) -> Self {
+        VBError::Unexpected(format!("Parse float error: {}", e))
     }
 }
