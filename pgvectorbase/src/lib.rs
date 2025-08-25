@@ -2,30 +2,12 @@
 mod datatype;
 mod error;
 mod hnsw;
+use pgrx::opname;
 use pgrx::pg_extern;
 use pgrx::pg_schema;
 ::pgrx::pg_module_magic!(name, version);
-pgrx::extension_sql_file!("./sql/vector_type.sql");
-// #[pg_extern(immutable, strict, parallel_safe)]
-// fn euclidean_distance(a: Vector, b: Vector) -> f32 {
-//     // 自定义距离逻辑
-//     a.euclidean(&b)
-// }
-
-// #[pg_operator(immutable, strict, parallel_safe)]
-// #[opname(<->)]
-// fn operator_euclidean_distance(a: Vector, b: Vector) -> f32 {
-//     euclidean_distance(a, b)
-// }
-
-// #[pg_extern]
-// fn hnswbuild(
-//     heap: pg_sys::Relation,
-//     index: pg_sys::Relation,
-//     index_info: pg_sys::IndexInfo,
-// ) -> *mut pg_sys::IndexBuildResult {
-//     return None;
-// }
+pgrx::extension_sql_file!("./sql/vector_type.sql", bootstrap);
+pgrx::extension_sql_file!("./sql/op_class.sql", finalize);
 
 #[pg_extern]
 fn hello_pgvectorbase() -> &'static str {

@@ -111,6 +111,7 @@ CREATE TYPE vector (
     creates = [Type(Vector)],
     requires = [vector_in, vector_out, vector_typmod_in, vector_typmod_out],
 );
+
 #[repr(C, align(8))]
 pub struct Vector {
     varlena: u32,
@@ -479,4 +480,16 @@ fn vector_typmod_out(typmod: i32) -> CString {
     } else {
         CString::new("(unspecified)").unwrap()
     }
+}
+
+#[pgrx::pg_operator(immutable, parallel_safe, requires = ["vector"])]
+fn euclidean_distance(a: VectorInput, b: VectorInput) -> f32 {
+    // 自定义距离逻辑
+    a.euclidean(&b)
+}
+
+#[pgrx::pg_operator(immutable, parallel_safe, requires = ["vector"])]
+#[opname(<->)]
+fn operator_euclidean_distance(a: VectorInput, b: VectorInput) -> f32 {
+    euclidean_distance(a, b)
 }
