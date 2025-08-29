@@ -49,7 +49,7 @@ unsafe extern "C-unwind" fn hnsw_aminsert(
     _isnull: *mut bool,
     _ht_ctid: *mut pg_sys::ItemPointerData,
     _heap_rel: pg_sys::Relation,
-    checkUnique: pg_sys::IndexUniqueCheck::Type,
+    _check_unique: pg_sys::IndexUniqueCheck::Type,
     _index_unmodified: bool,
     _index_info: *mut pg_sys::IndexInfo,
 ) -> bool {

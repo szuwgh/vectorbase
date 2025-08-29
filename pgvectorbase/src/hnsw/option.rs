@@ -229,8 +229,6 @@ unsafe fn hnsw_page_get_meta(page: pg_sys::Page) -> *mut HnswMetaPageData {
     pg_sys::PageGetContents(page) as *mut HnswMetaPageData
 }
 
-/// # 安全
-/// 调用者必须确保缓冲区和状态指针有效
 pub unsafe fn hnsw_commit_buffer(
     buf: pg_sys::Buffer,
     state: *mut pg_sys::GenericXLogState,
@@ -317,7 +315,7 @@ pub fn hnsw_get_ef_construction(index_rel: pg_sys::Relation) -> i32 {
         // 获取选项指针
         let opts_ptr = relation.rd_options as *mut HnswOptions;
         if opts_ptr.is_null() {
-            return 0;
+            return HNSW_DEFAULT_M * 2;
         }
         let opts = &*opts_ptr;
         opts.ef_construction
