@@ -9,6 +9,7 @@ pub mod graph;
 pub mod query;
 pub mod schema;
 mod searcher;
+pub mod storage;
 use crate::ann::{AnnFilter, AnnPrioritizer};
 use ann::Emptyer;
 

@@ -10,7 +10,7 @@ use crate::{
         asyncio::{self, UnbufferedSender},
         common::IdGenerator,
     },
-    Config, Engine, FieldEntry, GyError, GyResult, Meta, Schema, Vector, RUNTIME,
+    Config, Engine, GyError, GyResult, Meta, Schema, Vector, RUNTIME,
 };
 use lock_api::RawMutex;
 use parking_lot::Mutex;
