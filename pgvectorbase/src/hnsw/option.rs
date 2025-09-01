@@ -1,8 +1,13 @@
 use crate::datatype::Vector;
 use crate::error::VBResult;
+use core::ffi::c_void;
 use pgrx::pg_sys;
+use pgrx::pg_sys::BlockNumber;
 use pgrx::pg_sys::FmgrInfo;
+use pgrx::pg_sys::ItemPointerData;
+use pgrx::pg_sys::List;
 use pgrx::pg_sys::MemoryContext;
+use pgrx::pg_sys::OffsetNumber;
 use std::ptr;
 
 const HNSW_MAGIC_NUMBER: u32 = 0xA953A953;
@@ -51,17 +56,18 @@ pub(crate) struct HnswBuildState {
 }
 
 /// HNSW 元页面数据结构
+/// 元数据页 (HNSW_METAPAGE_BLKNO = 0)​
 #[repr(C)]
 pub struct HnswMetaPageData {
-    pub magic_number: u32,                 // 魔数标识
-    pub version: u32,                      // 版本号
-    pub dimensions: u32,                   // 向量维度
-    pub m: u16,                            // 最大连接数
-    pub ef_construction: u16,              // 构建时候选集大小
-    pub entry_blkno: pg_sys::BlockNumber,  // 入口点块号
-    pub entry_offno: pg_sys::OffsetNumber, // 入口点偏移
-    pub entry_level: i16,                  // 入口点层级
-    pub insert_page: pg_sys::BlockNumber,  // 插入页面
+    pub magic_number: u32,         // 魔数标识
+    pub version: u32,              // 版本号
+    pub dimensions: u32,           // 向量维度
+    pub m: u16,                    // 最大连接数
+    pub ef_construction: u16,      // 构建时候选集大小
+    pub entry_blkno: BlockNumber,  // 入口点块号
+    pub entry_offno: OffsetNumber, // 入口点偏移
+    pub entry_level: i16,          // 入口点层级
+    pub insert_page: BlockNumber,  // 插入页面
 }
 
 /// HNSW 页面特殊数据
@@ -157,9 +163,42 @@ impl HnswBuildState {
         fork_num: pg_sys::ForkNumber::Type,
     ) -> VBResult<()> {
         self.init(heap_rel, index_rel, index_info, fork_num)?;
+        if !self.heap.is_null() {}
         self.flush_page()?;
         self.free()?;
         Ok(())
+    }
+
+    pub(crate) fn build_graph(
+        &mut self,
+        buildstate_ptr: HnswBuildState,
+        fork_num: pg_sys::ForkNumber::Type,
+    ) {
+        unsafe {
+            // 更新进度条（伪装调用，实际可能需要 pg_stat API）
+            // 更新 progress 参数
+            // pg_sys::pgstat_progress_incr_param(PROGRESS_PHASE_INDEX, PROGRESS_INCREMENT);
+
+            // 调用不同的扫描函数，视 Postgres 版本而定
+            // table_index_build_scan()（在较老版本中为 IndexBuildHeapScan()），
+            // 以遍历基础表中的每一行（tuple）
+            // 并为其调用一个回调函数即 BuildCallback。这一步的作用是：
+            // 对每条表中记录进行处理，从中提取键值（在 HNSW 场景中通常是向量数据）；
+            // 将键值插入索引结构，在本例中就是构建 HNSW 图索引；
+            // 更新索引构建状态，例如记录已处理的元组数等统计信息
+            {
+                self.reltuples = pg_sys::table_index_build_scan(
+                    self.heap,
+                    self.index,
+                    self.index_info,
+                    true as _,            // allow_sync_scan
+                    true as _,            // progress
+                    Some(build_callback), // 回调函数指针
+                    self as *mut Self as *mut c_void,
+                    std::ptr::null_mut(),
+                );
+            }
+        }
     }
 
     pub(crate) fn free(&mut self) -> VBResult<()> {
@@ -322,12 +361,44 @@ pub fn hnsw_get_ef_construction(index_rel: pg_sys::Relation) -> i32 {
     }
 }
 
+unsafe extern "C-unwind" fn build_callback(
+    index_rel: pg_sys::Relation,
+    heap_tid: pg_sys::ItemPointer,
+    values: *mut pg_sys::Datum,
+    isnull: *mut bool,
+    tuple_is_alive: bool,
+    state: *mut c_void,
+) {
+    let buildstate = &*(state as *mut HnswBuildState);
+
+    // 跳过 NULL 值
+    if *isnull.offset(0) {
+        return;
+    }
+
+    // 如果内存中的元素数量超过最大限制，则刷新内存
+    if buildstate.indtuples >= buildstate.max_in_memory_elements {
+        if !buildstate.flushed {
+            ereport(
+                NOTICE,
+                errmsg(
+                    "hnsw graph no longer fits into maintenance_work_mem after {} tuples",
+                    buildstate.indtuples,
+                ),
+                errdetail("Building will take significantly more time."),
+                errhint("Increase maintenance_work_mem to speed up builds."),
+            );
+        }
+    }
+}
+
 type HnswElement = HnswElementData;
 
-#[repr(C)] // 保证与 C 兼容的内存布局
+// 保证与 C 兼容的内存布局
+#[repr(C)]
 pub struct HnswElementData {
     /// 堆元组 ID 列表（使用 PostgreSQL 的 List 结构）
-    pub heaptids: *mut pg_sys::List,
+    pub heaptids: List,
 
     /// 元素所在层级 (0 表示底层)
     pub level: u8,
@@ -373,3 +444,15 @@ pub struct HnswCandidate {
     /// 与查询向量的距离
     pub distance: f32,
 }
+
+// HNSW 邻居元组结构
+#[repr(C)]
+pub struct HnswNeighborTupleData {
+    type_field: u8,                  // 元组类型标识
+    unused: u8,                      // 填充字节
+    count: u16,                      // 实际存储的邻居数量
+    indextids: [ItemPointerData; 0], // 柔性数组（长度由count决定）
+}
+
+// 智能指针类型别名
+pub type HnswNeighborTuple = *mut HnswNeighborTupleData;
