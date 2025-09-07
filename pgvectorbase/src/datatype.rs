@@ -14,18 +14,26 @@ use pgrx::pgrx_sql_entity_graph::metadata::SqlTranslatable;
 use pgrx::Array;
 use pgrx::FromDatum;
 use pgrx::IntoDatum;
+use serde::Deserialize;
+use serde::Serialize;
 use std::alloc::Layout;
 use std::ffi::CStr;
+
 use std::ops::Deref;
 use std::ops::DerefMut;
 use std::ptr::NonNull;
 
-use serde::Deserialize;
-use serde::Serialize;
-
 pub const HEADER_MAGIC: u16 = 0x4256; // "VB" for "Vector Base"
 
 use crate::error::VBResult;
+
+macro_rules! VectorSize {
+    ($dim:expr) => {
+        // 假设你的 Vector 结构体有一个字段 `x`，它是一个 float 数组或其他结构的起始标记
+        // 这里假设 Vector 结构体定义为：pub struct Vector { pub x: f32, ... }
+        offset_of!(Vector, x) + size_of::<f32>() * $dim
+    };
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum VectorTypmod {
@@ -117,7 +125,7 @@ pub struct Vector {
     varlena: u32,
     len: u16,
     unused: u16,
-    phantom: [f32; 0],
+    pub x: [f32; 0],
 }
 
 impl Vector {
@@ -127,11 +135,11 @@ impl Vector {
 
     pub fn data(&self) -> &[f32] {
         debug_assert_eq!(self.varlena & 3, 0);
-        unsafe { std::slice::from_raw_parts(self.phantom.as_ptr(), self.len as usize) }
+        unsafe { std::slice::from_raw_parts(self.x.as_ptr(), self.len as usize) }
     }
 
     fn as_slice(&self) -> &[f32] {
-        unsafe { std::slice::from_raw_parts(self.phantom.as_ptr(), self.len()) }
+        unsafe { std::slice::from_raw_parts(self.x.as_ptr(), self.len()) }
     }
 
     fn into_raw(self) -> *mut Vector {
@@ -276,7 +284,7 @@ impl VectorOutput {
             std::ptr::addr_of_mut!((*ptr).len).write(value.len() as u16);
             std::ptr::addr_of_mut!((*ptr).unused).write(HEADER_MAGIC);
 
-            let data_ptr = (*ptr).phantom.as_mut_ptr();
+            let data_ptr = (*ptr).x.as_mut_ptr();
             std::ptr::copy_nonoverlapping(value.as_ptr(), data_ptr, value.len());
             let data_size = value.len() * std::mem::size_of::<f32>();
             let total_size = layout.size();

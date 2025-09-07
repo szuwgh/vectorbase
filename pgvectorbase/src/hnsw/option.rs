@@ -1,19 +1,59 @@
 use crate::datatype::Vector;
 use crate::error::VBResult;
+use crate::hnsw::build::build_callback;
 use core::ffi::c_void;
+use pgrx::info;
+use pgrx::notice;
 use pgrx::pg_sys;
+use pgrx::pg_sys::palloc;
+use pgrx::pg_sys::pg_detoast_datum;
 use pgrx::pg_sys::BlockNumber;
+use pgrx::pg_sys::Datum;
 use pgrx::pg_sys::FmgrInfo;
+use pgrx::pg_sys::ItemPointerCopy;
 use pgrx::pg_sys::ItemPointerData;
 use pgrx::pg_sys::List;
 use pgrx::pg_sys::MemoryContext;
+use pgrx::pg_sys::MemoryContextReset;
+use pgrx::pg_sys::MemoryContextSwitchTo;
 use pgrx::pg_sys::OffsetNumber;
+use pgrx::AllocatedByRust;
+use pgrx::PgBox;
 use std::ptr;
-
 const HNSW_MAGIC_NUMBER: u32 = 0xA953A953;
 const HNSW_DEFAULT_M: i32 = 16; // 默认 M 参数
 const HNSW_MAX_DIM: i32 = 2000; // 最大支持维度
 const HNSW_PAGE_ID: u16 = 0xFF90;
+
+macro_rules! HnswGetLayerM {
+    ($m:expr, $layer:expr) => {
+        if $layer == 0 {
+            $m * 2
+        } else {
+            $m
+        }
+    };
+}
+
+/// 安全地获取 Vector（假设 pg_detoast_datum 和 Vector 已正确定义）
+fn datum_get_vector(datum: Datum) -> Option<*mut Vector> {
+    let ptr = unsafe { pg_detoast_datum(datum.cast_mut_ptr()) };
+    if ptr.is_null() {
+        None
+    } else {
+        // 将解压后的指针转换为 Vector 的可变引用
+        // 使用 'static 生命周期需极度谨慎，实际应根据内存上下文确定正确生命周期
+        Some(unsafe { ptr as *mut Vector })
+    }
+}
+
+macro_rules! DatumGetVector {
+    ($x:expr) => {
+        // 调用假设存在的解压函数，并将结果转换为 Vector 指针
+        // 这是一个不安全操作
+        unsafe { &mut *(pg_detoast_datum($x) as *mut Vector) }
+    };
+}
 /// HNSW 索引选项结构体（与 C 端完全兼容）
 #[repr(C)]
 struct HnswOptions {
@@ -29,9 +69,9 @@ pub(crate) struct HnswBuildState {
     fork_num: pg_sys::ForkNumber::Type, //用于标识表或索引的不同物理文件分支 MAIN_FORKNUM 主数据文件分支，存储实际数据
 
     // HNSW 参数
-    m: i32,
-    ef_construction: i32,
-    dimensions: i32,
+    pub(crate) m: i32,
+    pub(crate) ef_construction: i32,
+    pub(crate) dimensions: i32,
 
     // 统计信息
     pub(crate) reltuples: f64,
@@ -40,10 +80,10 @@ pub(crate) struct HnswBuildState {
     // 图结构
     elements: Vec<HnswElement>,
     entry_point: Option<Box<HnswElement>>,
-    ml: f64,
-    max_level: i32,
-    max_in_memory_elements: f64,
-    flushed: bool,
+    pub(crate) ml: f64,
+    pub(crate) max_level: i32,
+    pub(crate) max_in_memory_elements: f64,
+    pub(crate) flushed: bool,
     normvec: Option<Vector>,
 
     // 支持函数
@@ -52,7 +92,7 @@ pub(crate) struct HnswBuildState {
     collation: pg_sys::Oid,
 
     // 内存上下文
-    tmp_ctx: MemoryContext,
+    pub(crate) tmp_ctx: MemoryContext,
 }
 
 /// HNSW 元页面数据结构
@@ -163,17 +203,17 @@ impl HnswBuildState {
         fork_num: pg_sys::ForkNumber::Type,
     ) -> VBResult<()> {
         self.init(heap_rel, index_rel, index_info, fork_num)?;
-        if !self.heap.is_null() {}
-        self.flush_page()?;
+        if !self.heap.is_null() {
+            self.build_graph(fork_num);
+        }
+        if !self.flushed {
+            self.flush_page()?;
+        }
         self.free()?;
         Ok(())
     }
 
-    pub(crate) fn build_graph(
-        &mut self,
-        buildstate_ptr: HnswBuildState,
-        fork_num: pg_sys::ForkNumber::Type,
-    ) {
+    pub(crate) fn build_graph(&mut self, fork_num: pg_sys::ForkNumber::Type) {
         unsafe {
             // 更新进度条（伪装调用，实际可能需要 pg_stat API）
             // 更新 progress 参数
@@ -361,44 +401,13 @@ pub fn hnsw_get_ef_construction(index_rel: pg_sys::Relation) -> i32 {
     }
 }
 
-unsafe extern "C-unwind" fn build_callback(
-    index_rel: pg_sys::Relation,
-    heap_tid: pg_sys::ItemPointer,
-    values: *mut pg_sys::Datum,
-    isnull: *mut bool,
-    tuple_is_alive: bool,
-    state: *mut c_void,
-) {
-    let buildstate = &*(state as *mut HnswBuildState);
-
-    // 跳过 NULL 值
-    if *isnull.offset(0) {
-        return;
-    }
-
-    // 如果内存中的元素数量超过最大限制，则刷新内存
-    if buildstate.indtuples >= buildstate.max_in_memory_elements {
-        if !buildstate.flushed {
-            ereport(
-                NOTICE,
-                errmsg(
-                    "hnsw graph no longer fits into maintenance_work_mem after {} tuples",
-                    buildstate.indtuples,
-                ),
-                errdetail("Building will take significantly more time."),
-                errhint("Increase maintenance_work_mem to speed up builds."),
-            );
-        }
-    }
-}
-
-type HnswElement = HnswElementData;
+pub type HnswElement = HnswElementData;
 
 // 保证与 C 兼容的内存布局
 #[repr(C)]
 pub struct HnswElementData {
     /// 堆元组 ID 列表（使用 PostgreSQL 的 List 结构）
-    pub heaptids: List,
+    pub heaptids: *mut List,
 
     /// 元素所在层级 (0 表示底层)
     pub level: u8,
@@ -423,6 +432,70 @@ pub struct HnswElementData {
 
     /// 向量数据
     pub vec: *mut Vector,
+}
+
+impl HnswElementData {
+    /*
+     * Add a heap TID to an element
+     */
+    unsafe fn add_heap_tid(&mut self, heaptid: *const pg_sys::ItemPointerData) {
+        // 分配内存并复制 ItemPointerData
+        let copy = PgBox::<HnswNeighborArray>::alloc().as_ptr(); //palloc(size_of::<HnswNeighborArray>()); //Box::into_raw(Box::new(unsafe { *heaptid }));
+        ItemPointerCopy(heaptid, copy as *mut pg_sys::ItemPointerData);
+        self.heaptids = pg_sys::lappend(self.heaptids, copy as *mut c_void);
+    }
+
+    unsafe fn init_neighbors(&mut self, m: i32) {
+        let level = self.level;
+        // 计算需要分配的总内存大小
+        let ptr =
+            palloc(size_of::<HnswNeighborArray>() * (level + 1) as usize) as *mut HnswNeighborArray;
+        for lc in 0..=level {
+            let lm = HnswGetLayerM!(m, lc) as usize;
+            let neighbor_array = &mut *ptr.add(lc as usize);
+            neighbor_array.length = 0;
+            neighbor_array.items = palloc(size_of::<HnswCandidate>() * lm) as *mut HnswCandidate;
+        }
+        self.neighbors = ptr;
+    }
+}
+
+/// 返回一个 [0.0, 1.0) 区间的随机浮点数
+pub fn random_double() -> f64 {
+    unsafe { pg_sys::pg_prng_double(&mut pg_sys::pg_global_prng_state) }
+}
+
+impl HnswElementData {
+    pub(crate) unsafe fn new(
+        heaptid: *mut pg_sys::ItemPointerData,
+        m: i32,
+        ml: f64,
+        max_level: i32,
+    ) -> PgBox<HnswElementData, AllocatedByRust> {
+        // 使用 Postgres 的分配器 palloc，Rust 对应为 PgBox::alloc
+        let mut element = PgBox::<HnswElementData>::alloc();
+
+        // 随机生成级别：-log(RandomDouble()) * ml
+        let rand_val = random_double();
+        //层数是随机的
+        let mut level = (-rand_val.ln() * ml) as i32;
+
+        // 限制 level 不超过 max_level
+        if level > max_level {
+            level = max_level;
+        }
+
+        // 初始化字段
+        (*element).heaptids = ptr::null_mut(); // Rust 没有 NIL，使用空指针或自定义
+        (*element).add_heap_tid(heaptid);
+
+        (*element).level = level as u8; // 假设 level 是 u8
+        (*element).deleted = 0;
+
+        (*element).init_neighbors(m);
+
+        element
+    }
 }
 
 /// 邻居数组结构

@@ -1,4 +1,5 @@
 #![recursion_limit = "256"]
+#[macro_use]
 mod datatype;
 mod error;
 mod hnsw;
