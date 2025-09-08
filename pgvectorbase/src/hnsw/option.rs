@@ -3,9 +3,12 @@ use crate::error::VBResult;
 use crate::hnsw::build::build_callback;
 use core::ffi::c_void;
 use pgrx::info;
+use pgrx::list::List::Nil;
 use pgrx::notice;
 use pgrx::pg_sys;
+use pgrx::pg_sys::index_getprocinfo;
 use pgrx::pg_sys::palloc;
+use pgrx::pg_sys::pfree;
 use pgrx::pg_sys::pg_detoast_datum;
 use pgrx::pg_sys::BlockNumber;
 use pgrx::pg_sys::Datum;
@@ -17,9 +20,12 @@ use pgrx::pg_sys::MemoryContext;
 use pgrx::pg_sys::MemoryContextReset;
 use pgrx::pg_sys::MemoryContextSwitchTo;
 use pgrx::pg_sys::OffsetNumber;
-use pgrx::AllocatedByRust;
+use pgrx::pg_sys::Oid;
 use pgrx::PgBox;
 use std::ptr;
+
+const HNSW_DISTANCE_PROC: u16 = 1;
+
 const HNSW_MAGIC_NUMBER: u32 = 0xA953A953;
 const HNSW_DEFAULT_M: i32 = 16; // 默认 M 参数
 const HNSW_MAX_DIM: i32 = 2000; // 最大支持维度
@@ -32,6 +38,13 @@ macro_rules! HnswGetLayerM {
         } else {
             $m
         }
+    };
+}
+
+//Optimal ML from paper
+macro_rules! HnswGetMl {
+    ($m:expr) => {
+        1.0 / ($m as f64).ln()
     };
 }
 
@@ -78,17 +91,17 @@ pub(crate) struct HnswBuildState {
     pub(crate) indtuples: f64,
 
     // 图结构
-    elements: Vec<HnswElement>,
-    entry_point: Option<Box<HnswElement>>,
+    elements: *mut List,
+    entry_point: HnswElement,
     pub(crate) ml: f64,
     pub(crate) max_level: i32,
     pub(crate) max_in_memory_elements: f64,
     pub(crate) flushed: bool,
-    normvec: Option<Vector>,
+    normvec: *mut Vector,
 
     // 支持函数
-    procinfo: Option<FmgrInfo>,
-    normprocinfo: Option<FmgrInfo>,
+    procinfo: *mut FmgrInfo,
+    normprocinfo: *mut FmgrInfo,
     collation: pg_sys::Oid,
 
     // 内存上下文
@@ -130,39 +143,39 @@ impl HnswBuildState {
             dimensions: 0,
             reltuples: 0.0,
             indtuples: 0.0,
-            elements: Vec::new(),
-            entry_point: None,
+            elements: ptr::null_mut(),
+            entry_point: ptr::null_mut(),
             ml: 0.0,
             max_level: 0,
             max_in_memory_elements: 0.0,
             flushed: false,
-            normvec: None,
-            procinfo: None,
-            normprocinfo: None,
+            normvec: ptr::null_mut(),
+            procinfo: ptr::null_mut(),
+            normprocinfo: ptr::null_mut(),
             collation: pg_sys::InvalidOid,
             tmp_ctx: std::ptr::null_mut(),
         }
     }
 
-    pub(crate) fn init(
+    pub(crate) unsafe fn init(
         &mut self,
-        heap_rel: pg_sys::Relation,
-        index_rel: pg_sys::Relation,
+        heap: pg_sys::Relation,
+        index: pg_sys::Relation,
         index_info: *mut pg_sys::IndexInfo,
         fork_num: pg_sys::ForkNumber::Type,
     ) -> VBResult<()> {
         // 保存基础关系
-        self.heap = heap_rel;
-        self.index = index_rel;
+        self.heap = heap;
+        self.index = index;
         self.index_info = index_info;
         self.fork_num = fork_num;
 
         // 获取索引参数
-        self.m = hnsw_get_M(index_rel);
-        self.ef_construction = hnsw_get_ef_construction(index_rel);
+        self.m = hnsw_get_M(index);
+        self.ef_construction = hnsw_get_ef_construction(index);
 
         // 获取向量维度
-        self.dimensions = hnsw_get_dim(index_rel);
+        self.dimensions = hnsw_get_dim(index);
         // 验证参数
         if self.dimensions < 0 {
             return Err("column does not have dimensions".into());
@@ -181,6 +194,15 @@ impl HnswBuildState {
         self.reltuples = 0.0;
         self.indtuples = 0.0;
 
+        //获取距离函数
+        self.procinfo = index_getprocinfo(index, 1, HNSW_DISTANCE_PROC);
+        self.collation = *(*index).rd_indcollation.add(0);
+
+        self.elements = ptr::null_mut();
+        self.entry_point = ptr::null_mut();
+
+        self.ml = HnswGetMl!(self.m);
+
         // 7. 创建临时内存上下文
         unsafe {
             self.tmp_ctx = pg_sys::AllocSetContextCreateInternal(
@@ -195,7 +217,7 @@ impl HnswBuildState {
         Ok(())
     }
 
-    pub(crate) fn build_index(
+    pub(crate) unsafe fn build_index(
         &mut self,
         heap_rel: pg_sys::Relation,
         index_rel: pg_sys::Relation,
@@ -241,17 +263,15 @@ impl HnswBuildState {
         }
     }
 
-    pub(crate) fn free(&mut self) -> VBResult<()> {
+    pub(crate) unsafe fn free(&mut self) -> VBResult<()> {
+        pfree(self.normvec.cast());
         // 释放内存上下文
         if !self.tmp_ctx.is_null() {
-            unsafe {
-                pgrx::pg_sys::MemoryContextDelete(self.tmp_ctx);
-            }
+            pgrx::pg_sys::MemoryContextDelete(self.tmp_ctx);
+
             self.tmp_ctx = std::ptr::null_mut();
         }
         // 清理元素列表
-        self.elements.clear();
-        self.entry_point = None;
         Ok(())
     }
 
@@ -401,7 +421,7 @@ pub fn hnsw_get_ef_construction(index_rel: pg_sys::Relation) -> i32 {
     }
 }
 
-pub type HnswElement = HnswElementData;
+pub type HnswElement = *mut HnswElementData;
 
 // 保证与 C 兼容的内存布局
 #[repr(C)]
@@ -471,9 +491,9 @@ impl HnswElementData {
         m: i32,
         ml: f64,
         max_level: i32,
-    ) -> PgBox<HnswElementData, AllocatedByRust> {
+    ) -> HnswElement {
         // 使用 Postgres 的分配器 palloc，Rust 对应为 PgBox::alloc
-        let mut element = PgBox::<HnswElementData>::alloc();
+        let element = palloc(size_of::<HnswElementData>()) as HnswElement;
 
         // 随机生成级别：-log(RandomDouble()) * ml
         let rand_val = random_double();
@@ -512,7 +532,7 @@ pub struct HnswNeighborArray {
 #[repr(C)]
 pub struct HnswCandidate {
     /// 指向的图元素
-    pub element: *mut HnswElement,
+    pub element: HnswElement,
 
     /// 与查询向量的距离
     pub distance: f32,

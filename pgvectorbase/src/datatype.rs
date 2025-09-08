@@ -4,6 +4,7 @@ use pgrx::opname;
 use pgrx::pg_extern;
 use pgrx::pg_operator;
 use pgrx::pg_schema;
+
 use pgrx::pg_sys::Datum;
 use pgrx::pg_sys::Oid;
 use pgrx::pgrx_sql_entity_graph::metadata::ArgumentError;
@@ -27,11 +28,20 @@ pub const HEADER_MAGIC: u16 = 0x4256; // "VB" for "Vector Base"
 
 use crate::error::VBResult;
 
+#[macro_export]
 macro_rules! VectorSize {
     ($dim:expr) => {
         // 假设你的 Vector 结构体有一个字段 `x`，它是一个 float 数组或其他结构的起始标记
         // 这里假设 Vector 结构体定义为：pub struct Vector { pub x: f32, ... }
-        offset_of!(Vector, x) + size_of::<f32>() * $dim
+        std::mem::offset_of!(Vector, x) + size_of::<f32>() * $dim
+    };
+}
+
+#[macro_export]
+macro_rules! DatumGetVector {
+    ($datum:expr) => {
+        // 假设 pg_detost_datum 已通过 FFI 定义或引入
+        (pgrx::pg_sys::pg_detoast_datum($datum) as *mut Vector)
     };
 }
 

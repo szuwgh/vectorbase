@@ -1,14 +1,22 @@
 use super::option::HnswBuildState;
 use crate::datatype::Vector;
+use crate::error::VBResult;
 use crate::hnsw::option::HnswElement;
+use crate::hnsw::option::HnswElementData;
 use core::ffi::c_void;
 use pgrx::info;
 use pgrx::notice;
 use pgrx::pg_sys;
+use pgrx::pg_sys::list_make1_impl;
 use pgrx::pg_sys::palloc;
+use pgrx::pg_sys::Datum;
+use pgrx::pg_sys::FmgrInfo;
 use pgrx::pg_sys::MemoryContextReset;
 use pgrx::pg_sys::MemoryContextSwitchTo;
-use std::mem::offset_of;
+use pgrx::pg_sys::Oid;
+use pgrx::pg_sys::PointerGetDatum;
+use std::ptr;
+use std::ptr::copy_nonoverlapping;
 // 1. index_rel: pg_sys::Relation
 // 这是当前正在构建的索引的关系对象（Relation），用于：
 // 调用索引构建相关函数（如插入索引条目）。
@@ -83,11 +91,51 @@ pub(crate) unsafe extern "C-unwind" fn build_callback(
 
         return;
     }
-    let mut element = HnswElement::new(heap_tid, buildstate.m, buildstate.ml, buildstate.max_level);
-    element.vec = palloc(VectorSize!(buildstate.dimensions as usize)) as *mut Vector;
+    let element = HnswElementData::new(heap_tid, buildstate.m, buildstate.ml, buildstate.max_level);
+    (*element).vec = palloc(VectorSize!(buildstate.dimensions as usize)) as *mut Vector;
     let old_ctx = MemoryContextSwitchTo(buildstate.tmp_ctx);
 }
 
-fn insert_tuple() {}
+/**
+ * 在内存中构建索引
+ */
+unsafe fn insert_tuple(
+    index: pg_sys::Relation,
+    values: *mut Datum,
+    element: HnswElement,
+    buildstate: &mut HnswBuildState,
+    dup: *mut HnswElement,
+) -> VBResult<()> {
+    let value_datum = values.add(0);
+    let detoasted_value = PointerGetDatum(pg_sys::pg_detoast_datum(value_datum.cast()).cast());
 
-fn hnsw_insert_tuple() {}
+    copy_nonoverlapping(
+        (*element).vec,
+        DatumGetVector!(detoasted_value.cast_mut_ptr()),
+        VectorSize!(buildstate.dimensions as usize),
+    );
+
+    Ok(())
+}
+
+/*
+ * Algorithm 1 from paper
+ */
+unsafe fn hnsw_insert_element(
+    element: HnswElement,
+    entry_point: HnswElement,
+    index: pg_sys::Relation,
+    fmgr_info: *mut FmgrInfo,
+    collation: Oid,
+    m: i32,
+    ef_construction: i32,
+    existing: bool,
+) {
+    let level = (*element).level;
+    let q = PointerGetDatum((*element).vec.cast());
+    let skip_element = if existing { element } else { ptr::null() };
+    if entry_point.is_null() {
+        return;
+    }
+    // let ep = list_make1_impl(arg_t, arg_datum1)
+}
