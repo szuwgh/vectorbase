@@ -1,0 +1,23 @@
+CC = @CC@
+CFLAGS = @CFLAGS@
+PREFIX = @PREFIX@
+LIBDIR = @LIBDIR@
+INCLUDEDIR = @INCLUDEDIR@
+
+.PHONY: all clean install uninstall test
+
+all:
+	$(MAKE) -C src all CC=$(CC) CFLAGS="$(CFLAGS)"
+
+clean:
+	$(MAKE) -C src clean
+
+install:
+	$(MAKE) -C src install CC=$(CC) CFLAGS="$(CFLAGS)" \
+		PREFIX=$(PREFIX) LIBDIR=$(LIBDIR) INCLUDEDIR=$(INCLUDEDIR)
+
+uninstall:
+	$(MAKE) -C src uninstall PREFIX=$(PREFIX) LIBDIR=$(LIBDIR) INCLUDEDIR=$(INCLUDEDIR)
+
+test:
+	$(MAKE) -C src test CC=$(CC) CFLAGS="$(CFLAGS)"

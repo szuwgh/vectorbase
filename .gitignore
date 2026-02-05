@@ -50,6 +50,12 @@ modules.order
 Module.symvers
 Mkfile.old
 dkms.conf
-
+.clang-format
+tests
 # debug information files
 *.dwo
+libvectorbase/
+compile_commands.json
+Makefile
+.cache/
+.vscode/

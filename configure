@@ -1,0 +1,44 @@
+#!/bin/sh
+# Simple configure script
+set -eu
+
+# Default prefix
+PREFIX=/usr/local
+
+for arg in "$@"; do
+  case "$arg" in
+    --prefix=*) PREFIX="${arg#--prefix=}" ;;
+    --help) echo "Usage: ./configure [--prefix=/path]"; exit 0 ;;
+    *) : ;;
+  esac
+done
+
+# Allow environment overrides
+CC=${CC:-cc}
+CFLAGS=${CFLAGS:-"-O2 -fPIC"}
+LIBDIR=${LIBDIR:-"$PREFIX/lib"}
+INCLUDEDIR=${INCLUDEDIR:-"$PREFIX/include"}
+
+echo "Configuring with:" 
+echo "  CC=$CC"
+echo "  CFLAGS=$CFLAGS"
+echo "  PREFIX=$PREFIX"
+echo "  LIBDIR=$LIBDIR"
+
+if [ ! -f Makefile.in ]; then
+  echo "Makefile.in not found" >&2
+  exit 1
+fi
+
+# Substitute variables into Makefile
+sed \
+  -e "s|@CC@|$CC|g" \
+  -e "s|@CFLAGS@|$CFLAGS|g" \
+  -e "s|@PREFIX@|$PREFIX|g" \
+  -e "s|@LIBDIR@|$LIBDIR|g" \
+  -e "s|@INCLUDEDIR@|$INCLUDEDIR|g" \
+  Makefile.in > Makefile
+
+echo "Generated Makefile"
+
+exit 0
