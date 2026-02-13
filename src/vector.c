@@ -11,7 +11,7 @@ static inline void* vector_get_ptr(const Vector* vec, usize index)
     return (char*)vec->data + (index * vec->element_size);
 }
 
-int Vector_init(Vector* vec, usize element_size, usize initial_capacity)
+int vector_init(Vector* vec, usize element_size, usize initial_capacity)
 {
     if (initial_capacity == 0)
     {
@@ -31,7 +31,7 @@ int Vector_init(Vector* vec, usize element_size, usize initial_capacity)
     return 0;
 }
 
-Vector* Vector_create(usize element_size, usize initial_capacity)
+Vector* vector_create(usize element_size, usize initial_capacity)
 {
     if (element_size == 0)
     {
@@ -44,7 +44,7 @@ Vector* Vector_create(usize element_size, usize initial_capacity)
         return NULL;
     }
 
-    if (Vector_init(vec, element_size, initial_capacity) != 0)
+    if (vector_init(vec, element_size, initial_capacity) != 0)
     {
         free(vec);
         return NULL;
@@ -53,7 +53,7 @@ Vector* Vector_create(usize element_size, usize initial_capacity)
     return vec;
 }
 
-void Vector_destroy(Vector* vec)
+void vector_destroy(Vector* vec)
 {
     if (vec)
     {
@@ -65,7 +65,7 @@ void Vector_destroy(Vector* vec)
     }
 }
 
-void Vector_deinit(Vector* vec)
+void vector_deinit(Vector* vec)
 {
     if (vec)
     {
@@ -95,7 +95,7 @@ static int vector_grow(Vector* vec)
     return 0;
 }
 
-int Vector_push_back(Vector* vec, const void* element)
+int vector_push_back(Vector* vec, const void* element)
 {
     if (!vec || !element)
     {
@@ -117,7 +117,7 @@ int Vector_push_back(Vector* vec, const void* element)
     return 0;
 }
 
-int Vector_pop_back(Vector* vec, void* out)
+int vector_pop_back(Vector* vec, void* out)
 {
     if (!vec || vec->size == 0)
     {
@@ -136,7 +136,7 @@ int Vector_pop_back(Vector* vec, void* out)
     return 0;
 }
 
-void* Vector_get(const Vector* vec, usize index)
+void* vector_get(const Vector* vec, usize index)
 {
     if (!vec || index >= vec->size)
     {
@@ -146,7 +146,7 @@ void* Vector_get(const Vector* vec, usize index)
     return vector_get_ptr(vec, index);
 }
 
-int Vector_get_copy(const Vector* vec, usize index, void* out)
+int vector_get_copy(const Vector* vec, usize index, void* out)
 {
     if (!vec || !out || index >= vec->size)
     {
@@ -158,7 +158,7 @@ int Vector_get_copy(const Vector* vec, usize index, void* out)
     return 0;
 }
 
-int Vector_set(Vector* vec, usize index, const void* element)
+int vector_set(Vector* vec, usize index, const void* element)
 {
     if (!vec || !element || index >= vec->size)
     {
@@ -170,7 +170,7 @@ int Vector_set(Vector* vec, usize index, const void* element)
     return 0;
 }
 
-usize Vector_size(const Vector* vec)
+usize vector_size(const Vector* vec)
 {
     if (!vec)
     {
@@ -179,7 +179,7 @@ usize Vector_size(const Vector* vec)
     return vec->size;
 }
 
-usize Vector_capacity(const Vector* vec)
+usize vector_capacity(const Vector* vec)
 {
     if (!vec)
     {
@@ -188,7 +188,7 @@ usize Vector_capacity(const Vector* vec)
     return vec->capacity;
 }
 
-usize Vector_element_size(const Vector* vec)
+usize vector_element_size(const Vector* vec)
 {
     if (!vec)
     {
@@ -197,12 +197,12 @@ usize Vector_element_size(const Vector* vec)
     return vec->element_size;
 }
 
-bool Vector_empty(const Vector* vec)
+bool vector_empty(const Vector* vec)
 {
     return vec == NULL || vec->size == 0;
 }
 
-void Vector_clear(Vector* vec)
+void vector_clear(Vector* vec)
 {
     if (vec)
     {
@@ -210,7 +210,7 @@ void Vector_clear(Vector* vec)
     }
 }
 
-int Vector_reserve(Vector* vec, usize new_capacity)
+int vector_reserve(Vector* vec, usize new_capacity)
 {
     if (!vec)
     {
@@ -233,7 +233,7 @@ int Vector_reserve(Vector* vec, usize new_capacity)
     return 0;
 }
 
-int Vector_resize(Vector* vec, usize new_size, const void* default_value)
+int vector_resize(Vector* vec, usize new_size, const void* default_value)
 {
     if (!vec)
     {
@@ -242,7 +242,7 @@ int Vector_resize(Vector* vec, usize new_size, const void* default_value)
 
     if (new_size > vec->capacity)
     {
-        if (Vector_reserve(vec, new_size) != 0)
+        if (vector_reserve(vec, new_size) != 0)
         {
             return -1;
         }
@@ -269,7 +269,7 @@ int Vector_resize(Vector* vec, usize new_size, const void* default_value)
     return 0;
 }
 
-int Vector_insert(Vector* vec, usize index, const void* element)
+int vector_insert(Vector* vec, usize index, const void* element)
 {
     if (!vec || !element || index > vec->size)
     {
@@ -300,7 +300,7 @@ int Vector_insert(Vector* vec, usize index, const void* element)
     return 0;
 }
 
-int Vector_erase(Vector* vec, usize index, void* out)
+int vector_erase(Vector* vec, usize index, void* out)
 {
     if (!vec || index >= vec->size)
     {
@@ -327,7 +327,7 @@ int Vector_erase(Vector* vec, usize index, void* out)
     return 0;
 }
 
-ssize_t Vector_find(const Vector* vec, const void* element,
+ssize_t vector_find(const Vector* vec, const void* element,
                     int (*compare)(const void*, const void*))
 {
     if (!vec || !element || !compare)
@@ -347,7 +347,7 @@ ssize_t Vector_find(const Vector* vec, const void* element,
     return -1;
 }
 
-void* Vector_front(const Vector* vec)
+void* vector_front(const Vector* vec)
 {
     if (!vec || vec->size == 0)
     {
@@ -356,7 +356,7 @@ void* Vector_front(const Vector* vec)
     return vec->data;
 }
 
-void* Vector_back(const Vector* vec)
+void* vector_back(const Vector* vec)
 {
     if (!vec || vec->size == 0)
     {
@@ -365,11 +365,40 @@ void* Vector_back(const Vector* vec)
     return vector_get_ptr(vec, vec->size - 1);
 }
 
-void* Vector_data(const Vector* vec)
+void* vector_data(const Vector* vec)
 {
     if (!vec)
     {
         return NULL;
     }
     return vec->data;
+}
+
+void vector_iter_init(VectorIterator* iter, Vector* vec)
+{
+    if (!iter || !vec)
+    {
+        return;
+    }
+    iter->vec = vec;
+    iter->index = (usize)-1;  // "before-first" position
+}
+
+bool vector_iter_next(VectorIterator* iter)
+{
+    if (!iter || !iter->vec)
+    {
+        return false;
+    }
+    iter->index++;
+    return iter->index < iter->vec->size;
+}
+
+void* vector_iter_get(VectorIterator* iter)
+{
+    if (!iter || !iter->vec || iter->index >= iter->vec->size)
+    {
+        return NULL;
+    }
+    return vector_get_ptr(iter->vec, iter->index);
 }

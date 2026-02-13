@@ -18,8 +18,8 @@
  * IMPL_INTERFACE(Deserializer, MetaBlockReader);
  *
  * 展开为：
- * void MetaBlockReader_read_data(MetaBlockReader* self, void* buffer, size_t size);
- * void MetaBlockReader_skip(MetaBlockReader* self, size_t count);
+ * void metaBlockReader_read_data(MetaBlockReader* self, void* buffer, size_t size);
+ * void metaBlockReader_skip(MetaBlockReader* self, size_t count);
  */
 #define IMPL_INTERFACE(interface_name, concrete_type) \
     INTERFACE_##interface_name(_DECL, concrete_type)
@@ -87,7 +87,7 @@
  * IMPL_VTABLE_METHOD(SingleFileBlockManager, read, void, Block* block)
  *
  * 展开为：
- * void SingleFileBlockManager_read(SingleFileBlockManager* self, Block* block);
+ * void SingleFileblockManager_read(SingleFileBlockManager* self, Block* block);
  */
 #define IMPL_VTABLE_METHOD(class_name, method_name, ret_type, ...) \
     ret_type class_name##_##method_name(class_name* self, ##__VA_ARGS__);
@@ -97,10 +97,10 @@
  *
  * 示例：
  * static BlockManagerVTable single_file_vtable = {
- *     VTABLE_ENTRY(read, SingleFileBlockManager_read),
- *     VTABLE_ENTRY(write, SingleFileBlockManager_write),
- *     VTABLE_ENTRY(create_block, SingleFileBlockManager_create_block),
- *     VTABLE_ENTRY(destroy, SingleFileBlockManager_destroy)
+ *     VTABLE_ENTRY(read, SingleFileblockManager_read),
+ *     VTABLE_ENTRY(write, SingleFileblockManager_write),
+ *     VTABLE_ENTRY(create_block, SingleFileblockManager_create_block),
+ *     VTABLE_ENTRY(destroy, SingleFileblockManager_destroy)
  * };
  */
 #define VTABLE_ENTRY(method_name, impl) .method_name = (void*)impl
@@ -156,8 +156,6 @@
  */
 #define VCALL(obj, method, ...)              ((obj)->vtable->method((obj), ##__VA_ARGS__))
 
-#define VCALL(obj, method, ...)              ((obj)->vtable->method((obj), ##__VA_ARGS__))
-
 /* ============================================================================
  * 泛型调用宏（C11 _Generic）- 编译时多态
  * ============================================================================ */
@@ -169,17 +167,17 @@
  *
  * 示例：
  * // 定义泛型调用
- * #define Deserializer_read(dr_ptr, buffer, size) \
+ * #define deserializer_read(dr_ptr, buffer, size) \
  *     GENERIC_CALL(dr_ptr, read_data, buffer, size, \
- *         MetaBlockReader*: MetaBlockReader_read_data, \
+ *         MetaBlockReader*: metaBlockReader_read_data, \
  *         FileReader*: FileReader_read_data \
  *     )
  *
  * // 使用
  * MetaBlockReader* reader1 = ...;
  * FileReader* reader2 = ...;
- * Deserializer_read(reader1, buf, 10);  // 调用 MetaBlockReader_read_data
- * Deserializer_read(reader2, buf, 10);  // 调用 FileReader_read_data
+ * deserializer_read(reader1, buf, 10);  // 调用 metaBlockReader_read_data
+ * deserializer_read(reader2, buf, 10);  // 调用 FileReader_read_data
  */
 #define GENERIC_CALL(ptr, method, ...)       _GENERIC_CALL_IMPL(ptr, method, __VA_ARGS__)
 
@@ -221,17 +219,17 @@
  * DEFINE_GENERIC_CALL - 简化定义泛型调用的辅助宏
  *
  * 示例：
- * DEFINE_GENERIC_CALL(Deserializer_read,
+ * DEFINE_GENERIC_CALL(deserializer_read,
  *     read_data,
  *     (buffer, size),
- *     MetaBlockReader*: MetaBlockReader_read_data,
+ *     MetaBlockReader*: metaBlockReader_read_data,
  *     FileReader*: FileReader_read_data
  * )
  *
  * 展开为：
- * #define Deserializer_read(ptr, buffer, size) \
+ * #define deserializer_read(ptr, buffer, size) \
  *     _Generic((ptr), \
- *         MetaBlockReader*: MetaBlockReader_read_data, \
+ *         MetaBlockReader*: metaBlockReader_read_data, \
  *         FileReader*: FileReader_read_data \
  *     )(ptr, buffer, size)
  */
@@ -245,9 +243,9 @@
  * GENERIC_DISPATCH - 简化的泛型分发宏（推荐使用）
  *
  * 示例：
- * #define Deserializer_read(ptr, buffer, size) \
+ * #define deserializer_read(ptr, buffer, size) \
  *     GENERIC_DISPATCH(ptr, \
- *         MetaBlockReader*: MetaBlockReader_read_data, \
+ *         MetaBlockReader*: metaBlockReader_read_data, \
  *         FileReader*: FileReader_read_data \
  *     )(ptr, buffer, size)
  */
@@ -259,7 +257,7 @@
  * 自动添加类型后缀的命名约定
  *
  * 示例：
- * #define Deserializer_read(ptr, ...) \
+ * #define deserializer_read(ptr, ...) \
  *     GENERIC_METHOD(ptr, read_data, __VA_ARGS__, \
  *         MetaBlockReader*, \
  *         FileReader* \

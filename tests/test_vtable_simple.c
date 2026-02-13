@@ -44,18 +44,18 @@ IMPL_VTABLE_METHOD(SingleFileBlockManager, write, void, Block* block)
 IMPL_VTABLE_METHOD(SingleFileBlockManager, create_block, Block*)
 IMPL_VTABLE_METHOD(SingleFileBlockManager, destroy, void)
 
-void SingleFileBlockManager_read(SingleFileBlockManager* self, Block* block)
+void SingleFileblockManager_read(SingleFileBlockManager* self, Block* block)
 {
     printf("  Read block %d from %s\n", block->id, self->file_path);
     snprintf(block->data, sizeof(block->data), "Data from %s", self->file_path);
 }
 
-void SingleFileBlockManager_write(SingleFileBlockManager* self, Block* block)
+void SingleFileblockManager_write(SingleFileBlockManager* self, Block* block)
 {
     printf("  Write block %d to %s: %s\n", block->id, self->file_path, block->data);
 }
 
-Block* SingleFileBlockManager_create_block(SingleFileBlockManager* self)
+Block* SingleFileblockManager_create_block(SingleFileBlockManager* self)
 {
     Block* block = (Block*)malloc(sizeof(Block));
     block->id = self->block_count++;
@@ -64,7 +64,7 @@ Block* SingleFileBlockManager_create_block(SingleFileBlockManager* self)
     return block;
 }
 
-void SingleFileBlockManager_destroy(SingleFileBlockManager* self)
+void SingleFileblockManager_destroy(SingleFileBlockManager* self)
 {
     printf("  Destroy manager: %s\n", self->file_path);
     free((void*)self->file_path);
@@ -73,10 +73,10 @@ void SingleFileBlockManager_destroy(SingleFileBlockManager* self)
 
 // VTable using VTABLE_ENTRY
 static BlockManagerVTable vtable = {
-    VTABLE_ENTRY(read, SingleFileBlockManager_read),
-    VTABLE_ENTRY(write, SingleFileBlockManager_write),
-    VTABLE_ENTRY(create_block, SingleFileBlockManager_create_block),
-    VTABLE_ENTRY(destroy, SingleFileBlockManager_destroy)};
+    VTABLE_ENTRY(read, SingleFileblockManager_read),
+    VTABLE_ENTRY(write, SingleFileblockManager_write),
+    VTABLE_ENTRY(create_block, SingleFileblockManager_create_block),
+    VTABLE_ENTRY(destroy, SingleFileblockManager_destroy)};
 
 SingleFileBlockManager* create_manager(const char* path)
 {

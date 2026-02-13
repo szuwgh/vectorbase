@@ -55,18 +55,18 @@ IMPL_VTABLE_METHOD(SingleFileBlockManager, create_block, Block*)
 IMPL_VTABLE_METHOD(SingleFileBlockManager, destroy, void)
 
 // 实现虚方法
-void SingleFileBlockManager_read(SingleFileBlockManager* self, Block* block)
+void SingleFileblockManager_read(SingleFileBlockManager* self, Block* block)
 {
     printf("  [SingleFile] 读取块 %d 从 %s\n", block->id, self->file_path);
     snprintf(block->data, sizeof(block->data), "Data from %s", self->file_path);
 }
 
-void SingleFileBlockManager_write(SingleFileBlockManager* self, Block* block)
+void SingleFileblockManager_write(SingleFileBlockManager* self, Block* block)
 {
     printf("  [SingleFile] 写入块 %d 到 %s: %s\n", block->id, self->file_path, block->data);
 }
 
-Block* SingleFileBlockManager_create_block(SingleFileBlockManager* self)
+Block* SingleFileblockManager_create_block(SingleFileBlockManager* self)
 {
     Block* block = (Block*)malloc(sizeof(Block));
     block->id = self->block_count++;
@@ -75,7 +75,7 @@ Block* SingleFileBlockManager_create_block(SingleFileBlockManager* self)
     return block;
 }
 
-void SingleFileBlockManager_destroy(SingleFileBlockManager* self)
+void SingleFileblockManager_destroy(SingleFileBlockManager* self)
 {
     printf("  [SingleFile] 销毁管理器: %s\n", self->file_path);
     free((void*)self->file_path);
@@ -84,10 +84,10 @@ void SingleFileBlockManager_destroy(SingleFileBlockManager* self)
 
 // 初始化虚表
 static BlockManagerVTable single_file_vtable = {
-    VTABLE_ENTRY(read, SingleFileBlockManager_read),
-    VTABLE_ENTRY(write, SingleFileBlockManager_write),
-    VTABLE_ENTRY(create_block, SingleFileBlockManager_create_block),
-    VTABLE_ENTRY(destroy, SingleFileBlockManager_destroy)};
+    VTABLE_ENTRY(read, SingleFileblockManager_read),
+    VTABLE_ENTRY(write, SingleFileblockManager_write),
+    VTABLE_ENTRY(create_block, SingleFileblockManager_create_block),
+    VTABLE_ENTRY(destroy, SingleFileblockManager_destroy)};
 
 /* ============================================================================
  * 子类2: MemoryBlockManager
@@ -108,7 +108,7 @@ IMPL_VTABLE_METHOD(MemoryBlockManager, create_block, Block*)
 IMPL_VTABLE_METHOD(MemoryBlockManager, destroy, void)
 
 // 实现虚方法
-void MemoryBlockManager_read(MemoryBlockManager* self, Block* block)
+void MemoryblockManager_read(MemoryBlockManager* self, Block* block)
 {
     if (block->id < (int)self->count)
     {
@@ -117,7 +117,7 @@ void MemoryBlockManager_read(MemoryBlockManager* self, Block* block)
     }
 }
 
-void MemoryBlockManager_write(MemoryBlockManager* self, Block* block)
+void MemoryblockManager_write(MemoryBlockManager* self, Block* block)
 {
     if (block->id < (int)self->capacity)
     {
@@ -134,7 +134,7 @@ void MemoryBlockManager_write(MemoryBlockManager* self, Block* block)
     }
 }
 
-Block* MemoryBlockManager_create_block(MemoryBlockManager* self)
+Block* MemoryblockManager_create_block(MemoryBlockManager* self)
 {
     Block* block = (Block*)malloc(sizeof(Block));
     block->id = self->count;
@@ -143,7 +143,7 @@ Block* MemoryBlockManager_create_block(MemoryBlockManager* self)
     return block;
 }
 
-void MemoryBlockManager_destroy(MemoryBlockManager* self)
+void MemoryblockManager_destroy(MemoryBlockManager* self)
 {
     printf("  [Memory] 销毁管理器 (释放 %zu 个块)\n", self->count);
     for (size_t i = 0; i < self->count; i++)
@@ -159,9 +159,9 @@ void MemoryBlockManager_destroy(MemoryBlockManager* self)
 
 // 初始化虚表
 static BlockManagerVTable memory_vtable = {
-    VTABLE_ENTRY(read, MemoryBlockManager_read), VTABLE_ENTRY(write, MemoryBlockManager_write),
-    VTABLE_ENTRY(create_block, MemoryBlockManager_create_block),
-    VTABLE_ENTRY(destroy, MemoryBlockManager_destroy)};
+    VTABLE_ENTRY(read, MemoryblockManager_read), VTABLE_ENTRY(write, MemoryblockManager_write),
+    VTABLE_ENTRY(create_block, MemoryblockManager_create_block),
+    VTABLE_ENTRY(destroy, MemoryblockManager_destroy)};
 
 /* ============================================================================
  * 工厂函数

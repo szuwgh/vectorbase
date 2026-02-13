@@ -71,7 +71,7 @@ typedef struct
  * 实现函数
  * ============================================================================ */
 
-void MetaBlockReader_init(MetaBlockReader* self, const char* data, size_t size)
+void metaBlockReader_init(MetaBlockReader* self, const char* data, size_t size)
 {
     self->base.type_name = "MetaBlockReader";
     self->base.impl_ptr = self;
@@ -80,7 +80,7 @@ void MetaBlockReader_init(MetaBlockReader* self, const char* data, size_t size)
     self->size = size;
 }
 
-void MetaBlockReader_read_data(MetaBlockReader* self, void* buffer, size_t size)
+void metaBlockReader_read_data(MetaBlockReader* self, void* buffer, size_t size)
 {
     if (self->position + size > self->size)
     {
@@ -90,7 +90,7 @@ void MetaBlockReader_read_data(MetaBlockReader* self, void* buffer, size_t size)
     self->position += size;
 }
 
-size_t MetaBlockReader_get_position(MetaBlockReader* self)
+size_t metaBlockReader_get_position(MetaBlockReader* self)
 {
     return self->position;
 }
@@ -135,16 +135,16 @@ void test_deserializer_inheritance()
 
     const char* test_data = "Hello World!";
     MetaBlockReader reader;
-    MetaBlockReader_init(&reader, test_data, strlen(test_data));
+    metaBlockReader_init(&reader, test_data, strlen(test_data));
 
     printf("  类型: %s\n", reader.base.type_name);
 
     char buffer[6];
-    MetaBlockReader_read_data(&reader, buffer, 5);
+    metaBlockReader_read_data(&reader, buffer, 5);
     buffer[5] = '\0';
     printf("  读取: \"%s\"\n", buffer);
 
-    size_t pos = MetaBlockReader_get_position(&reader);
+    size_t pos = metaBlockReader_get_position(&reader);
     printf("  位置: %zu\n", pos);
 
     // 向上转型

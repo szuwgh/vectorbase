@@ -6,18 +6,21 @@
 #include "interface.h"
 #include "vector.h"
 #include "wal.h"
+#include "catalog.h"
 
-#define BLOCK_SIZE             262144 // 256KB
+#define BLOCK_SIZE             8192 // 8KB
 #define HEADER_SIZE            4096   // 数据库头大小
 #define FILE_BUFFER_BLOCK_SIZE 4096   // 文件缓冲区块大小
 #define VERSION_NUMBER         1      // 数据库版本号
 #define INVALID_BLOCK          -1    // 无效块标识
+#define MAGIC_NUMBER           0x5645434442  // "VECDB"
 
 static int FILE_BUFFER_HEADER_SIZE = sizeof(u64);// 文件缓冲区块头大小 存储 checksum 校验和
 static int BLOCK_START = HEADER_SIZE * 3; // 数据块起始位置，从第3个 HEADER_SIZE 开始
 //
 typedef struct
 {
+    u64 magic;    // 魔法数，用于快速识别数据库文件
     u64 version;  // 版本号，用于未来的兼容性检查
     u64 flags[4]; // 保留字段·1，供将来扩展使用
 } MasterHeader;
@@ -53,7 +56,7 @@ typedef struct
     u8 data[];
 } FileBuffer;
 
-FileBuffer* FileBuffer_create(usize size);
+FileBuffer* fileBuffer_create(usize size);
 
 // BlockManager 类型枚举 - 用于区分不同的实现
 typedef enum
@@ -93,10 +96,10 @@ typedef struct
 
 FileSystemHandle* create_filesystem_handle_from_FILE(FILE* file);
 
-int FileBuffer_read(FileBuffer* buffer, FileHandle* handle, usize location);
-int FileBuffer_write(FileBuffer* buffer, FileHandle* handle, usize location);
-void FileBuffer_clear(FileBuffer* buffer);
-void FileBuffer_destroy(FileBuffer* buffer);
+int fileBuffer_read(FileBuffer* buffer, FileHandle* handle, usize location);
+int fileBuffer_write(FileBuffer* buffer, FileHandle* handle, usize location);
+void fileBuffer_clear(FileBuffer* buffer);
+void fileBuffer_destroy(FileBuffer* buffer);
 
 typedef struct Block
 {
@@ -177,7 +180,7 @@ typedef struct
 
 SingleFileBlockManager* create_new_database(const char* path, bool create_new);
 
-#define BlockManager_write(mptr, block) \
+#define blockManager_write(mptr, block) \
     GENERIC_DISPATCH(mptr, SingleFileBlockManager* : single_file_block_manager_write)(mptr, block)
 
 typedef enum
@@ -212,9 +215,10 @@ DEFINE_CLASS(Deserializer,
 )
 // clang-format on
 
+// 元数据块读取器
 typedef struct
 {
-    EXTENDS(Deserializer); // 继承
+    EXTENDS(Deserializer); // 继承 Deserializer（组合方式）
     BlockManager* manager;  // 管理器指针
     Block* block;  // 当前块指针
     usize offset;  // 当前块内的偏移量
@@ -224,11 +228,13 @@ typedef struct
 #define INTERFACE_Deserializer(DO, type) DO(type, read_data, void, data_ptr_t buffer, usize size)
 INTERFACE(Deserializer, (read_data, void, (data_ptr_t buffer, size_t size)))
 // 实现接口
-IMPL_INTERFACE(Deserializer, MetaBlockReader);
+// 接口实现声明（小写首字母）
+void metaBlockReader_read_data(MetaBlockReader* self, data_ptr_t buffer, usize read_size);
+void metaBlockReader_destroy(MetaBlockReader* reader);
 
 // 泛型函数宏（编译时展开，完全不使用虚表）
-#define Deserializer_read(dr_ptr, buffer, size) \
-    GENERIC_DISPATCH(dr_ptr, MetaBlockReader* : MetaBlockReader_read_data)(dr_ptr, buffer, size)
+#define deserializer_read(dr_ptr, buffer, size) \
+    GENERIC_DISPATCH(dr_ptr, MetaBlockReader* : metaBlockReader_read_data)(dr_ptr, buffer, size)
 
 typedef enum
 {
@@ -255,11 +261,13 @@ typedef struct
 #define INTERFACE_Serializer(DO, type) DO(type, write_data, void, data_ptr_t buffer, usize size)
 INTERFACE(Serializer, (write_data, void, (data_ptr_t buffer, size_t size)))
 // 实现接口
-IMPL_INTERFACE(Serializer, MetaBlockWriter);
+// 接口实现声明（小写首字母）
+void metaBlockWriter_write_data(MetaBlockWriter* self, data_ptr_t buffer, usize write_size);
 
 // 泛型函数宏（编译时展开，完全不使用虚表）
-#define Serializer_write(sw_ptr, buffer, size) \
-    GENERIC_DISPATCH(sw_ptr, MetaBlockWriter* : MetaBlockWriter_write_data)(sw_ptr, buffer, size)
+#define serializer_write(sw_ptr, buffer, type)                                              \
+    GENERIC_DISPATCH(sw_ptr, MetaBlockWriter* : metaBlockWriter_write_data)(sw_ptr, buffer, \
+                                                                            sizeof(type))
 
 typedef struct
 {
@@ -269,6 +277,12 @@ typedef struct
 
 typedef struct
 {
-} CHeckpointManager;
+    BlockManager* block_manager; // 块管理器指针
+    Catalog* catalog; // 目录指针
+    MetaBlockWriter* meta_block_writer; // 元数据块写入器指针
+} CheckpointManager;
+
+void destory_single_manager(SingleFileBlockManager* manager);
+void checkpointManager_createpoint(CheckpointManager* self);
 
 #endif  // STORAGE_H

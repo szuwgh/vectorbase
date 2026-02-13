@@ -26,21 +26,25 @@ struct CatalogEntry
     CatalogEntry* child;  // 子目录项
 };
 
+typedef void (*CatalogScanFn)(CatalogEntry* entry, void* ctx);
+
 // MVCC 版本化容器，存放 CatalogEntry
 typedef struct
 {
     hmap data;
 } CatalogSet;
 
-void CatalogSet_init(CatalogSet* set);
+void catalogSet_init(CatalogSet* set);
 
-void CatalogSet_deinit(CatalogSet* set);
+void catalogSet_deinit(CatalogSet* set);
 
-bool CatalogSet_create_entry(CatalogSet* set, const char* name, CatalogEntry* entry);
+bool catalogSet_create_entry(CatalogSet* set, const char* name, CatalogEntry* entry);
 
-CatalogEntry* CatalogSet_get_entry(CatalogSet* set, const char* name);
+CatalogEntry* catalogSet_get_entry(CatalogSet* set, const char* name);
 
-bool CatalogSet_drop_entry(CatalogSet* set, const char* name);
+void catalogSet_scan(CatalogSet* set, CatalogScanFn scan_fn, void* ctx);
+
+bool catalogSet_drop_entry(CatalogSet* set, const char* name);
 
 // 模式目录项 相当于pg database
 typedef struct
@@ -57,14 +61,14 @@ typedef struct
 } Catalog;
 
 // 创建目录项
-Catalog* Catalog_create();
+Catalog* catalog_create();
 // 销毁目录项
-void Catalog_destroy(Catalog* catalog);
+void catalog_destroy(Catalog* catalog);
 
-int Catalog_create_schema(Catalog* catalog, CreateSchemaInfo* info);
+int catalog_create_schema(Catalog* catalog, CreateSchemaInfo* info);
 
-SchemaCatalogEntry* Catalog_get_schema(Catalog* catalog, const char* schema_name);
+SchemaCatalogEntry* catalog_get_schema(Catalog* catalog, const char* schema_name);
 
-int Catalog_drop_schema(Catalog* catalog, const char* schema_name);
+int catalog_drop_schema(Catalog* catalog, const char* schema_name);
 
 #endif

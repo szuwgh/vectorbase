@@ -31,7 +31,7 @@ static void cleanup_db(void) { unlink(TEST_DB); }
 
 static void free_block(Block* b) {
     if (!b) return;
-    FileBuffer_destroy(b->fb);
+    fileBuffer_destroy(b->fb);
     free(b);
 }
 
@@ -70,7 +70,7 @@ static Block* mock_create_block(BlockManager* self) {
     Block* b = (Block*)malloc(sizeof(Block));
     if (!b) return NULL;
     b->id = id;
-    b->fb = FileBuffer_create(BLOCK_SIZE);
+    b->fb = fileBuffer_create(BLOCK_SIZE);
     if (!b->fb) { free(b); return NULL; }
     return b;
 }
@@ -114,8 +114,8 @@ static void manual_flush(MetaBlockWriter* w) {
 
 void test_filebuffer_create(void) {
     printf("\n--- test_filebuffer_create ---\n");
-    FileBuffer* fb = FileBuffer_create(4096);
-    ASSERT_NOT_NULL(fb, "FileBuffer_create(4096) non-NULL");
+    FileBuffer* fb = fileBuffer_create(4096);
+    ASSERT_NOT_NULL(fb, "fileBuffer_create(4096) non-NULL");
     if (!fb) return;
     ASSERT_NOT_NULL(fb->internal_buf, "internal_buf set");
     ASSERT_NOT_NULL(fb->buffer, "buffer set");
@@ -125,33 +125,33 @@ void test_filebuffer_create(void) {
                 "internal_buf aligned to FILE_BUFFER_BLOCK_SIZE");
     ASSERT_TRUE(fb->buffer == fb->internal_buf + FILE_BUFFER_HEADER_SIZE,
                 "buffer == internal_buf + header");
-    FileBuffer_destroy(fb);
+    fileBuffer_destroy(fb);
 }
 
 void test_filebuffer_block_size(void) {
     printf("\n--- test_filebuffer_block_size ---\n");
-    FileBuffer* fb = FileBuffer_create(BLOCK_SIZE);
-    ASSERT_NOT_NULL(fb, "FileBuffer_create(BLOCK_SIZE) non-NULL");
+    FileBuffer* fb = fileBuffer_create(BLOCK_SIZE);
+    ASSERT_NOT_NULL(fb, "fileBuffer_create(BLOCK_SIZE) non-NULL");
     if (!fb) return;
     ASSERT_EQ_U64(fb->internal_size, BLOCK_SIZE, "internal_size == BLOCK_SIZE");
     ASSERT_EQ_U64(fb->size, BLOCK_SIZE - (usize)FILE_BUFFER_HEADER_SIZE,
                   "size == BLOCK_SIZE - header");
-    FileBuffer_destroy(fb);
+    fileBuffer_destroy(fb);
 }
 
 void test_filebuffer_clear(void) {
     printf("\n--- test_filebuffer_clear ---\n");
-    FileBuffer* fb = FileBuffer_create(4096);
+    FileBuffer* fb = fileBuffer_create(4096);
     ASSERT_NOT_NULL(fb, "buffer created");
     if (!fb) return;
     memset(fb->buffer, 0xAA, fb->size);
-    FileBuffer_clear(fb);
+    fileBuffer_clear(fb);
     bool all_zero = true;
     for (usize i = 0; i < fb->internal_size; i++) {
         if (fb->internal_buf[i] != 0) { all_zero = false; break; }
     }
-    ASSERT_TRUE(all_zero, "FileBuffer_clear zeroes all internal data");
-    FileBuffer_destroy(fb);
+    ASSERT_TRUE(all_zero, "fileBuffer_clear zeroes all internal data");
+    fileBuffer_destroy(fb);
 }
 
 /* ============================================================
@@ -188,7 +188,7 @@ void test_meta_writer_write_small(void) {
     writer.offset = sizeof(block_id_t);
 
     u64 magic = 0xDEADBEEF12345678ULL;
-    MetaBlockWriter_write_data(&writer, (data_ptr_t)&magic, sizeof(u64));
+    metaBlockWriter_write_data(&writer, (data_ptr_t)&magic, sizeof(u64));
 
     u64 at_correct = 0;
     memcpy(&at_correct, writer.block->fb->buffer + sizeof(block_id_t), sizeof(u64));
@@ -208,7 +208,7 @@ void test_meta_writer_flush(void) {
     writer.offset = sizeof(block_id_t);
 
     u64 magic = 0xCAFEBABE;
-    MetaBlockWriter_write_data(&writer, (data_ptr_t)&magic, sizeof(u64));
+    metaBlockWriter_write_data(&writer, (data_ptr_t)&magic, sizeof(u64));
     manual_flush(&writer);
 
     block_id_t bid = writer.block->id;
@@ -250,7 +250,7 @@ void test_meta_reader_init(void) {
     memset(&reader, 0, sizeof(reader));
     reader.manager = (BlockManager*)mock;
     reader.block = (Block*)malloc(sizeof(Block));
-    reader.block->fb = FileBuffer_create(BLOCK_SIZE);
+    reader.block->fb = fileBuffer_create(BLOCK_SIZE);
     reader.block->id = 1;
     VCALL(reader.manager, read, reader.block);
     reader.next_block_id = *((block_id_t*)reader.block->fb->buffer);
@@ -260,7 +260,7 @@ void test_meta_reader_init(void) {
     memcpy(&data_read, reader.block->fb->buffer + sizeof(block_id_t), sizeof(u64));
     ASSERT_EQ_U64(data_read, 0xBBBB, "reader reads block 1 correctly (block->id is set)");
 
-    FileBuffer_destroy(reader.block->fb);
+    fileBuffer_destroy(reader.block->fb);
     free(reader.block);
     mock_destroy((BlockManager*)mock);
 }
@@ -282,16 +282,16 @@ void test_meta_reader_read_data(void) {
     reader.manager = (BlockManager*)mock;
     reader.block = (Block*)malloc(sizeof(Block));
     reader.block->id = 0;
-    reader.block->fb = FileBuffer_create(BLOCK_SIZE);
+    reader.block->fb = fileBuffer_create(BLOCK_SIZE);
     VCALL(reader.manager, read, reader.block);
     reader.next_block_id = *((block_id_t*)reader.block->fb->buffer);
     reader.offset = sizeof(block_id_t);
 
     u64 got = 0;
-    MetaBlockReader_read_data(&reader, (data_ptr_t)&got, sizeof(u64));
+    metaBlockReader_read_data(&reader, (data_ptr_t)&got, sizeof(u64));
     ASSERT_EQ_U64(got, expected, "read_data returns correct value");
 
-    FileBuffer_destroy(reader.block->fb);
+    fileBuffer_destroy(reader.block->fb);
     free(reader.block);
     mock_destroy((BlockManager*)mock);
 }
@@ -310,9 +310,9 @@ void test_meta_roundtrip(void) {
 
     u64 values[] = {100, 200, 300};
     u64 count = 3;
-    MetaBlockWriter_write_data(&writer, (data_ptr_t)&count, sizeof(u64));
+    metaBlockWriter_write_data(&writer, (data_ptr_t)&count, sizeof(u64));
     for (u64 i = 0; i < count; i++)
-        MetaBlockWriter_write_data(&writer, (data_ptr_t)&values[i], sizeof(u64));
+        metaBlockWriter_write_data(&writer, (data_ptr_t)&values[i], sizeof(u64));
     manual_flush(&writer);
 
     MetaBlockReader reader;
@@ -320,25 +320,25 @@ void test_meta_roundtrip(void) {
     reader.manager = (BlockManager*)mock;
     reader.block = (Block*)malloc(sizeof(Block));
     reader.block->id = write_bid;
-    reader.block->fb = FileBuffer_create(BLOCK_SIZE);
+    reader.block->fb = fileBuffer_create(BLOCK_SIZE);
     VCALL(reader.manager, read, reader.block);
     reader.next_block_id = *((block_id_t*)reader.block->fb->buffer);
     reader.offset = sizeof(block_id_t);
 
     u64 read_count = 0;
-    MetaBlockReader_read_data(&reader, (data_ptr_t)&read_count, sizeof(u64));
+    metaBlockReader_read_data(&reader, (data_ptr_t)&read_count, sizeof(u64));
     ASSERT_EQ_U64(read_count, count, "roundtrip: count matches");
     if (read_count == count) {
         for (u64 i = 0; i < count; i++) {
             u64 v = 0;
-            MetaBlockReader_read_data(&reader, (data_ptr_t)&v, sizeof(u64));
+            metaBlockReader_read_data(&reader, (data_ptr_t)&v, sizeof(u64));
             char msg[80];
             snprintf(msg, sizeof(msg), "roundtrip: value[%lu] == %lu",
                      (unsigned long)i, (unsigned long)values[i]);
             ASSERT_EQ_U64(v, values[i], msg);
         }
     }
-    FileBuffer_destroy(reader.block->fb);
+    fileBuffer_destroy(reader.block->fb);
     free(reader.block);
     free_block(writer.block);
     mock_destroy((BlockManager*)mock);
@@ -409,7 +409,7 @@ void test_sfbm_get_free_block_id(void) {
     ASSERT_EQ_U64(mgr->max_block, 3, "max_block == 3");
 
     block_id_t freed = 1;
-    Vector_push_back(&mgr->free_list, &freed);
+    vector_push_back(&mgr->free_list, &freed);
     block_id_t reused = VCALL((BlockManager*)mgr, get_free_block_id);
     ASSERT_EQ_U64(reused, 1, "freed id reused from free_list");
     ASSERT_EQ_U64(mgr->free_list.size, 0, "free_list empty after reuse");
@@ -592,38 +592,38 @@ void test_write_header_twice(void) {
 }
 
 /* ============================================================
- * Section 6: Vector_deinit / Vector_init correctness
+ * Section 6: vector_deinit / vector_init correctness
  * ============================================================ */
 
 void test_vector_deinit_nulls_data(void) {
     printf("\n--- test_vector_deinit_nulls_data ---\n");
     Vector v = {0};
-    Vector_init(&v, sizeof(u64), 0);
+    vector_init(&v, sizeof(u64), 0);
     u64 val = 42;
-    Vector_push_back(&v, &val);
+    vector_push_back(&v, &val);
     ASSERT_NOT_NULL(v.data, "vector has allocated data");
 
-    Vector_deinit(&v);
+    vector_deinit(&v);
     ASSERT_TRUE(v.size == 0, "size reset to 0");
     ASSERT_TRUE(v.capacity == 0, "capacity reset to 0");
     ASSERT_TRUE(v.data == NULL, "data set to NULL after deinit");
 
     /* Double deinit should be safe now */
-    Vector_deinit(&v);
-    ASSERT_TRUE(1, "double Vector_deinit is safe (data was NULL)");
+    vector_deinit(&v);
+    ASSERT_TRUE(1, "double vector_deinit is safe (data was NULL)");
 }
 
 void test_vector_init_no_free_on_error(void) {
     printf("\n--- test_vector_init_no_free_on_error ---\n");
-    printf("  [INFO] Vector_init no longer calls free(vec) on malloc failure.\n");
+    printf("  [INFO] vector_init no longer calls free(vec) on malloc failure.\n");
     printf("  [INFO] Safe for embedded (stack/struct) vectors on OOM.\n");
 
     /* We verify by using an embedded vector normally (no OOM to trigger) */
     Vector v = {0};
-    int rc = Vector_init(&v, sizeof(u64), 0);
-    ASSERT_TRUE(rc == 0, "Vector_init succeeds on embedded vector");
+    int rc = vector_init(&v, sizeof(u64), 0);
+    ASSERT_TRUE(rc == 0, "vector_init succeeds on embedded vector");
     ASSERT_NOT_NULL(v.data, "embedded vector has allocated data");
-    Vector_deinit(&v);
+    vector_deinit(&v);
 }
 
 /* ============================================================
@@ -714,34 +714,34 @@ int main(void) {
     printf("  FileHandle uses DEFINE_CLASS, vtable functions accept\n");
     printf("  FileHandle* and cast to FileSystemHandle* internally.\n\n");
 
-    printf("[FIXED] Pointer arithmetic in MetaBlockWriter_write_data\n");
+    printf("[FIXED] Pointer arithmetic in metaBlockWriter_write_data\n");
     printf("  Now uses block->fb->buffer + offset.\n\n");
 
-    printf("[FIXED] Pointer arithmetic in MetaBlockReader_read_data\n");
+    printf("[FIXED] Pointer arithmetic in metaBlockReader_read_data\n");
     printf("  Now uses block->fb->buffer + reader->offset.\n\n");
 
-    printf("[FIXED] Missing block->id in MetaBlockReader_read_new_block\n");
+    printf("[FIXED] Missing block->id in metaBlockReader_read_new_block\n");
     printf("  storage.c:200 - Now sets block->id = block_id.\n\n");
 
     printf("[FIXED] Double-free in destory_single_manager\n");
     printf("  storage.c:329 - Only VCALL(file_handle, free).\n\n");
 
-    printf("[FIXED] Vector_destroy crash on embedded vectors\n");
-    printf("  storage.c:343-344 - Uses Vector_deinit() instead.\n\n");
+    printf("[FIXED] vector_destroy crash on embedded vectors\n");
+    printf("  storage.c:343-344 - Uses vector_deinit() instead.\n\n");
 
     printf("[FIXED] MetaBlockWriter not destroyed in write_header\n");
-    printf("  storage.c:458 - Calls MetaBlockWriter_destroy(&writer).\n\n");
+    printf("  storage.c:458 - Calls metaBlockWriter_destroy(&writer).\n\n");
 
     printf("[FIXED] free_list.data overwritten without free\n");
-    printf("  storage.c:472 - Calls Vector_deinit(&free_list) first.\n\n");
+    printf("  storage.c:472 - Calls vector_deinit(&free_list) first.\n\n");
 
     printf("[FIXED] used_blocks aliasing after write_header\n");
-    printf("  storage.c:474 - Calls Vector_init(&used_blocks, ...) after copy.\n\n");
+    printf("  storage.c:474 - Calls vector_init(&used_blocks, ...) after copy.\n\n");
 
-    printf("[FIXED] Vector_deinit did not set data = NULL\n");
+    printf("[FIXED] vector_deinit did not set data = NULL\n");
     printf("  vector.c:76 - Now sets vec->data = NULL after free.\n\n");
 
-    printf("[FIXED] Vector_init error path called free(vec)\n");
+    printf("[FIXED] vector_init error path called free(vec)\n");
     printf("  vector.c:24 - Removed free(vec) from error path.\n\n");
 
     printf("No remaining bugs or memory leaks detected.\n\n");

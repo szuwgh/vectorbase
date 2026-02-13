@@ -63,4 +63,11 @@ const void* hmap_iter_key(hmap_iterator* iter);
 
 void* hmap_iter_value(hmap_iterator* iter);
 
+#define HMAP_FOREACH(hmap_ptr, entry_var)           \
+    hmap_iterator _iter_##entry_var;                \
+    hmap_iter_init(&_iter_##entry_var, (hmap_ptr)); \
+    void* entry_var;                                \
+    while (hmap_iter_next(&_iter_##entry_var) &&    \
+           ((entry_var = hmap_iter_value(&_iter_##entry_var)), 1))
+
 #endif

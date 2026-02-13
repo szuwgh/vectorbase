@@ -25,12 +25,12 @@ inline static u64 murmurhash64(u64 x)
     return x;
 }
 
-static u64 Hash(u64 val)
+static u64 hash(u64 val)
 {
     return murmurhash32((u32)val);
 }
 
-static u64 Hash1(const char* val, usize size)
+static u64 hash1(const char* val, usize size)
 {
     u64 hash = 5381;
 
@@ -41,14 +41,14 @@ static u64 Hash1(const char* val, usize size)
     return hash;
 }
 
-static u64 Hash_char(char* val, usize size)
+static u64 hash_char(char* val, usize size)
 {
-    return Hash1((const char*)val, size);
+    return hash1((const char*)val, size);
 }
 
-static u64 Hash_u8(u8* val, usize size)
+static u64 hash_u8(u8* val, usize size)
 {
-    return Hash1((const char*)val, size);
+    return hash1((const char*)val, size);
 }
 
 u64 checksum(u8* buffer, usize size)
@@ -59,12 +59,12 @@ u64 checksum(u8* buffer, usize size)
         // for efficiency, we first hash uint64_t values
     for (i = 0; i < size / 8; i++)
     {
-        result ^= Hash(ptr[i]);
+        result ^= hash(ptr[i]);
     }
     if (size - i * 8 > 0)
     {
                 // the remaining 0-7 bytes we hash using a string hash
-        result ^= Hash_u8(buffer + i * 8, size - i * 8);
+        result ^= hash_u8(buffer + i * 8, size - i * 8);
     }
     return result;
 }

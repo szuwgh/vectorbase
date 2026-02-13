@@ -3,17 +3,17 @@
 #include "catalog.h"
 #include "hash.h"
 
-void CatalogSet_init(CatalogSet* set)
+void catalogSet_init(CatalogSet* set)
 {
     hmap_init_str(&set->data);
 }
 
-void CatalogSet_deinit(CatalogSet* set)
+void catalogSet_deinit(CatalogSet* set)
 {
     hmap_deinit(&set->data);
 }
 
-static void CatalogEntry_init(CatalogEntry* entry, CatalogType type, char* name)
+static void catalogEntry_init(CatalogEntry* entry, CatalogType type, char* name)
 {
     entry->type = type;
     entry->name = name;
@@ -26,7 +26,7 @@ static CatalogEntry* make_entry(CatalogType type, char* name)
 {
     CatalogEntry* entry = malloc(sizeof(CatalogEntry));
     if (!entry) return NULL;
-    CatalogEntry_init(entry, type, name);
+    catalogEntry_init(entry, type, name);
     return entry;
 }
 
@@ -34,16 +34,16 @@ static SchemaCatalogEntry* make_schema_entry(char* name)
 {
     SchemaCatalogEntry* entry = malloc(sizeof(SchemaCatalogEntry));
     if (!entry) return NULL;
-    CatalogEntry_init(&entry->base, SCHEMA, name);
-    CatalogSet_init(&entry->tables);
-    CatalogSet_init(&entry->indexes);
+    catalogEntry_init(&entry->base, SCHEMA, name);
+    catalogSet_init(&entry->tables);
+    catalogSet_init(&entry->indexes);
     return entry;
 }
 
-static void SchemaCatalogEntry_destroy(SchemaCatalogEntry* entry)
+static void schemacatalogEntry_destroy(SchemaCatalogEntry* entry)
 {
-    CatalogSet_deinit(&entry->tables);
-    CatalogSet_deinit(&entry->indexes);
+    catalogSet_deinit(&entry->tables);
+    catalogSet_deinit(&entry->indexes);
     free(entry->base.name);
     free(entry);
 }
@@ -58,7 +58,7 @@ static void SchemaCatalogEntry_destroy(SchemaCatalogEntry* entry)
   └─────────────────┴────────────────────────────────────────────────────────────────────┘
 
 */
-bool CatalogSet_create_entry(CatalogSet* set, const char* name, CatalogEntry* value)
+bool catalogSet_create_entry(CatalogSet* set, const char* name, CatalogEntry* value)
 {
     /* hmap_get 返回 hmap_node* (即存储的 CatalogEntry*), 不存在则返回 NULL */
     hmap_node* node = hmap_get(&set->data, name);
@@ -103,7 +103,7 @@ bool CatalogSet_create_entry(CatalogSet* set, const char* name, CatalogEntry* va
     return true;
 }
 
-CatalogEntry* CatalogSet_get_entry(CatalogSet* set, const char* name)
+CatalogEntry* catalogSet_get_entry(CatalogSet* set, const char* name)
 {
     hmap_node* node = hmap_get(&set->data, name);
     if (!node) return NULL;
@@ -111,7 +111,15 @@ CatalogEntry* CatalogSet_get_entry(CatalogSet* set, const char* name)
     return node->value;
 }
 
-static void CatalogSet_drop_entry_impl(CatalogSet* set, hmap_node* node)
+void catalogSet_scan(CatalogSet* set, CatalogScanFn scan_fn, void* ctx)
+{
+    HMAP_FOREACH(&set->data, entry)
+    {
+        scan_fn(entry, ctx);
+    }
+}
+
+static void catalogSet_drop_entry_impl(CatalogSet* set, hmap_node* node)
 {
     // 复制一份entry->name，因为hmap_insert会修改entry->name
     CatalogEntry* entry = node->value;
@@ -125,15 +133,15 @@ static void CatalogSet_drop_entry_impl(CatalogSet* set, hmap_node* node)
     node->value = value;
 }
 
-bool CatalogSet_drop_entry(CatalogSet* set, const char* name)
+bool catalogSet_drop_entry(CatalogSet* set, const char* name)
 {
     hmap_node* node = hmap_get(&set->data, name);
     if (!node) return false;
-    CatalogSet_drop_entry_impl(set, node);
+    catalogSet_drop_entry_impl(set, node);
     return true;
 }
 
-int Catalog_create_schema(Catalog* catalog, CreateSchemaInfo* info)
+int catalog_create_schema(Catalog* catalog, CreateSchemaInfo* info)
 {
     char* name_copy = strdup(info->schema_name);
     if (!name_copy) return -1;
@@ -143,37 +151,37 @@ int Catalog_create_schema(Catalog* catalog, CreateSchemaInfo* info)
         free(name_copy);
         return -1;
     }
-    if (!CatalogSet_create_entry(&catalog->schemas, info->schema_name, (CatalogEntry*)entry))
+    if (!catalogSet_create_entry(&catalog->schemas, info->schema_name, (CatalogEntry*)entry))
     {
-        SchemaCatalogEntry_destroy(entry);
+        schemacatalogEntry_destroy(entry);
         if (!info->if_not_exists) return -2; // 已存在
     }
     return 0;
 }
 
-SchemaCatalogEntry* Catalog_get_schema(Catalog* catalog, const char* schema_name)
+SchemaCatalogEntry* catalog_get_schema(Catalog* catalog, const char* schema_name)
 {
-    return (SchemaCatalogEntry*)CatalogSet_get_entry(&catalog->schemas, schema_name);
+    return (SchemaCatalogEntry*)catalogSet_get_entry(&catalog->schemas, schema_name);
 }
 
-int Catalog_drop_schema(Catalog* catalog, const char* schema_name)
+int catalog_drop_schema(Catalog* catalog, const char* schema_name)
 {   // 不能删除默认 schema
     if (!strcmp(schema_name, DEFAULT_SCHEMA)) return -1;
-    CatalogSet_drop_entry(&catalog->schemas, schema_name);
+    catalogSet_drop_entry(&catalog->schemas, schema_name);
     return 0;
 }
 
-Catalog* Catalog_create()
+Catalog* catalog_create()
 {
     Catalog* catalog = malloc(sizeof(Catalog));
     if (!catalog) return NULL;
-    CatalogSet_init(&catalog->schemas);
+    catalogSet_init(&catalog->schemas);
     return catalog;
 }
 
-void Catalog_destroy(Catalog* catalog)
+void catalog_destroy(Catalog* catalog)
 {
     if (!catalog) return;
-    CatalogSet_deinit(&catalog->schemas);
+    catalogSet_deinit(&catalog->schemas);
     free(catalog);
 }

@@ -146,12 +146,12 @@ static FileHandle* create_mem_file_handle(MemoryFile* mf)
 }
 
 // Test FileBuffer creation
-void test_FileBuffer_create(void)
+void test_fileBuffer_create(void)
 {
-    printf("\n=== Test FileBuffer_create ===\n");
+    printf("\n=== Test fileBuffer_create ===\n");
 
     usize buffer_size = 8192;
-    FileBuffer* fb = FileBuffer_create(buffer_size);
+    FileBuffer* fb = fileBuffer_create(buffer_size);
 
     if (!fb)
     {
@@ -183,16 +183,16 @@ void test_FileBuffer_create(void)
              buffer_size - FILE_BUFFER_HEADER_SIZE, fb->size);
     }
 
-    FileBuffer_destroy(fb);
+    fileBuffer_destroy(fb);
 }
 
 // Test FileBuffer read/write
-void test_FileBuffer_read_write(void)
+void test_fileBuffer_read_write(void)
 {
-    printf("\n=== Test FileBuffer_read_write ===\n");
+    printf("\n=== Test fileBuffer_read_write ===\n");
 
     usize buffer_size = 4096;
-    FileBuffer* fb = FileBuffer_create(buffer_size);
+    FileBuffer* fb = fileBuffer_create(buffer_size);
     if (!fb)
     {
         FAIL("FileBuffer creation failed");
@@ -207,24 +207,24 @@ void test_FileBuffer_read_write(void)
     memcpy(fb->buffer, test_data, strlen(test_data) + 1);
 
     // Write to memory file
-    int write_result = FileBuffer_write(fb, fh, 0);
+    int write_result = fileBuffer_write(fb, fh, 0);
     if (write_result == 0)
     {
-        PASS("FileBuffer_write succeeded");
+        PASS("fileBuffer_write succeeded");
     }
     else
     {
-        FAIL("FileBuffer_write failed");
+        FAIL("fileBuffer_write failed");
     }
 
     // Clear buffer
-    FileBuffer_clear(fb);
+    fileBuffer_clear(fb);
 
     // Read from memory file
-    int read_result = FileBuffer_read(fb, fh, 0);
+    int read_result = fileBuffer_read(fb, fh, 0);
     if (read_result == 0)
     {
-        PASS("FileBuffer_read succeeded");
+        PASS("fileBuffer_read succeeded");
 
         if (strcmp((char*)fb->buffer, test_data) == 0)
         {
@@ -237,20 +237,20 @@ void test_FileBuffer_read_write(void)
     }
     else
     {
-        FAIL("FileBuffer_read failed (checksum mismatch)");
+        FAIL("fileBuffer_read failed (checksum mismatch)");
     }
 
     VCALL(fh, free);
     destroy_memory_file(mf);
-    FileBuffer_destroy(fb);
+    fileBuffer_destroy(fb);
 }
 
 // Test FileBuffer checksum verification
-void test_FileBuffer_checksum(void)
+void test_fileBuffer_checksum(void)
 {
-    printf("\n=== Test FileBuffer_checksum ===\n");
+    printf("\n=== Test fileBuffer_checksum ===\n");
 
-    FileBuffer* fb = FileBuffer_create(4096);
+    FileBuffer* fb = fileBuffer_create(4096);
     if (!fb)
     {
         FAIL("FileBuffer creation failed");
@@ -263,7 +263,7 @@ void test_FileBuffer_checksum(void)
     // Write data
     const char* test_data = "Checksum Test Data";
     memcpy(fb->buffer, test_data, strlen(test_data) + 1);
-    FileBuffer_write(fb, fh, 0);
+    fileBuffer_write(fb, fh, 0);
 
     // Corrupt the stored data (flip a byte in the data region)
     if (mf->size > (usize)FILE_BUFFER_HEADER_SIZE + 10)
@@ -272,8 +272,8 @@ void test_FileBuffer_checksum(void)
     }
 
     // Clear and try to read - should fail checksum
-    FileBuffer_clear(fb);
-    int read_result = FileBuffer_read(fb, fh, 0);
+    fileBuffer_clear(fb);
+    int read_result = fileBuffer_read(fb, fh, 0);
 
     if (read_result != 0)
     {
@@ -286,15 +286,15 @@ void test_FileBuffer_checksum(void)
 
     VCALL(fh, free);
     destroy_memory_file(mf);
-    FileBuffer_destroy(fb);
+    fileBuffer_destroy(fb);
 }
 
-// Test FileBuffer_clear
-void test_FileBuffer_clear(void)
+// Test fileBuffer_clear
+void test_fileBuffer_clear(void)
 {
-    printf("\n=== Test FileBuffer_clear ===\n");
+    printf("\n=== Test fileBuffer_clear ===\n");
 
-    FileBuffer* fb = FileBuffer_create(4096);
+    FileBuffer* fb = fileBuffer_create(4096);
     if (!fb)
     {
         FAIL("FileBuffer creation failed");
@@ -306,7 +306,7 @@ void test_FileBuffer_clear(void)
     memcpy(fb->buffer, test_data, strlen(test_data) + 1);
 
     // Clear buffer
-    FileBuffer_clear(fb);
+    fileBuffer_clear(fb);
 
     // Check if cleared
     bool is_cleared = true;
@@ -321,22 +321,22 @@ void test_FileBuffer_clear(void)
 
     if (is_cleared)
     {
-        PASS("FileBuffer_clear succeeded");
+        PASS("fileBuffer_clear succeeded");
     }
     else
     {
-        FAIL("FileBuffer_clear failed");
+        FAIL("fileBuffer_clear failed");
     }
 
-    FileBuffer_destroy(fb);
+    fileBuffer_destroy(fb);
 }
 
 // Test multiple read/write operations
-void test_FileBuffer_multiple_operations(void)
+void test_fileBuffer_multiple_operations(void)
 {
-    printf("\n=== Test FileBuffer_multiple_operations ===\n");
+    printf("\n=== Test fileBuffer_multiple_operations ===\n");
 
-    FileBuffer* fb = FileBuffer_create(4096);
+    FileBuffer* fb = fileBuffer_create(4096);
     MemoryFile* mf = create_memory_file(16384);
     FileHandle* fh = create_mem_file_handle(mf);
 
@@ -346,17 +346,17 @@ void test_FileBuffer_multiple_operations(void)
     // Write multiple messages to different locations
     for (int i = 0; i < num_messages; i++)
     {
-        FileBuffer_clear(fb);
+        fileBuffer_clear(fb);
         memcpy(fb->buffer, messages[i], strlen(messages[i]) + 1);
-        FileBuffer_write(fb, fh, i * fb->internal_size);
+        fileBuffer_write(fb, fh, i * fb->internal_size);
     }
 
     // Read and verify each message
     bool all_passed = true;
     for (int i = 0; i < num_messages; i++)
     {
-        FileBuffer_clear(fb);
-        int result = FileBuffer_read(fb, fh, i * fb->internal_size);
+        fileBuffer_clear(fb);
+        int result = fileBuffer_read(fb, fh, i * fb->internal_size);
 
         if (result != 0 || strcmp((char*)fb->buffer, messages[i]) != 0)
         {
@@ -372,15 +372,15 @@ void test_FileBuffer_multiple_operations(void)
 
     VCALL(fh, free);
     destroy_memory_file(mf);
-    FileBuffer_destroy(fb);
+    fileBuffer_destroy(fb);
 }
 
 // Test FileBuffer with VCALL-based read/write
-void test_FileBuffer_vcall_integration(void)
+void test_fileBuffer_vcall_integration(void)
 {
-    printf("\n=== Test FileBuffer_vcall_integration ===\n");
+    printf("\n=== Test fileBuffer_vcall_integration ===\n");
 
-    FileBuffer* fb = FileBuffer_create(4096);
+    FileBuffer* fb = fileBuffer_create(4096);
     MemoryFile* mf = create_memory_file(8192);
     FileHandle* fh = create_mem_file_handle(mf);
 
@@ -411,7 +411,7 @@ void test_FileBuffer_vcall_integration(void)
 
     VCALL(fh, free);
     destroy_memory_file(mf);
-    FileBuffer_destroy(fb);
+    fileBuffer_destroy(fb);
 }
 
 int main(void)
@@ -420,12 +420,12 @@ int main(void)
     printf("   FileBuffer Test Suite\n");
     printf("========================================\n");
 
-    test_FileBuffer_create();
-    test_FileBuffer_clear();
-    test_FileBuffer_read_write();
-    test_FileBuffer_checksum();
-    test_FileBuffer_multiple_operations();
-    test_FileBuffer_vcall_integration();
+    test_fileBuffer_create();
+    test_fileBuffer_clear();
+    test_fileBuffer_read_write();
+    test_fileBuffer_checksum();
+    test_fileBuffer_multiple_operations();
+    test_fileBuffer_vcall_integration();
 
     printf("\n========================================\n");
     printf("   Results: %d passed, %d failed\n", pass_count, fail_count);

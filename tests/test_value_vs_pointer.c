@@ -25,26 +25,26 @@ typedef struct Deserializer
 /* ============================================================================
  * 方式1：使用指针（原始方式）
  * ============================================================================ */
-typedef struct MetaBlockReader_Pointer
+typedef struct metaBlockReader_Pointer
 {
     EXTENDS(Deserializer);
     void* manager;
     Block* block;      // 指针！
     size_t offset;
     int next_block_id;
-} MetaBlockReader_Pointer;
+} metaBlockReader_Pointer;
 
 /* ============================================================================
  * 方式2：使用值类型
  * ============================================================================ */
-typedef struct MetaBlockReader_Value
+typedef struct metaBlockReader_Value
 {
     EXTENDS(Deserializer);
     void* manager;
     Block block;       // 值类型！
     size_t offset;
     int next_block_id;
-} MetaBlockReader_Value;
+} metaBlockReader_Value;
 
 /* ============================================================================
  * 测试和对比
@@ -59,21 +59,21 @@ void test_memory_size()
     printf("  指针大小: %zu 字节\n", sizeof(void*));
     printf("\n");
 
-    printf("  MetaBlockReader_Pointer 大小: %zu 字节\n",
-           sizeof(MetaBlockReader_Pointer));
-    printf("  MetaBlockReader_Value 大小:   %zu 字节\n",
-           sizeof(MetaBlockReader_Value));
+    printf("  metaBlockReader_Pointer 大小: %zu 字节\n",
+           sizeof(metaBlockReader_Pointer));
+    printf("  metaBlockReader_Value 大小:   %zu 字节\n",
+           sizeof(metaBlockReader_Value));
     printf("\n");
 
-    size_t diff = sizeof(MetaBlockReader_Value) - sizeof(MetaBlockReader_Pointer);
+    size_t diff = sizeof(metaBlockReader_Value) - sizeof(metaBlockReader_Pointer);
     printf("  差异: %zu 字节 (值类型多占用)\n", diff);
 
     // 如果创建 1000 个对象
     printf("\n  如果创建 1000 个对象:\n");
     printf("    指针方式: %zu KB\n",
-           (sizeof(MetaBlockReader_Pointer) * 1000) / 1024);
+           (sizeof(metaBlockReader_Pointer) * 1000) / 1024);
     printf("    值方式:   %zu KB\n",
-           (sizeof(MetaBlockReader_Value) * 1000) / 1024);
+           (sizeof(metaBlockReader_Value) * 1000) / 1024);
 }
 
 void test_null_handling()
@@ -81,8 +81,8 @@ void test_null_handling()
     printf("\n[测试2] NULL 处理\n");
     printf("=====================================\n");
 
-    MetaBlockReader_Pointer reader_ptr = {0};
-    // MetaBlockReader_Value reader_val = {0};
+    metaBlockReader_Pointer reader_ptr = {0};
+    // metaBlockReader_Value reader_val = {0};
 
     printf("  指针方式:\n");
     if (reader_ptr.block == NULL)
@@ -108,8 +108,8 @@ void test_sharing()
     strcpy(shared_block->data, "Shared data");
 
     // 指针方式：多个 reader 可以共享同一个 block
-    MetaBlockReader_Pointer reader1 = {0};
-    MetaBlockReader_Pointer reader2 = {0};
+    metaBlockReader_Pointer reader1 = {0};
+    metaBlockReader_Pointer reader2 = {0};
     reader1.block = shared_block;
     reader2.block = shared_block;
 
@@ -135,13 +135,13 @@ void test_initialization()
     printf("=====================================\n");
 
     printf("  指针方式:\n");
-    printf("    MetaBlockReader_Pointer reader = {0};\n");
+    printf("    metaBlockReader_Pointer reader = {0};\n");
     printf("    reader.block = create_block();  // 灵活\n");
     printf("    ✓ 可以延迟分配\n");
     printf("    ✓ 可以指向栈、堆或静态区的 Block\n");
 
     printf("\n  值类型方式:\n");
-    printf("    MetaBlockReader_Value reader = {0};\n");
+    printf("    metaBlockReader_Value reader = {0};\n");
     printf("    reader.block.id = 1;  // 直接使用\n");
     printf("    ✓ 自动分配，无需手动 malloc\n");
     printf("    ✓ 作用域结束自动释放\n");
@@ -185,7 +185,7 @@ void test_deep_copy_problem()
     printf("      Block* next;  ← 指针字段！\n");
 
     printf("\n  值类型方式的问题:\n");
-    printf("    MetaBlockReader_Value reader1, reader2;\n");
+    printf("    metaBlockReader_Value reader1, reader2;\n");
     printf("    reader1.block = original;  // 浅拷贝\n");
     printf("    reader2.block = reader1.block;  // 再次浅拷贝\n");
     printf("\n");

@@ -35,7 +35,7 @@ typedef struct MetaBlockReader
 /* 核心功能：自动生成实现声明 */
 IMPL_INTERFACE(Deserializer, MetaBlockReader);
 
-void MetaBlockReader_read_data(MetaBlockReader* self, void* buffer, size_t size)
+void metaBlockReader_read_data(MetaBlockReader* self, void* buffer, size_t size)
 {
     if (self->position + size > self->size)
     {
@@ -45,7 +45,7 @@ void MetaBlockReader_read_data(MetaBlockReader* self, void* buffer, size_t size)
     self->position += size;
 }
 
-void MetaBlockReader_skip(MetaBlockReader* self, size_t count)
+void metaBlockReader_skip(MetaBlockReader* self, size_t count)
 {
     self->position += count;
     if (self->position > self->size)
@@ -232,14 +232,14 @@ void test_metablock_reader()
     MetaBlockReader reader = {.data = (char*)test_data, .position = 0, .size = strlen(test_data)};
 
     char buffer[10];
-    MetaBlockReader_read_data(&reader, buffer, 5);
+    metaBlockReader_read_data(&reader, buffer, 5);
     buffer[5] = '\0';
     printf("  读取: \"%s\"\n", buffer);
     assert(strcmp(buffer, "Hello") == 0);
 
-    MetaBlockReader_skip(&reader, 2);
+    metaBlockReader_skip(&reader, 2);
 
-    MetaBlockReader_read_data(&reader, buffer, 6);
+    metaBlockReader_read_data(&reader, buffer, 6);
     buffer[6] = '\0';
     printf("  读取: \"%s\"\n", buffer);
     assert(strcmp(buffer, "World!") == 0);
@@ -395,7 +395,7 @@ void test_polymorphism()
 
     /* 同样的接口调用 */
     char buffer1[5], buffer2[5];
-    MetaBlockReader_read_data(&reader1, buffer1, 4);
+    metaBlockReader_read_data(&reader1, buffer1, 4);
     buffer1[4] = '\0';
 
     FileReader_read_data(&reader2, buffer2, 4);
@@ -418,12 +418,12 @@ void test_macro_expansion()
     printf("  代码:\n");
     printf("    IMPL_INTERFACE(Deserializer, MetaBlockReader);\n\n");
     printf("  展开为:\n");
-    printf("    void MetaBlockReader_read_data(\n");
+    printf("    void metaBlockReader_read_data(\n");
     printf("        MetaBlockReader* self,\n");
     printf("        void* buffer,\n");
     printf("        size_t size\n");
     printf("    );\n");
-    printf("    void MetaBlockReader_skip(\n");
+    printf("    void metaBlockReader_skip(\n");
     printf("        MetaBlockReader* self,\n");
     printf("        size_t count\n");
     printf("    );\n");

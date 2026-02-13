@@ -34,7 +34,7 @@ struct FileReader
 };
 
 // 实现具体方法
-void MetaBlockReader_read_data(MetaBlockReader* self, u8* buffer, usize size)
+void metaBlockReader_read_data(MetaBlockReader* self, u8* buffer, usize size)
 {
     printf("  [MetaBlockReader] 读取 %zu 字节\n", size);
     if (self->position + size > self->size)
@@ -54,9 +54,9 @@ void FileReader_read_data(FileReader* self, u8* buffer, usize size)
 
 // 方式1：使用 GENERIC_DISPATCH（推荐）
 // clang-format off
-#define Deserializer_read(ptr, buffer, size) \
+#define deserializer_read(ptr, buffer, size) \
     GENERIC_DISPATCH(ptr, \
-        MetaBlockReader*: MetaBlockReader_read_data, \
+        MetaBlockReader*: metaBlockReader_read_data, \
         FileReader*: FileReader_read_data \
     )(ptr, buffer, size)
 // clang-format on
@@ -150,7 +150,7 @@ void test_deserializer_generic()
     MetaBlockReader reader1 = {.data = (char*)test_data, .position = 0, .size = strlen(test_data)};
 
     u8 buffer1[10];
-    Deserializer_read(&reader1, buffer1, 5); // 编译时选择 MetaBlockReader_read_data
+    deserializer_read(&reader1, buffer1, 5); // 编译时选择 metaBlockReader_read_data
     buffer1[5] = '\0';
     printf("  读取内容: \"%s\"\n", buffer1);
 
@@ -162,7 +162,7 @@ void test_deserializer_generic()
     FileReader reader2 = {.file = temp, .position = 0};
 
     u8 buffer2[10];
-    Deserializer_read(&reader2, buffer2, 5); // 编译时选择 FileReader_read_data
+    deserializer_read(&reader2, buffer2, 5); // 编译时选择 FileReader_read_data
     buffer2[5] = '\0';
     printf("  读取内容: \"%s\"\n", buffer2);
 
@@ -247,21 +247,21 @@ void print_usage()
     printf("\n");
     printf("使用示例：\n");
     printf("  // 1. 实现具体类型的方法\n");
-    printf("  void MetaBlockReader_read_data(MetaBlockReader* self, ...);\n");
+    printf("  void metaBlockReader_read_data(MetaBlockReader* self, ...);\n");
     printf("  void FileReader_read_data(FileReader* self, ...);\n");
     printf("\n");
     printf("  // 2. 定义泛型接口\n");
-    printf("  #define Deserializer_read(ptr, buffer, size) \\\\\n");
+    printf("  #define deserializer_read(ptr, buffer, size) \\\\\n");
     printf("      GENERIC_DISPATCH(ptr, \\\\\n");
-    printf("          MetaBlockReader*: MetaBlockReader_read_data, \\\\\n");
+    printf("          MetaBlockReader*: metaBlockReader_read_data, \\\\\n");
     printf("          FileReader*: FileReader_read_data \\\\\n");
     printf("      )(ptr, buffer, size)\n");
     printf("\n");
     printf("  // 3. 使用（编译时自动选择）\n");
     printf("  MetaBlockReader* r1 = ...;\n");
     printf("  FileReader* r2 = ...;\n");
-    printf("  Deserializer_read(r1, buf, 10);  // -> MetaBlockReader_read_data\n");
-    printf("  Deserializer_read(r2, buf, 10);  // -> FileReader_read_data\n");
+    printf("  deserializer_read(r1, buf, 10);  // -> metaBlockReader_read_data\n");
+    printf("  deserializer_read(r2, buf, 10);  // -> FileReader_read_data\n");
     printf("\n");
     printf("优点：\n");
     printf("  ✓ 编译时类型检查\n");

@@ -1448,6 +1448,411 @@ void test_hmap_iter_no_duplicates(void)
     hmap_destroy(map);
 }
 
+// ========== Test: HMAP_FOREACH basic int iteration ==========
+void test_hmap_foreach_basic(void)
+{
+    printf("\n=== Test HMAP_FOREACH basic ===\n");
+
+    hmap* map = hmap_create(8, int_hash, int_compare);
+    if (!map) { FAIL("hmap_create failed"); return; }
+
+    int keys[] = {1, 2, 3, 4, 5};
+    int values[] = {10, 20, 30, 40, 50};
+    for (int i = 0; i < 5; i++) hmap_insert(map, &keys[i], &values[i]);
+
+    int count = 0;
+    int sum = 0;
+    HMAP_FOREACH(map, entry)
+    {
+        int* v = (int*)entry;
+        if (v) sum += *v;
+        count++;
+    }
+
+    if (count == 5)
+        PASS("FOREACH visited 5 entries");
+    else
+        FAIL("FOREACH visited %d, expected 5", count);
+
+    if (sum == 150)
+        PASS("FOREACH sum correct (150)");
+    else
+        FAIL("FOREACH sum %d, expected 150", sum);
+
+    hmap_destroy(map);
+}
+
+// ========== Test: HMAP_FOREACH on empty map ==========
+void test_hmap_foreach_empty(void)
+{
+    printf("\n=== Test HMAP_FOREACH empty ===\n");
+
+    hmap* map = hmap_create(8, int_hash, int_compare);
+    if (!map) { FAIL("hmap_create failed"); return; }
+
+    int count = 0;
+    HMAP_FOREACH(map, entry)
+    {
+        (void)entry;
+        count++;
+    }
+
+    if (count == 0)
+        PASS("FOREACH on empty map: 0 iterations");
+    else
+        FAIL("FOREACH on empty map: got %d", count);
+
+    hmap_destroy(map);
+}
+
+// ========== Test: HMAP_FOREACH single entry ==========
+void test_hmap_foreach_single(void)
+{
+    printf("\n=== Test HMAP_FOREACH single ===\n");
+
+    hmap* map = hmap_create(8, int_hash, int_compare);
+    if (!map) { FAIL("hmap_create failed"); return; }
+
+    int key = 42;
+    int value = 99;
+    hmap_insert(map, &key, &value);
+
+    int count = 0;
+    int got = -1;
+    HMAP_FOREACH(map, entry)
+    {
+        int* v = (int*)entry;
+        if (v) got = *v;
+        count++;
+    }
+
+    if (count == 1)
+        PASS("FOREACH single: 1 iteration");
+    else
+        FAIL("FOREACH single: %d iterations", count);
+
+    if (got == 99)
+        PASS("FOREACH single: value 99");
+    else
+        FAIL("FOREACH single: value %d, expected 99", got);
+
+    hmap_destroy(map);
+}
+
+// ========== Test: HMAP_FOREACH with string keys ==========
+void test_hmap_foreach_string_keys(void)
+{
+    printf("\n=== Test HMAP_FOREACH string keys ===\n");
+
+    hmap* map = hmap_create(16, string_hash, string_compare);
+    if (!map) { FAIL("hmap_create failed"); return; }
+
+    const char* keys[] = {"apple", "banana", "cherry"};
+    int values[] = {1, 2, 3};
+    for (int i = 0; i < 3; i++) hmap_insert(map, keys[i], &values[i]);
+
+    int count = 0;
+    int sum = 0;
+    HMAP_FOREACH(map, entry)
+    {
+        int* v = (int*)entry;
+        if (v) sum += *v;
+        count++;
+    }
+
+    if (count == 3)
+        PASS("FOREACH string: visited 3 entries");
+    else
+        FAIL("FOREACH string: visited %d", count);
+
+    if (sum == 6)
+        PASS("FOREACH string: sum correct (6)");
+    else
+        FAIL("FOREACH string: sum %d, expected 6", sum);
+
+    hmap_destroy(map);
+}
+
+// ========== Test: HMAP_FOREACH entry is non-NULL ==========
+void test_hmap_foreach_nonnull(void)
+{
+    printf("\n=== Test HMAP_FOREACH non-null ===\n");
+
+    hmap* map = hmap_create(8, int_hash, int_compare);
+    if (!map) { FAIL("hmap_create failed"); return; }
+
+    int keys[] = {10, 20, 30, 40, 50};
+    int values[] = {1, 2, 3, 4, 5};
+    for (int i = 0; i < 5; i++) hmap_insert(map, &keys[i], &values[i]);
+
+    bool all_nonnull = true;
+    int count = 0;
+    HMAP_FOREACH(map, entry)
+    {
+        if (!entry) { all_nonnull = false; break; }
+        count++;
+    }
+
+    if (all_nonnull && count == 5)
+        PASS("FOREACH: entry always non-NULL");
+    else
+        FAIL("FOREACH: entry was NULL at iteration %d", count);
+
+    hmap_destroy(map);
+}
+
+// ========== Test: HMAP_FOREACH modify values ==========
+void test_hmap_foreach_modify(void)
+{
+    printf("\n=== Test HMAP_FOREACH modify ===\n");
+
+    hmap* map = hmap_create(8, int_hash, int_compare);
+    if (!map) { FAIL("hmap_create failed"); return; }
+
+    int keys[] = {1, 2, 3};
+    int values[] = {10, 20, 30};
+    for (int i = 0; i < 3; i++) hmap_insert(map, &keys[i], &values[i]);
+
+    // Double every value through the entry pointer
+    HMAP_FOREACH(map, entry)
+    {
+        int* v = (int*)entry;
+        if (v) *v *= 2;
+    }
+
+    // Verify via direct access
+    bool ok = true;
+    for (int i = 0; i < 3; i++)
+    {
+        hmap_node* node = hmap_get(map, &keys[i]);
+        if (!node || *(int*)node->value != values[i])
+        {
+            ok = false;
+            break;
+        }
+    }
+
+    // values[] should now be {20, 40, 60} since we modified through pointer
+    if (ok && values[0] == 20 && values[1] == 40 && values[2] == 60)
+        PASS("FOREACH modify: all values doubled");
+    else
+        FAIL("FOREACH modify: data mismatch");
+
+    hmap_destroy(map);
+}
+
+// ========== Test: HMAP_FOREACH after deletions ==========
+void test_hmap_foreach_after_delete(void)
+{
+    printf("\n=== Test HMAP_FOREACH after delete ===\n");
+
+    hmap* map = hmap_create(8, int_hash, int_compare);
+    if (!map) { FAIL("hmap_create failed"); return; }
+
+    int keys[] = {1, 2, 3, 4, 5};
+    int values[] = {10, 20, 30, 40, 50};
+    for (int i = 0; i < 5; i++) hmap_insert(map, &keys[i], &values[i]);
+
+    hmap_delete(map, &keys[1]);  // delete key=2
+    hmap_delete(map, &keys[3]);  // delete key=4
+
+    int count = 0;
+    int sum = 0;
+    HMAP_FOREACH(map, entry)
+    {
+        int* v = (int*)entry;
+        if (v) sum += *v;
+        count++;
+    }
+
+    if (count == 3)
+        PASS("FOREACH after delete: 3 entries");
+    else
+        FAIL("FOREACH after delete: %d entries", count);
+
+    if (sum == 90)  // 10+30+50
+        PASS("FOREACH after delete: sum 90");
+    else
+        FAIL("FOREACH after delete: sum %d, expected 90", sum);
+
+    hmap_destroy(map);
+}
+
+// ========== Test: HMAP_FOREACH with embedded (stack) hmap ==========
+void test_hmap_foreach_embedded(void)
+{
+    printf("\n=== Test HMAP_FOREACH embedded ===\n");
+
+    hmap map;
+    hmap_init(&map, 8, int_hash, int_compare);
+
+    int keys[] = {7, 14, 21};
+    int values[] = {70, 140, 210};
+    for (int i = 0; i < 3; i++) hmap_insert(&map, &keys[i], &values[i]);
+
+    int count = 0;
+    int sum = 0;
+    HMAP_FOREACH(&map, entry)
+    {
+        int* v = (int*)entry;
+        if (v) sum += *v;
+        count++;
+    }
+
+    if (count == 3 && sum == 420)
+        PASS("FOREACH embedded: count=3, sum=420");
+    else
+        FAIL("FOREACH embedded: count=%d, sum=%d", count, sum);
+
+    hmap_deinit(&map);
+}
+
+// ========== Test: two HMAP_FOREACH in same scope ==========
+void test_hmap_foreach_two_loops(void)
+{
+    printf("\n=== Test HMAP_FOREACH two loops ===\n");
+
+    hmap* map = hmap_create(8, int_hash, int_compare);
+    if (!map) { FAIL("hmap_create failed"); return; }
+
+    int keys[] = {1, 2, 3, 4};
+    int values[] = {10, 20, 30, 40};
+    for (int i = 0; i < 4; i++) hmap_insert(map, &keys[i], &values[i]);
+
+    int sum1 = 0;
+    {
+        HMAP_FOREACH(map, a)
+        {
+            int* v = (int*)a;
+            if (v) sum1 += *v;
+        }
+    }
+
+    int sum2 = 0;
+    {
+        HMAP_FOREACH(map, b)
+        {
+            int* v = (int*)b;
+            if (v) sum2 += *v;
+        }
+    }
+
+    if (sum1 == 100 && sum2 == 100)
+        PASS("Two FOREACH loops: both sum to 100");
+    else
+        FAIL("Two loops: sum1=%d, sum2=%d", sum1, sum2);
+
+    hmap_destroy(map);
+}
+
+// ========== Test: HMAP_FOREACH with collisions ==========
+void test_hmap_foreach_collisions(void)
+{
+    printf("\n=== Test HMAP_FOREACH collisions ===\n");
+
+    // Force all into bucket 0
+    hmap* map = hmap_create(16, always_zero_hash, int_compare);
+    if (!map) { FAIL("hmap_create failed"); return; }
+
+    int keys[] = {1, 2, 3, 4, 5};
+    int values[] = {10, 20, 30, 40, 50};
+    for (int i = 0; i < 5; i++) hmap_insert(map, &keys[i], &values[i]);
+
+    int count = 0;
+    int sum = 0;
+    HMAP_FOREACH(map, entry)
+    {
+        int* v = (int*)entry;
+        if (v) sum += *v;
+        count++;
+    }
+
+    if (count == 5)
+        PASS("FOREACH collisions: visited all 5");
+    else
+        FAIL("FOREACH collisions: visited %d", count);
+
+    if (sum == 150)
+        PASS("FOREACH collisions: sum correct (150)");
+    else
+        FAIL("FOREACH collisions: sum %d, expected 150", sum);
+
+    hmap_destroy(map);
+}
+
+// ========== Test: HMAP_FOREACH large map ==========
+void test_hmap_foreach_large(void)
+{
+    printf("\n=== Test HMAP_FOREACH large ===\n");
+
+    hmap* map = hmap_create(8, int_hash, int_compare);
+    if (!map) { FAIL("hmap_create failed"); return; }
+
+    const int N = 500;
+    int* keys = malloc(sizeof(int) * N);
+    int* values = malloc(sizeof(int) * N);
+    for (int i = 0; i < N; i++)
+    {
+        keys[i] = i;
+        values[i] = i;
+        hmap_insert(map, &keys[i], &values[i]);
+    }
+
+    int count = 0;
+    long sum = 0;
+    HMAP_FOREACH(map, entry)
+    {
+        int* v = (int*)entry;
+        if (v) sum += *v;
+        count++;
+    }
+
+    long expected = (long)(N - 1) * N / 2;
+    if (count == N)
+        PASS("FOREACH large: %d entries", N);
+    else
+        FAIL("FOREACH large: %d, expected %d", count, N);
+
+    if (sum == expected)
+        PASS("FOREACH large: sum %ld", sum);
+    else
+        FAIL("FOREACH large: sum %ld, expected %ld", sum, expected);
+
+    free(keys);
+    free(values);
+    hmap_destroy(map);
+}
+
+// ========== Test: HMAP_FOREACH entry points to actual value ==========
+void test_hmap_foreach_value_semantics(void)
+{
+    printf("\n=== Test HMAP_FOREACH value semantics ===\n");
+
+    hmap* map = hmap_create(8, int_hash, int_compare);
+    if (!map) { FAIL("hmap_create failed"); return; }
+
+    int key = 42;
+    int value = 100;
+    hmap_insert(map, &key, &value);
+
+    // entry should be the value pointer (not the hmap_node*)
+    HMAP_FOREACH(map, entry)
+    {
+        if (entry == &value)
+            PASS("FOREACH entry == &value (correct pointer)");
+        else
+            FAIL("FOREACH entry != &value (may return node instead of value)");
+
+        int* v = (int*)entry;
+        if (v && *v == 100)
+            PASS("FOREACH entry dereferences to 100");
+        else
+            FAIL("FOREACH entry value incorrect");
+    }
+
+    hmap_destroy(map);
+}
+
 int main(void)
 {
     printf("========================================\n");
@@ -1488,6 +1893,20 @@ int main(void)
     test_hmap_iter_reinit();
     test_hmap_iter_large();
     test_hmap_iter_no_duplicates();
+
+    // HMAP_FOREACH macro tests
+    test_hmap_foreach_basic();
+    test_hmap_foreach_empty();
+    test_hmap_foreach_single();
+    test_hmap_foreach_string_keys();
+    test_hmap_foreach_nonnull();
+    test_hmap_foreach_modify();
+    test_hmap_foreach_after_delete();
+    test_hmap_foreach_embedded();
+    test_hmap_foreach_two_loops();
+    test_hmap_foreach_collisions();
+    test_hmap_foreach_large();
+    test_hmap_foreach_value_semantics();
 
     printf("\n========================================\n");
     printf("   Results: %d passed, %d failed\n", pass_count, fail_count);
