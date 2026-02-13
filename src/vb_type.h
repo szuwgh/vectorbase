@@ -1,6 +1,7 @@
 #ifndef VB_TYPE_H
 #define VB_TYPE_H
 #include <stdint.h>
+#include <stdbool.h>
 
 typedef uint8_t u8;
 typedef uint64_t usize;

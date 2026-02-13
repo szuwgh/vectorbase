@@ -16,8 +16,8 @@ static Block* create_block(block_id_t block_id)
         return NULL;  // 内存分配失败
     }
     block->id = block_id;  // 分配新的块 ID
-    block->buffer = FileBuffer_create(BLOCK_SIZE);  // 创建新的 FileBuffer
-    if (!block->buffer)
+    block->fb = FileBuffer_create(BLOCK_SIZE);  // 创建新的 FileBuffer
+    if (!block->fb)
     {
         free(block);
         return NULL;  // FileBuffer 创建失败
@@ -60,7 +60,7 @@ int FileBuffer_read(FileBuffer* fb, FileHandle* handle, usize location)
 {
     void* internal_buffer = (void*)(fb->internal_buf);
     // 从Disk读取数据（使用虚表）
-    handle->vtable->read_at(handle->handle, internal_buffer, fb->internal_size, location);
+    VCALL(handle, read_at, internal_buffer, fb->internal_size, location);
     // 获取校验和
     u64 stored_checksum = *((u64*)internal_buffer);
     // 校验校验和
@@ -80,8 +80,9 @@ int FileBuffer_write(FileBuffer* fb, FileHandle* handle, usize location)
     // 写入校验和
     *((u64*)fb->internal_buf) = sum;
     // 写入数据（使用虚表）
-    handle->vtable->write_at(handle->handle, fb->internal_buf, fb->internal_size, location);
-    // 校验成功，返回0
+    VCALL(handle, write_at, fb->internal_buf, fb->internal_size, location);
+    // handle->vtable->write_at(handle->handle, fb->internal_buf, fb->internal_size, location);
+    //  校验成功，返回0
     return 0;
 }
 
@@ -98,73 +99,50 @@ void FileBuffer_destroy(FileBuffer* buffer)
     }
 }
 
-static void file_free(void* handle)
+static void file_free(FileHandle* handle)
 {
-    if (handle)
+    FileSystemHandle* fs_handle = (FileSystemHandle*)handle;
+    if (fs_handle->file)
     {
-        fclose((FILE*)handle);
+        fclose(fs_handle->file);
     }
+    free(fs_handle);
 }
 
 // 为 FILE* 类型实现具体的读写函数，模拟实现 FileHandle Trait
-static int file_read(void* handle, void* buffer, usize size)
+static int file_read(FileHandle* handle, void* buffer, usize size)
 {
-    return fread(buffer, 1, size, (FILE*)handle);
+    FileSystemHandle* fs_handle = (FileSystemHandle*)handle;
+    return fread(buffer, 1, size, fs_handle->file);
 }
 
-static int file_read_at(void* handle, void* buffer, usize size, usize location)
+static int file_read_at(FileHandle* handle, void* buffer, usize size, usize location)
 {
-    if (fseek((FILE*)handle, location, SEEK_SET) != 0) return -1;
-    return fread(buffer, 1, size, (FILE*)handle);
+    FileSystemHandle* fs_handle = (FileSystemHandle*)handle;
+    if (fseek(fs_handle->file, location, SEEK_SET) != 0) return -1;
+    return fread(buffer, 1, size, fs_handle->file);
 }
 
-static int file_write(void* handle, const void* buffer, usize size)
+static int file_write(FileHandle* handle, const void* buffer, usize size)
 {
-    return fwrite(buffer, 1, size, (FILE*)handle);
+    FileSystemHandle* fs_handle = (FileSystemHandle*)handle;
+    return fwrite(buffer, 1, size, fs_handle->file);
 }
 
-static int file_write_at(void* handle, const void* buffer, usize size, usize location)
+static int file_write_at(FileHandle* handle, const void* buffer, usize size, usize location)
 {
-    if (fseek((FILE*)handle, location, SEEK_SET) != 0) return -1;
-    return fwrite(buffer, 1, size, (FILE*)handle);
+    FileSystemHandle* fs_handle = (FileSystemHandle*)handle;
+    if (fseek(fs_handle->file, location, SEEK_SET) != 0) return -1;
+    return fwrite(buffer, 1, size, fs_handle->file);
 }
 
-static void file_sync(void* handle)
+static void file_sync(FileHandle* handle)
 {
-    if (handle)
+    FileSystemHandle* fs_handle = (FileSystemHandle*)handle;
+    if (fs_handle->file)
     {
-        fflush((FILE*)handle);
+        fflush(fs_handle->file);
     }
-}
-
-// FILE* 类型的虚函数表实例（静态全局变量）
-static const FileHandleVTable file_vtable = {.free = file_free,
-                                             .read = file_read,
-                                             .write = file_write,
-                                             .read_at = file_read_at,
-                                             .write_at = file_write_at,
-                                             .sync = file_sync};
-
-/**
- * @brief 创建一个 FileHandle
- *
- * 该函数会创建一个 FileHandle，用于管理指定的文件句柄。
- * 使用虚表模式，简化了函数参数。
- *
- * @param handle 文件句柄，指向要管理的文件
- * @param vtable 虚函数表指针，包含所有文件操作函数
- * @return FileHandle* 新创建的 FileHandle 指针
- */
-FileHandle* create_file_handle(void* handle, const FileHandleVTable* vtable)
-{
-    FileHandle* file_handle = (FileHandle*)malloc(sizeof(FileHandle));
-    if (!file_handle)
-    {
-        return NULL;  // 内存分配失败
-    }
-    file_handle->handle = handle;
-    file_handle->vtable = vtable;
-    return file_handle;
 }
 
 /**
@@ -182,6 +160,14 @@ void FileHandle_sync(FileHandle* fh)
     }
 }
 
+// FILE* 类型的虚函数表实例（静态全局变量）
+static const FileHandleVTable file_vtable = {.free = file_free,
+                                             .read = file_read,
+                                             .write = file_write,
+                                             .read_at = file_read_at,
+                                             .write_at = file_write_at,
+                                             .sync = file_sync};
+
 /**
  * @brief 从 FILE* 创建一个 FileHandle
  *
@@ -191,9 +177,16 @@ void FileHandle_sync(FileHandle* fh)
  * @param file FILE* 类型文件句柄，指向要管理的文件
  * @return FileHandle* 新创建的 FileHandle 指针
  */
-FileHandle* create_file_handle_from_FILE(FILE* file)
+FileSystemHandle* create_filesystem_handle_from_FILE(FILE* file)
 {
-    return create_file_handle((void*)file, &file_vtable);
+    FileSystemHandle* file_handle = (FileSystemHandle*)malloc(sizeof(FileSystemHandle));
+    if (!file_handle)
+    {
+        return NULL;  // 内存分配失败
+    }
+    file_handle->file = file;
+    file_handle->base.vtable = &file_vtable;
+    return file_handle;
 }
 
 static void MetaBlockReader_read_new_block(MetaBlockReader* reader, block_id_t block_id)
@@ -204,9 +197,10 @@ static void MetaBlockReader_read_new_block(MetaBlockReader* reader, block_id_t b
     }
 
     Block* block = reader->block;
+    block->id = block_id;
     // 读取指定块
     VCALL(reader->manager, read, block);
-    reader->next_block_id = *((block_id_t*)block->buffer->buffer);
+    reader->next_block_id = *((block_id_t*)block->fb->buffer);
     reader->offset = sizeof(block_id_t);
 }
 
@@ -215,7 +209,7 @@ static void init_meteblock_reader(MetaBlockReader* reader, BlockManager* manager
 {
     reader->manager = manager;
     reader->block = (Block*)malloc(sizeof(Block));
-    reader->block->buffer = FileBuffer_create(BLOCK_SIZE);
+    reader->block->fb = FileBuffer_create(BLOCK_SIZE);
     reader->offset = 0;
     reader->next_block_id = -1;
     MetaBlockReader_read_new_block(reader, block_id);
@@ -224,14 +218,14 @@ static void init_meteblock_reader(MetaBlockReader* reader, BlockManager* manager
 void MetaBlockReader_read_data(MetaBlockReader* reader, data_ptr_t buffer, usize read_size)
 {
     Block* block = reader->block;
-    while (reader->offset + read_size > block->buffer->size)
+    while (reader->offset + read_size > block->fb->size)
     {
         // cannot read entire entry from block
         // first read what we can from this block
-        usize to_read = block->buffer->size - reader->offset;
+        usize to_read = block->fb->size - reader->offset;
         if (to_read > 0)
         {
-            memcpy(buffer, block->buffer + reader->offset, to_read);
+            memcpy(buffer, block->fb->buffer + reader->offset, to_read);
             read_size -= to_read;
             buffer += to_read;
         }
@@ -239,7 +233,7 @@ void MetaBlockReader_read_data(MetaBlockReader* reader, data_ptr_t buffer, usize
         MetaBlockReader_read_new_block(reader, reader->next_block_id);
     }
     // we have enough left in this block to read from the buffer
-    memcpy(buffer, block->buffer + reader->offset, read_size);
+    memcpy(buffer, block->fb->buffer + reader->offset, read_size);
     reader->offset += read_size;
 }
 
@@ -251,7 +245,7 @@ void MetaBlockReader_destroy(MetaBlockReader* reader)
     }
     if (reader->block)
     {
-        FileBuffer_destroy(reader->block->buffer);
+        FileBuffer_destroy(reader->block->fb);
         free(reader->block);
     }
 }
@@ -285,7 +279,7 @@ static void MetaBlockWriter_destroy(MetaBlockWriter* writer)
     MetaBlockWriter_flush(writer);
     if (writer->block)
     {
-        FileBuffer_destroy(writer->block->buffer);
+        FileBuffer_destroy(writer->block->fb);
         free(writer->block);
     }
 }
@@ -294,15 +288,15 @@ void MetaBlockWriter_write_data(MetaBlockWriter* writer, data_ptr_t buffer, usiz
 {
     usize offset = writer->offset;
     Block* block = writer->block;
-    while (offset + write_size > block->buffer->size)
+    while (offset + write_size > block->fb->size)
     {
         // we need to make a new block
         // first copy what we can
-        assert(offset <= block->buffer->size);
-        usize copy_amount = block->buffer->size - offset;
+        assert(offset <= block->fb->size);
+        usize copy_amount = block->fb->size - offset;
         if (copy_amount > 0)
         {
-            memcpy(block->buffer + offset, buffer, copy_amount);
+            memcpy(block->fb->buffer + offset, buffer, copy_amount);
             buffer += copy_amount;
             offset += copy_amount;
             write_size -= copy_amount;
@@ -311,13 +305,13 @@ void MetaBlockWriter_write_data(MetaBlockWriter* writer, data_ptr_t buffer, usiz
         // now we need to get a new block id
         block_id_t new_block_id = VCALL(writer->manager, get_free_block_id);
         // write the block id of the new block to the start of the current block
-        *((block_id_t*)block->buffer) = new_block_id;
+        *((block_id_t*)block->fb->buffer) = new_block_id;
         // first flush the old block
         MetaBlockWriter_flush(writer);
         // now update the block id of the lbock
         block->id = new_block_id;
     }
-    memcpy(block->buffer + offset, buffer, write_size);
+    memcpy(block->fb->buffer + offset, buffer, write_size);
     offset += write_size;
     writer->offset = offset;
 }
@@ -332,12 +326,7 @@ void destory_single_manager(SingleFileBlockManager* manager)
     // 关闭文件并释放 FileHandle
     if (manager->file_handle)
     {
-        if (manager->file_handle->handle && manager->file_handle->vtable &&
-            manager->file_handle->vtable->free)
-        {
-            manager->file_handle->vtable->free(manager->file_handle->handle);
-        }
-        free(manager->file_handle);
+        VCALL(manager->file_handle, free);
     }
 
     // 释放文件路径
@@ -351,8 +340,8 @@ void destory_single_manager(SingleFileBlockManager* manager)
         FileBuffer_destroy(manager->header_buffer);
     }
     // 释放 used_blocks 和 free_list
-    Vector_destroy(&manager->used_blocks);
-    Vector_destroy(&manager->free_list);
+    Vector_deinit(&manager->used_blocks);
+    Vector_deinit(&manager->free_list);
 
     // 释放 manager 本身
     free(manager);
@@ -364,14 +353,14 @@ static void single_file_block_manager_read(BlockManager* self, Block* block)
     assert(block->id >= 0);
     // 记录读取的块 → 这些是旧检查点的块
     Vector_push_back(&manager->used_blocks, &block->id);
-    FileBuffer_read(block->buffer, manager->file_handle, BLOCK_START + block->id * BLOCK_SIZE);
+    FileBuffer_read(block->fb, manager->file_handle, BLOCK_START + block->id * BLOCK_SIZE);
 }
 
 static void single_file_block_manager_write(BlockManager* self, Block* block)
 {
     SingleFileBlockManager* manager = (SingleFileBlockManager*)self;
     assert(block->id >= 0);
-    FileBuffer_write(block->buffer, manager->file_handle, BLOCK_START + block->id * BLOCK_SIZE);
+    FileBuffer_write(block->fb, manager->file_handle, BLOCK_START + block->id * BLOCK_SIZE);
 }
 
 static block_id_t single_file_block_manager_get_free_block_id(BlockManager* self)
@@ -448,13 +437,13 @@ static Block* single_file_block_manager_create_block(BlockManager* self)
  */
 static void single_file_block_manager_write_header(BlockManager* self, DatabaseHeader header)
 {
-    SingleFileBlockManager* manager = (SingleFileBlockManager*)self;
+    SingleFileBlockManager* manager = DOWNCAST(self, SingleFileBlockManager);
     header.iteration = ++manager->iteration_count;
     header.block_count = manager->max_block;
     if (manager->used_blocks.size > 0)
     {
         MetaBlockWriter writer;
-        init_meteblock_writer(&writer, (BlockManager*)manager);
+        init_meteblock_writer(&writer, self);
         header.free_list_id = writer.block->id;
         Serializer_write(&writer, (data_ptr_t)&manager->used_blocks.size, sizeof(u64));
         // Read 的块会放进 free_list，因为 Checkpoint
@@ -466,6 +455,7 @@ static void single_file_block_manager_write_header(BlockManager* self, DatabaseH
             Serializer_write(&writer, (data_ptr_t)block_id, sizeof(block_id_t));
         }
         MetaBlockWriter_flush(&writer);
+        MetaBlockWriter_destroy(&writer);
     }
     else
     {
@@ -479,7 +469,9 @@ static void single_file_block_manager_write_header(BlockManager* self, DatabaseH
                      // 写入 H2 时，偏移量为 HEADER_SIZE * 2
     manager->active_header = 1 - manager->active_header;// 切换到 H2
     FileHandle_sync(manager->file_handle);
+    Vector_deinit(&manager->free_list);
     manager->free_list = manager->used_blocks;
+    Vector_init(&manager->used_blocks, sizeof(block_id_t), 0);
 }
 
 static void single_file_block_manager_destroy(BlockManager* self)
@@ -514,7 +506,7 @@ static void initialize_manager(SingleFileBlockManager* manager, DatabaseHeader* 
         }
         MetaBlockReader_destroy(&reader);
     }
-    manager->max_block = header->meta_block;
+    manager->meta_block = header->meta_block;
     manager->iteration_count = header->iteration;
     manager->max_block = header->block_count;
 }
@@ -564,20 +556,20 @@ SingleFileBlockManager* create_new_database(const char* path, bool create_new)
         return NULL;  // 文件创建失败
     }
 
-    FileHandle* file_handle = create_file_handle_from_FILE(file);
+    FileSystemHandle* file_handle = create_filesystem_handle_from_FILE(file);
     if (!file_handle)
     {
         fclose(file);
         single_file_block_manager_destroy((BlockManager*)manager);
         return NULL;  // 文件句柄创建失败
     }
-    manager->file_handle = file_handle;  // 将 FileHandle 结构体内容
+    manager->file_handle = (FileHandle*)file_handle;  // 将 FileHandle 结构体内容
     if (create_new)
     {
         FileBuffer_clear(header_buffer);
         MasterHeader* meta_header = (MasterHeader*)header_buffer->buffer;
         meta_header->version = VERSION_NUMBER;
-        FileBuffer_write(header_buffer, file_handle, 0);
+        FileBuffer_write(header_buffer, (FileHandle*)file_handle, 0);
 
         FileBuffer_clear(header_buffer);
         DatabaseHeader* db_header = (DatabaseHeader*)header_buffer->buffer;
@@ -586,27 +578,28 @@ SingleFileBlockManager* create_new_database(const char* path, bool create_new)
         db_header->meta_block = INVALID_BLOCK;
         db_header->free_list_id = INVALID_BLOCK;
         db_header->block_count = 0;
-        FileBuffer_write(header_buffer, file_handle, HEADER_SIZE);
+        FileBuffer_write(header_buffer, (FileHandle*)file_handle, HEADER_SIZE);
         // header 2
         db_header->iteration = 1;
-        FileBuffer_write(header_buffer, file_handle, HEADER_SIZE * 2);
-        FileHandle_sync(file_handle);
+        FileBuffer_write(header_buffer, (FileHandle*)file_handle, HEADER_SIZE * 2);
+        FileHandle_sync((FileHandle*)file_handle);
         manager->active_header = 1;  // 新文件默认 header 2 为活跃
         manager->max_block = 0;  // 新文件默认最大块编号为 2
+        manager->meta_block = INVALID_BLOCK;
     }
     else
     {
         MasterHeader header;
-        FileBuffer_read(header_buffer, file_handle, 0);
+        FileBuffer_read(header_buffer, (FileHandle*)file_handle, 0);
         if (header.version != VERSION_NUMBER)
         {
             single_file_block_manager_destroy((BlockManager*)manager);
             return NULL;  // 版本不匹配
         }
         DatabaseHeader db_header1, db_header2;
-        FileBuffer_read(header_buffer, file_handle, HEADER_SIZE);
+        FileBuffer_read(header_buffer, (FileHandle*)file_handle, HEADER_SIZE);
         db_header1 = *(DatabaseHeader*)header_buffer->buffer;
-        FileBuffer_read(header_buffer, file_handle, HEADER_SIZE * 2);
+        FileBuffer_read(header_buffer, (FileHandle*)file_handle, HEADER_SIZE * 2);
         db_header2 = *(DatabaseHeader*)header_buffer->buffer;
 
         if (db_header1.iteration > db_header2.iteration)

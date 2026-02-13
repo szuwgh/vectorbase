@@ -51,9 +51,11 @@ Module.symvers
 Mkfile.old
 dkms.conf
 .clang-format
-tests
 # debug information files
 *.dwo
+# Test binaries
+tests/test_*
+!tests/test_*.c
 libvectorbase/
 compile_commands.json
 Makefile

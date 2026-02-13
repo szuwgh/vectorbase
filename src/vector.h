@@ -2,7 +2,6 @@
 #define VECTOR_H
 
 #include "vb_type.h"
-#include <stdbool.h>
 #include <sys/types.h>
 
 /**
@@ -84,6 +83,13 @@ Vector* Vector_create(usize element_size, usize initial_capacity);
  * @param vec 要销毁的Vector指针
  */
 void Vector_destroy(Vector* vec);
+
+/**
+ * @brief 销毁Vector并释放所有资源
+ *
+ * @param vec 要销毁的Vector指针
+ */
+void Vector_deinit(Vector* vec);
 
 /**
  * @brief 向Vector末尾添加元素（复制）

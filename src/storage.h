@@ -1,11 +1,11 @@
 #ifndef STORAGE_H
 #define STORAGE_H
 
-#include <stdbool.h>
 #include <stdio.h>
 #include "vb_type.h"
 #include "interface.h"
 #include "vector.h"
+#include "wal.h"
 
 #define BLOCK_SIZE             262144 // 256KB
 #define HEADER_SIZE            4096   // 数据库头大小
@@ -19,7 +19,7 @@ static int BLOCK_START = HEADER_SIZE * 3; // 数据块起始位置，从第3个 
 typedef struct
 {
     u64 version;  // 版本号，用于未来的兼容性检查
-    u64 flags[4]; // 保留字段，供将来扩展使用
+    u64 flags[4]; // 保留字段·1，供将来扩展使用
 } MasterHeader;
 
 typedef struct
@@ -55,30 +55,44 @@ typedef struct
 
 FileBuffer* FileBuffer_create(usize size);
 
-/* FileHandle Trait - 使用虚表模式 */
-
-// FileHandle 虚函数表
-typedef struct FileHandleVTable
+// BlockManager 类型枚举 - 用于区分不同的实现
+typedef enum
 {
-    void (*free)(void* handle);
-    int (*read)(void* handle, void* buffer, usize nr_bytes);
-    int (*write)(void* handle, const void* buffer, usize nr_bytes);
-    int (*read_at)(void* handle, void* buffer, usize nr_bytes, usize location);
-    int (*write_at)(void* handle, const void* buffer, usize nr_bytes, usize location);
-    void (*sync)(void* handle);
-} FileHandleVTable;
+    FILEHANDLE_FILE = 0,   // 文件句柄
+} FileHandleType;
+
+// // FileHandle 虚函数表
+// typedef struct FileHandleVTable
+// {
+//     void (*free)(void* handle);
+//     int (*read)(void* handle, void* buffer, usize nr_bytes);
+//     int (*write)(void* handle, const void* buffer, usize nr_bytes);
+//     int (*read_at)(void* handle, void* buffer, usize nr_bytes, usize location);
+//     int (*write_at)(void* handle, const void* buffer, usize nr_bytes, usize location);
+//     void (*sync)(void* handle);
+// } FileHandleVTable;
+// clang-format off
+DEFINE_CLASS(FileHandle,
+    VMETHOD(FileHandle, free, void)
+    VMETHOD(FileHandle, read, int, void* buffer, usize nr_bytes)
+    VMETHOD(FileHandle, write, int, const void* buffer, usize nr_bytes)
+    VMETHOD(FileHandle, read_at, int, void* buffer, usize nr_bytes, usize location)
+    VMETHOD(FileHandle, write_at, int, const void* buffer, usize nr_bytes, usize location)
+    VMETHOD(FileHandle, sync, void)
+    ,
+    FIELD(type, FileHandleType)
+)
+// clang-format on
 
 // FileHandle 结构
 typedef struct
 {
-    void* handle;                     // 实际的文件句柄
-    const FileHandleVTable* vtable;   // 虚函数表指针
-} FileHandle;
+    EXTENDS(FileHandle);
+    FILE* file;
+} FileSystemHandle;
 
-// 简化的创建函数 - 只需要两个参数
-FileHandle* create_file_handle(void* handle, const FileHandleVTable* vtable);
+FileSystemHandle* create_filesystem_handle_from_FILE(FILE* file);
 
-FileHandle* create_file_handle_from_FILE(FILE* file);
 int FileBuffer_read(FileBuffer* buffer, FileHandle* handle, usize location);
 int FileBuffer_write(FileBuffer* buffer, FileHandle* handle, usize location);
 void FileBuffer_clear(FileBuffer* buffer);
@@ -87,7 +101,7 @@ void FileBuffer_destroy(FileBuffer* buffer);
 typedef struct Block
 {
     block_id_t id;
-    FileBuffer* buffer;
+    FileBuffer* fb;
 } Block;
 
   // BlockManager 虚类（接口）- 使用函数指针实现多态
@@ -246,6 +260,12 @@ IMPL_INTERFACE(Serializer, MetaBlockWriter);
 // 泛型函数宏（编译时展开，完全不使用虚表）
 #define Serializer_write(sw_ptr, buffer, size) \
     GENERIC_DISPATCH(sw_ptr, MetaBlockWriter* : MetaBlockWriter_write_data)(sw_ptr, buffer, size)
+
+typedef struct
+{
+    BlockManager* block_manager; // 块管理器指针
+    WALManager* wal_manager; // WAL 管理器指针
+} StorageManager;
 
 typedef struct
 {

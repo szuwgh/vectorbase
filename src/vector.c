@@ -21,7 +21,6 @@ int Vector_init(Vector* vec, usize element_size, usize initial_capacity)
     vec->data = malloc(element_size * initial_capacity);
     if (!vec->data)
     {
-        free(vec);
         return -1;
     }
 
@@ -63,6 +62,21 @@ void Vector_destroy(Vector* vec)
             free(vec->data);
         }
         free(vec);
+    }
+}
+
+void Vector_deinit(Vector* vec)
+{
+    if (vec)
+    {
+        if (vec->data)
+        {
+            free(vec->data);
+            vec->data = NULL;
+        }
+        vec->size = 0;
+        vec->capacity = 0;
+        vec->element_size = 0;
     }
 }
 
