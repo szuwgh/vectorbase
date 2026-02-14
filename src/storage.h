@@ -216,7 +216,7 @@ DEFINE_CLASS(Deserializer,
 // clang-format on
 
 // 元数据块读取器
-typedef struct
+typedef struct MetaBlockReader
 {
     EXTENDS(Deserializer); // 继承 Deserializer（组合方式）
     BlockManager* manager;  // 管理器指针
@@ -233,8 +233,29 @@ void metaBlockReader_read_data(MetaBlockReader* self, data_ptr_t buffer, usize r
 void metaBlockReader_destroy(MetaBlockReader* reader);
 
 // 泛型函数宏（编译时展开，完全不使用虚表）
-#define deserializer_read(dr_ptr, buffer, size) \
+#define DESERIALIZER_READ(dr_ptr, buffer, size) \
     GENERIC_DISPATCH(dr_ptr, MetaBlockReader* : metaBlockReader_read_data)(dr_ptr, buffer, size)
+
+#define DESERIALIZER_READ_TYPE(sw_ptr, buffer, type)                  \
+    ({                                                                \
+        type _tmp;                                                    \
+        DESERIALIZER_READ(sw_ptr, (data_ptr_t) & _tmp, sizeof(type)); \
+        _tmp;                                                         \
+    })
+
+#define DESERIALIZER_READ_U32(dr_ptr) DESERIALIZER_READ_TYPE(dr_ptr, (data_ptr_t) & _tmp, u32)
+
+#define DESERIALIZER_READ_U64(dr_ptr) DESERIALIZER_READ_TYPE(dr_ptr, (data_ptr_t) & _tmp, u64)
+
+#define DESERIALIZER_READ_STRING(dr_ptr)                                   \
+    ({                                                                     \
+        usize _tmp_len;                                                    \
+        DESERIALIZER_READ(dr_ptr, (data_ptr_t) & _tmp_len, sizeof(usize)); \
+        char* _tmp_str = malloc(_tmp_len + 1);                             \
+        DESERIALIZER_READ(dr_ptr, (data_ptr_t)_tmp_str, _tmp_len);         \
+        _tmp_str[_tmp_len] = '\0';                                         \
+        _tmp_str;                                                          \
+    })
 
 typedef enum
 {
@@ -265,9 +286,19 @@ INTERFACE(Serializer, (write_data, void, (data_ptr_t buffer, size_t size)))
 void metaBlockWriter_write_data(MetaBlockWriter* self, data_ptr_t buffer, usize write_size);
 
 // 泛型函数宏（编译时展开，完全不使用虚表）
-#define serializer_write(sw_ptr, buffer, type)                                              \
+#define SERIALIZER_WRITE(sw_ptr, buffer, write_size)                                        \
     GENERIC_DISPATCH(sw_ptr, MetaBlockWriter* : metaBlockWriter_write_data)(sw_ptr, buffer, \
-                                                                            sizeof(type))
+                                                                            write_size)
+
+#define SERIALIZER_WRITE_TYPE(sw_ptr, buffer, type) SERIALIZER_WRITE(sw_ptr, buffer, sizeof(type))
+
+#define SERIALIZER_WRITE_U32(sw_ptr, value) \
+    SERIALIZER_WRITE(sw_ptr, (data_ptr_t) & (u32){value}, sizeof(u32))
+
+#define SERIALIZER_WRITE_STRING(sw_ptr, str)                      \
+    usize str_len = strlen(str);                                  \
+    SERIALIZER_WRITE_TYPE(sw_ptr, (data_ptr_t)(&str_len), usize); \
+    SERIALIZER_WRITE(sw_ptr, (data_ptr_t)str, str_len)
 
 typedef struct
 {

@@ -205,8 +205,8 @@ static void metaBlockReader_read_new_block(MetaBlockReader* reader, block_id_t b
     reader->offset = sizeof(block_id_t);
 }
 
-static void init_meteblock_reader(MetaBlockReader* reader, BlockManager* manager,
-                                  block_id_t block_id)
+static void MetaBlockReader_init(MetaBlockReader* reader, BlockManager* manager,
+                                 block_id_t block_id)
 {
     reader->manager = manager;
     reader->block = (Block*)malloc(sizeof(Block));
@@ -238,7 +238,7 @@ void metaBlockReader_read_data(MetaBlockReader* reader, data_ptr_t buffer, usize
     reader->offset += read_size;
 }
 
-void metaBlockReader_destroy(MetaBlockReader* reader)
+void metaBlockReader_deinit(MetaBlockReader* reader)
 {
     if (!reader)
     {
@@ -247,8 +247,17 @@ void metaBlockReader_destroy(MetaBlockReader* reader)
     if (reader->block)
     {
         fileBuffer_destroy(reader->block->fb);
-        free(reader->block);
     }
+}
+
+void metaBlockReader_destroy(MetaBlockReader* reader)
+{
+    if (!reader)
+    {
+        return;
+    }
+    metaBlockReader_deinit(reader);
+    free(reader);
 }
 
 static void init_meteblock_writer(MetaBlockWriter* writer, BlockManager* manager)
@@ -446,14 +455,14 @@ static void single_file_block_manager_write_header(BlockManager* self, DatabaseH
         MetaBlockWriter writer;
         init_meteblock_writer(&writer, self);
         header.free_list_id = writer.block->id;
-        serializer_write(&writer, (data_ptr_t)&manager->used_blocks.size, usize);
+        SERIALIZER_WRITE_TYPE(&writer, (data_ptr_t)&manager->used_blocks.size, usize);
         // Read 的块会放进 free_list，因为 Checkpoint
         // 会把这些数据重新写入到新块中，旧块的内容已经被复制了
         // checkpoint manager 是全量复制 Copy-Everything Checkpoint 策略
         for (u64 i = 0; i < manager->used_blocks.size; i++)
         {
             block_id_t* block_id = vector_get(&manager->used_blocks, i);
-            serializer_write(&writer, (data_ptr_t)block_id, block_id_t);
+            SERIALIZER_WRITE_TYPE(&writer, (data_ptr_t)block_id, block_id_t);
         }
         metaBlockWriter_flush(&writer);
         metaBlockWriter_destroy(&writer);
@@ -472,7 +481,7 @@ static void single_file_block_manager_write_header(BlockManager* self, DatabaseH
     fileHandle_sync(manager->file_handle);
     vector_deinit(&manager->free_list);
     manager->free_list = manager->used_blocks;
-    vector_init(&manager->used_blocks, sizeof(block_id_t), 0);
+    manager->used_blocks = VEC(block_id_t, 0);
 }
 
 static void single_file_block_manager_destroy(BlockManager* self)
@@ -494,15 +503,16 @@ static void initialize_manager(SingleFileBlockManager* manager, DatabaseHeader* 
 {
     if (header->free_list_id != INVALID_BLOCK)
     {
-        MetaBlockReader reader = {0};
-        init_meteblock_reader(&reader, (BlockManager*)manager, header->free_list_id);
+        MetaBlockReader reader =
+            MAKE(MetaBlockReader, (BlockManager*)manager, header->free_list_id);
+      //  MetaBlockReader_init(&reader, (BlockManager*)manager, header->free_list_id);
         u64 free_list_count = 0;
-        deserializer_read(&reader, (data_ptr_t)&free_list_count, sizeof(u64));
+        DESERIALIZER_READ(&reader, (data_ptr_t)&free_list_count, sizeof(u64));
         vector_reserve(&manager->free_list, free_list_count);
         for (u64 i = 0; i < free_list_count; i++)
         {
             block_id_t block_id = 0;
-            deserializer_read(&reader, (data_ptr_t)&block_id, sizeof(block_id_t));
+            DESERIALIZER_READ(&reader, (data_ptr_t)&block_id, sizeof(block_id_t));
             vector_push_back(&manager->free_list, &block_id);
         }
         metaBlockReader_destroy(&reader);
@@ -536,11 +546,9 @@ SingleFileBlockManager* create_new_database(const char* path, bool create_new)
     manager->base.vtable = &single_file_block_manager_vtable;
     manager->base.type = BLOCK_MANAGER_SINGLE_FILE;
     manager->file_path = strdup(path);
-    Vector used_blocks = {0};
-    vector_init(&used_blocks, sizeof(block_id_t), 0);
+    Vector used_blocks = VEC(block_id_t, 0);
     manager->used_blocks = used_blocks;
-    Vector free_list = {0};
-    vector_init(&free_list, sizeof(block_id_t), 0);
+    Vector free_list = VEC(block_id_t, 0);
     manager->free_list = free_list;
     FileBuffer* header_buffer = fileBuffer_create(HEADER_SIZE);
     if (!header_buffer)
@@ -626,17 +634,63 @@ static void schema_scan_fn(CatalogEntry* entry, void* ctx)
     vector_push_back(schemas, schema);
 }
 
+static void checkpointManager_destroy(CheckpointManager* self)
+{
+    metaBlockWriter_destroy(self->meta_block_writer);
+    free(self);
+}
+
+static void checkpointManager_write_schema(CheckpointManager* self, SchemaCatalogEntry* entry)
+{
+    // 写入 schema 名称
+    SERIALIZER_WRITE_STRING(self->meta_block_writer, GET_PARENT_FIELD(entry, name));
+    // 写 table 数量（当前阶段为 0，占位）
+    SERIALIZER_WRITE_U32(self->meta_block_writer, 0);
+    // 写索引数量（当前阶段为 0，占位）
+    SERIALIZER_WRITE_U32(self->meta_block_writer, 0);
+}
+
+static void checkpointManager_read_schema(CheckpointManager* self, MetaBlockReader* reader)
+{
+    CreateSchemaInfo schema;
+    createSchemaInfo_deserialize(&schema, reader);
+    // 写入 schema 到 catalog
+    catalog_create_schema(self->catalog, &schema);
+}
+
 void checkpointManager_createpoint(CheckpointManager* self)
 {
     BlockManager* block_manager = self->block_manager;
     MetaBlockWriter* meta_block_writer = self->meta_block_writer;
     block_id_t meta_block = meta_block_writer->block->id;
-    Vector schemas = {0};
-    vector_init(&schemas, sizeof(SchemaCatalogEntry), 0);
+    Vector schemas = VEC(SchemaCatalogEntry, 0);
     catalogSet_scan(&self->catalog->schemas, schema_scan_fn, &schemas);
-    serializer_write(meta_block_writer, (data_ptr_t)&schemas.size, usize);
+    SERIALIZER_WRITE_TYPE(meta_block_writer, (data_ptr_t)&schemas.size, usize);
     VECTOR_FOREACH(&schemas, schema)
     {
-        serializer_write(meta_block_writer, (data_ptr_t)schema, SchemaCatalogEntry*);
+        // 写入 schema 到元数据块
+        checkpointManager_write_schema(self, schema);
     }
+    vector_deinit(&schemas);
+    metaBlockWriter_flush(meta_block_writer);
+    DatabaseHeader header;
+    header.meta_block = meta_block;
+    VCALL(block_manager, write_header, header);
+}
+
+void checkpointManager_loadfromstorage(CheckpointManager* self)
+{
+    BlockManager* block_manager = self->block_manager;
+    SingleFileBlockManager* sfbm = (SingleFileBlockManager*)block_manager;
+    block_id_t meta_block = sfbm->meta_block;
+    if (meta_block == INVALID_BLOCK) return;
+    DatabaseHeader header;
+    MetaBlockReader reader = MAKE(MetaBlockReader, block_manager, meta_block);
+    u32 schema_count = DESERIALIZER_READ_U32(&reader);
+    for (u32 i = 0; i < schema_count; i++)
+    {
+        // 读取 schema 到元数据块
+        checkpointManager_read_schema(self, &reader);
+    }
+    metaBlockReader_deinit(&reader);
 }

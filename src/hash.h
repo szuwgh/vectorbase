@@ -6,12 +6,18 @@
 
 u64 checksum(u8* buffer, usize size);
 
+// Built-in hash/compare functions (used by MAP macro via _Generic)
+u32 hmap_int_hash(const void* key);
+int hmap_int_cmp(const void* a, const void* b);
+u32 hmap_str_hash(const void* key);
+int hmap_str_cmp(const void* a, const void* b);
+
 typedef struct hmap_node hmap_node;
 
 struct hmap_node
 {
     hmap_node* next;
-    const void* key;
+    void* key;
     void* value;
 };
 
@@ -20,31 +26,37 @@ typedef struct
     hmap_node** buckets;
     usize nbuckets;
     usize len; // 当前节点数
+    usize key_size;   // 0 表示字符串 key（变长，用 strlen+1）
+    usize value_size;
     uint32_t (*hash_func)(const void* key);
     int (*key_compare)(const void* key1, const void* key2);
 } hmap;
 
-void hmap_init(hmap* hm, usize nbuckets, u32 (*hash_func)(const void* key),
+void hmap_init(hmap* hm, usize key_size, usize value_size, usize nbuckets,
+               u32 (*hash_func)(const void* key),
                int (*key_compare)(const void* key1, const void* key2));
 
 void hmap_deinit(hmap* hm);
 
-void hmap_init_str(hmap* hm);
+void hmap_init_str(hmap* hm, usize value_size);
 
-hmap* hmap_create(usize nbuckets, uint32_t (*hash_func)(const void* key),
+hmap* hmap_create(usize key_size, usize value_size, usize nbuckets,
+                  uint32_t (*hash_func)(const void* key),
                   int (*key_compare)(const void* key1, const void* key2));
 
-hmap_node* hmap_insert(hmap* hmap, const void* key, void* value);
+hmap_node* hmap_insert(hmap* hmap, const void* key, const void* value);
 
 hmap_node* hmap_get(hmap* hmap, const void* key);
 
-void* hmap_delete(hmap* hmap, const void* key);
+int hmap_delete(hmap* hmap, const void* key, void* out);
 
 bool hmap_contains(hmap* hmap, const void* key);
 
 void hmap_destroy(hmap* hmap);
 
 usize hmap_size(hmap* hmap);
+
+#define HMAP_VALUE(node, type) (*(type*)((node)->value))
 
 typedef struct hmap_iterator hmap_iterator;
 

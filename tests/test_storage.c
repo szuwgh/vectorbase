@@ -598,7 +598,7 @@ void test_write_header_twice(void) {
 void test_vector_deinit_nulls_data(void) {
     printf("\n--- test_vector_deinit_nulls_data ---\n");
     Vector v = {0};
-    vector_init(&v, sizeof(u64), 0);
+    Vector_init(&v, sizeof(u64), 0);
     u64 val = 42;
     vector_push_back(&v, &val);
     ASSERT_NOT_NULL(v.data, "vector has allocated data");
@@ -620,7 +620,7 @@ void test_vector_init_no_free_on_error(void) {
 
     /* We verify by using an embedded vector normally (no OOM to trigger) */
     Vector v = {0};
-    int rc = vector_init(&v, sizeof(u64), 0);
+    int rc = Vector_init(&v, sizeof(u64), 0);
     ASSERT_TRUE(rc == 0, "vector_init succeeds on embedded vector");
     ASSERT_NOT_NULL(v.data, "embedded vector has allocated data");
     vector_deinit(&v);
@@ -736,7 +736,7 @@ int main(void) {
     printf("  storage.c:472 - Calls vector_deinit(&free_list) first.\n\n");
 
     printf("[FIXED] used_blocks aliasing after write_header\n");
-    printf("  storage.c:474 - Calls vector_init(&used_blocks, ...) after copy.\n\n");
+    printf("  storage.c:474 - Calls Vector_init(&used_blocks, ...) after copy.\n\n");
 
     printf("[FIXED] vector_deinit did not set data = NULL\n");
     printf("  vector.c:76 - Now sets vec->data = NULL after free.\n\n");

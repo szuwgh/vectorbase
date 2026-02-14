@@ -72,7 +72,7 @@ typedef struct
  * @param element_size 每个元素的字节大小（例如 sizeof(int)）
  * @param initial_capacity 初始容量，如果为0则使用默认容量
  */
-int vector_init(Vector* vec, usize element_size, usize initial_capacity);
+int Vector_init(Vector* vec, usize element_size, usize initial_capacity);
 
 /**
  * @brief 创建一个新的Vector

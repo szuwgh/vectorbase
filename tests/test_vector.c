@@ -93,7 +93,7 @@ void test_vector_init_deinit(void)
     printf("\n=== Test vector_init_deinit (embedded) ===\n");
 
     Vector vec;
-    int result = vector_init(&vec, sizeof(int), 0);
+    int result = Vector_init(&vec, sizeof(int), 0);
     if (result == 0 && vec.data != NULL && vec.size == 0 && vec.capacity > 0)
     {
         PASS("vector_init succeeded for embedded vector");
@@ -821,7 +821,7 @@ void test_vector_iter_init_state(void)
     printf("\n=== Test vector_iter_init_state ===\n");
 
     Vector vec;
-    vector_init(&vec, sizeof(int), 0);
+    Vector_init(&vec, sizeof(int), 0);
 
     VectorIterator iter;
     vector_iter_init(&iter, &vec);
@@ -1398,7 +1398,7 @@ void test_vector_foreach_embedded(void)
     printf("\n=== Test VECTOR_FOREACH embedded ===\n");
 
     Vector vec;
-    vector_init(&vec, sizeof(int), 0);
+    Vector_init(&vec, sizeof(int), 0);
 
     int data[] = {7, 14, 21};
     for (int i = 0; i < 3; i++) vector_push_back(&vec, &data[i]);

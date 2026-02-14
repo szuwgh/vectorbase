@@ -69,33 +69,42 @@ u64 checksum(u8* buffer, usize size)
     return result;
 }
 
-static u32 int_hash(const void* key)
+u32 hmap_int_hash(const void* key)
 {
     u32 value = *(const u32*)key;
     return (u32)murmurhash32(value);
 }
 
-static u32 str_hash(const void* key)
+int hmap_int_cmp(const void* a, const void* b)
+{
+    int va = *(const int*)a, vb = *(const int*)b;
+    return (va > vb) - (va < vb);
+}
+
+u32 hmap_str_hash(const void* key)
 {
     const char* s = (const char*)key;
     u32 hash = 5381;
     int c;
-    while ((c = *s++)) hash = ((hash << 5) + hash) + c;  // djb2 算法
+    while ((c = *s++)) hash = ((hash << 5) + hash) + c;
     return hash;
 }
 
-static int str_compare(const void* a, const void* b)
+int hmap_str_cmp(const void* a, const void* b)
 {
     return strcmp((const char*)a, (const char*)b);
 }
 
-void hmap_init(hmap* hm, usize nbuckets, u32 (*hash_func)(const void* key),
+void hmap_init(hmap* hm, usize key_size, usize value_size, usize nbuckets,
+               u32 (*hash_func)(const void* key),
                int (*key_compare)(const void* key1, const void* key2))
 {
     if (!hm) return;
     hm->buckets = calloc(nbuckets, sizeof(hmap_node*));
     hm->nbuckets = nbuckets;
     hm->len = 0;
+    hm->key_size = key_size;
+    hm->value_size = value_size;
     hm->hash_func = hash_func;
     hm->key_compare = key_compare;
 }
@@ -119,21 +128,18 @@ void hmap_deinit(hmap* hm)
     hm->len = 0;
 }
 
-void hmap_init_str(hmap* hm)
+void hmap_init_str(hmap* hm, usize value_size)
 {
-    hmap_init(hm, HMAP_DEFAULT_NBUCKETS, str_hash, str_compare);
+    hmap_init(hm, 0, value_size, HMAP_DEFAULT_NBUCKETS, hmap_str_hash, hmap_str_cmp);
 }
 
-hmap* hmap_create(usize nbuckets, uint32_t (*hash_func)(const void* key),
+hmap* hmap_create(usize key_size, usize value_size, usize nbuckets,
+                  uint32_t (*hash_func)(const void* key),
                   int (*key_compare)(const void* key1, const void* key2))
 {
     hmap* hmap = malloc(sizeof(*hmap));
     if (!hmap) return NULL;
-    hmap->buckets = calloc(nbuckets, sizeof(hmap_node*));
-    hmap->nbuckets = nbuckets;
-    hmap->len = 0;
-    hmap->hash_func = hash_func;
-    hmap->key_compare = key_compare;
+    hmap_init(hmap, key_size, value_size, nbuckets, hash_func, key_compare);
     return hmap;
 }
 
@@ -160,9 +166,21 @@ static void hmap_grow(hmap* hmap)
     hmap->nbuckets = new_nbuckets;
 }
 
-hmap_node* hmap_insert(hmap* hmap, const void* key, void* value)
+static hmap_node* hmap_alloc_node(hmap* hm, const void* key)
 {
-    // Implementation of insertion logic goes here
+    usize actual_key_size = hm->key_size > 0 ? hm->key_size : strlen((const char*)key) + 1;
+    usize total = sizeof(hmap_node) + actual_key_size + hm->value_size;
+    hmap_node* node = malloc(total);
+    if (!node) return NULL;
+    node->next = NULL;
+    node->key = (char*)(node + 1);
+    node->value = (char*)(node + 1) + actual_key_size;
+    memcpy(node->key, key, actual_key_size);
+    return node;
+}
+
+hmap_node* hmap_insert(hmap* hmap, const void* key, const void* value)
+{
     uint32_t hash = hmap->hash_func(key);
     if (hmap->len >= hmap->nbuckets - (hmap->nbuckets >> 2)) // 75% load factor
     {
@@ -176,17 +194,16 @@ hmap_node* hmap_insert(hmap* hmap, const void* key, void* value)
     {
         if (hmap->key_compare(existing->key, key) == 0)
         {
-            existing->value = value;
+            memcpy(existing->value, value, hmap->value_size);
             return existing;
         }
         existing = existing->next;
     }
 
     // 键不存在，创建新节点
-    hmap_node* node = malloc(sizeof(hmap_node));
+    hmap_node* node = hmap_alloc_node(hmap, key);
     if (!node) return NULL;
-    node->key = key;
-    node->value = value;
+    memcpy(node->value, value, hmap->value_size);
     node->next = hmap->buckets[bucket_index];
     hmap->buckets[bucket_index] = node;
     hmap->len++;
@@ -206,7 +223,7 @@ hmap_node* hmap_get(hmap* hmap, const void* key)
     return NULL;
 }
 
-void* hmap_delete(hmap* hmap, const void* key)
+int hmap_delete(hmap* hmap, const void* key, void* out)
 {
     uint32_t hash = hmap->hash_func(key);
     size_t bucket_index = hash % hmap->nbuckets;
@@ -217,8 +234,7 @@ void* hmap_delete(hmap* hmap, const void* key)
     {
         if (hmap->key_compare(node->key, key) == 0)
         {
-            // 找到节点，从链表移除
-            void* value = node->value;
+            if (out) memcpy(out, node->value, hmap->value_size);
             if (prev)
             {
                 prev->next = node->next;
@@ -229,12 +245,12 @@ void* hmap_delete(hmap* hmap, const void* key)
             }
             free(node);
             hmap->len--;
-            return value; // 返回被删除节点的值
+            return 0;
         }
         prev = node;
         node = node->next;
     }
-    return NULL; // 未找到
+    return -1;
 }
 
 bool hmap_contains(hmap* hmap, const void* key)

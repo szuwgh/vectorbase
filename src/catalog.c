@@ -5,7 +5,7 @@
 
 void catalogSet_init(CatalogSet* set)
 {
-    hmap_init_str(&set->data);
+    hmap_init_str(&set->data, sizeof(CatalogEntry*));
 }
 
 void catalogSet_deinit(CatalogSet* set)
@@ -75,7 +75,7 @@ bool catalogSet_create_entry(CatalogSet* set, const char* name, CatalogEntry* va
             return false;
         }
         /* 插入 hmap，key 与 dummy->name 共用同一份 strdup 拷贝 */
-        node = hmap_insert(&set->data, dummy->name, dummy);
+        node = hmap_insert(&set->data, dummy->name, &dummy);
         if (!node)
         {
             free(dummy->name);
@@ -85,7 +85,7 @@ bool catalogSet_create_entry(CatalogSet* set, const char* name, CatalogEntry* va
     }
     else
     {
-        CatalogEntry* current = node->value;
+        CatalogEntry* current = HMAP_VALUE(node, CatalogEntry*);
         if (!current->deleted)
         {
             /* 未被删除 = 已存在，创建失败 */
@@ -94,12 +94,11 @@ bool catalogSet_create_entry(CatalogSet* set, const char* name, CatalogEntry* va
     }
     /* ---- 将 value 插入版本链头 ---- */
     /*  value->child 指向旧链头 */
-    value->child = node->value;
+    value->child = HMAP_VALUE(node, CatalogEntry*);
     /* 建立反向链接 */
     value->child->parent = value;
-    /* 更新 hmap，value 成为新链头
-     * hmap_insert 对已存在的 key 会原地更新 value */
-    node->value = value;
+    /* 更新 hmap，value 成为新链头 */
+    HMAP_VALUE(node, CatalogEntry*) = value;
     return true;
 }
 
@@ -107,30 +106,30 @@ CatalogEntry* catalogSet_get_entry(CatalogSet* set, const char* name)
 {
     hmap_node* node = hmap_get(&set->data, name);
     if (!node) return NULL;
-    if (((CatalogEntry*)node->value)->deleted) return NULL;
-    return node->value;
+    CatalogEntry* entry = HMAP_VALUE(node, CatalogEntry*);
+    if (entry->deleted) return NULL;
+    return entry;
 }
 
 void catalogSet_scan(CatalogSet* set, CatalogScanFn scan_fn, void* ctx)
 {
     HMAP_FOREACH(&set->data, entry)
     {
-        scan_fn(entry, ctx);
+        scan_fn(*(CatalogEntry**)entry, ctx);
     }
 }
 
 static void catalogSet_drop_entry_impl(CatalogSet* set, hmap_node* node)
 {
-    // 复制一份entry->name，因为hmap_insert会修改entry->name
-    CatalogEntry* entry = node->value;
+    CatalogEntry* entry = HMAP_VALUE(node, CatalogEntry*);
     CatalogEntry* value = make_entry(INVALID, strdup(entry->name));
     if (!value) return;
     // 插入 dummy 节点，覆盖旧链头
-    value->child = entry;// move(data[current.name]);
+    value->child = entry;
     value->child->parent = value;
     value->deleted = true;
     // 更新 hmap，value 成为新链头
-    node->value = value;
+    HMAP_VALUE(node, CatalogEntry*) = value;
 }
 
 bool catalogSet_drop_entry(CatalogSet* set, const char* name)

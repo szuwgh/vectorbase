@@ -136,6 +136,8 @@
  */
 #define EXTENDS(base_type)                   base_type base
 
+#define GET_PARENT_FIELD(ptr, field_name)    ((ptr)->base.field_name)
+
 /**
  * UPCAST - 向上转型（子类转父类）
  */

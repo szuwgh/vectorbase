@@ -11,7 +11,7 @@ static inline void* vector_get_ptr(const Vector* vec, usize index)
     return (char*)vec->data + (index * vec->element_size);
 }
 
-int vector_init(Vector* vec, usize element_size, usize initial_capacity)
+int Vector_init(Vector* vec, usize element_size, usize initial_capacity)
 {
     if (initial_capacity == 0)
     {
@@ -44,7 +44,7 @@ Vector* vector_create(usize element_size, usize initial_capacity)
         return NULL;
     }
 
-    if (vector_init(vec, element_size, initial_capacity) != 0)
+    if (Vector_init(vec, element_size, initial_capacity) != 0)
     {
         free(vec);
         return NULL;
