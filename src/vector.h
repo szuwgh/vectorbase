@@ -81,7 +81,7 @@ int Vector_init(Vector* vec, usize element_size, usize initial_capacity);
  * @param initial_capacity 初始容量，如果为0则使用默认容量
  * @return Vector* 新创建的Vector指针，失败返回NULL
  */
-Vector* vector_create(usize element_size, usize initial_capacity);
+Vector* Vector_create(usize element_size, usize initial_capacity);
 
 /**
  * @brief 销毁Vector并释放所有资源

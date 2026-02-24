@@ -3,18 +3,36 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#define FLEXIBLE_ARRAY_MEMBER
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
+
+typedef signed short int16;
+typedef unsigned short uint16;
 typedef uint8_t u8;
 typedef uint64_t usize;
 typedef int64_t i64;
 typedef uint64_t u64;
 typedef uint32_t u32;
+typedef int32_t i32;
+typedef float f32;
+typedef double f64;
 typedef u8* data_ptr_t;
 typedef u64 block_id_t;
 typedef u64 idx_t;
+typedef int16 i16;
+typedef uint16 u16;
 
-typedef struct
+// internal types
+typedef enum
 {
-} String;
+    TYPE_INT32 = 0,
+    TYPE_INT64 = 1,
+    TYPE_FLOAT32 = 2,
+    TYPE_FLOAT64 = 3,
+} TypeID;
+
+usize get_typeid_size(TypeID type);
 
 /**
  * MAKE(type, init_fn, ...) - 零初始化 + 调用 init 函数，返回结构体值
@@ -49,16 +67,6 @@ typedef struct
 #define _MAP_INIT(key, value, nbuckets, ...) \
     MAKE(hmap, _MAP_KEY_SIZE(key), sizeof(value), nbuckets, _MAP_HASH(key), _MAP_CMP(key))
 
-#define NEW(type, ...)                     \
-    ({                                     \
-        type* _ptr = malloc(sizeof(type)); \
-        if (!_ptr)                         \
-        {                                  \
-            perror("malloc");              \
-            exit(EXIT_FAILURE);            \
-        }                                  \
-        type##_init(_ptr, ##__VA_ARGS__);  \
-        _ptr;                              \
-    })
+#define NEW(type, ...) type##_create(__VA_ARGS__)
 
 #endif // VB_TYPE_H

@@ -17,7 +17,7 @@ static Block* create_block(block_id_t block_id)
         return NULL;  // 内存分配失败
     }
     block->id = block_id;  // 分配新的块 ID
-    block->fb = fileBuffer_create(BLOCK_SIZE);  // 创建新的 FileBuffer
+    block->fb = NEW(FileBuffer, BLOCK_SIZE);  // 创建新的 FileBuffer
     if (!block->fb)
     {
         free(block);
@@ -26,7 +26,20 @@ static Block* create_block(block_id_t block_id)
     return block;
 }
 
-FileBuffer* fileBuffer_create(usize bufsiz)
+static void block_destroy(Block* block)
+{
+    if (!block)
+    {
+        return;
+    }
+    if (block->fb)
+    {
+        fileBuffer_destroy(block->fb);
+    }
+    free(block);
+}
+
+FileBuffer* FileBuffer_create(usize bufsiz)
 {
     // 计算总内存：结构体 + 实际需要的缓冲区大小 + 对齐空间
     size_t total_size = sizeof(FileBuffer) + bufsiz + (FILE_BUFFER_BLOCK_SIZE - 1);
@@ -210,7 +223,7 @@ static void MetaBlockReader_init(MetaBlockReader* reader, BlockManager* manager,
 {
     reader->manager = manager;
     reader->block = (Block*)malloc(sizeof(Block));
-    reader->block->fb = fileBuffer_create(BLOCK_SIZE);
+    reader->block->fb = NEW(FileBuffer, BLOCK_SIZE);
     reader->offset = 0;
     reader->next_block_id = -1;
     metaBlockReader_read_new_block(reader, block_id);
@@ -246,7 +259,7 @@ void metaBlockReader_deinit(MetaBlockReader* reader)
     }
     if (reader->block)
     {
-        fileBuffer_destroy(reader->block->fb);
+        block_destroy(reader->block);
     }
 }
 
@@ -515,7 +528,7 @@ static void initialize_manager(SingleFileBlockManager* manager, DatabaseHeader* 
             DESERIALIZER_READ(&reader, (data_ptr_t)&block_id, sizeof(block_id_t));
             vector_push_back(&manager->free_list, &block_id);
         }
-        metaBlockReader_destroy(&reader);
+        metaBlockReader_deinit(&reader);
     }
     manager->meta_block = header->meta_block;
     manager->iteration_count = header->iteration;
@@ -550,7 +563,7 @@ SingleFileBlockManager* create_new_database(const char* path, bool create_new)
     manager->used_blocks = used_blocks;
     Vector free_list = VEC(block_id_t, 0);
     manager->free_list = free_list;
-    FileBuffer* header_buffer = fileBuffer_create(HEADER_SIZE);
+    FileBuffer* header_buffer = NEW(FileBuffer, HEADER_SIZE);
     if (!header_buffer)
     {
         single_file_block_manager_destroy((BlockManager*)manager);
@@ -558,7 +571,7 @@ SingleFileBlockManager* create_new_database(const char* path, bool create_new)
     }
     manager->header_buffer = header_buffer;  // 将 FileBuffer 结构体内容
 
-    FILE* file = fopen(path, "w+b");  // 以读写模式创建新文件
+    FILE* file = fopen(path, create_new ? "w+b" : "r+b");
     if (!file)
     {
         single_file_block_manager_destroy((BlockManager*)manager);
@@ -594,14 +607,16 @@ SingleFileBlockManager* create_new_database(const char* path, bool create_new)
         fileBuffer_write(header_buffer, (FileHandle*)file_handle, HEADER_SIZE * 2);
         fileHandle_sync((FileHandle*)file_handle);
         manager->active_header = 1;  // 新文件默认 header 2 为活跃
-        manager->max_block = 0;  // 新文件默认最大块编号为 2
+        manager->max_block = 0;
         manager->meta_block = INVALID_BLOCK;
+        manager->iteration_count =
+            1;  // H2 初始 iteration=1，保证首次 checkpoint 写入 H1 时 iteration > 1
     }
     else
     {
-        MasterHeader header;
         fileBuffer_read(header_buffer, (FileHandle*)file_handle, 0);
-        if (header.version != VERSION_NUMBER)
+        MasterHeader* master = (MasterHeader*)header_buffer->buffer;
+        if (master->version != VERSION_NUMBER)
         {
             single_file_block_manager_destroy((BlockManager*)manager);
             return NULL;  // 版本不匹配
@@ -665,7 +680,8 @@ void checkpointManager_createpoint(CheckpointManager* self)
     block_id_t meta_block = meta_block_writer->block->id;
     Vector schemas = VEC(SchemaCatalogEntry, 0);
     catalogSet_scan(&self->catalog->schemas, schema_scan_fn, &schemas);
-    SERIALIZER_WRITE_TYPE(meta_block_writer, (data_ptr_t)&schemas.size, usize);
+    u32 schema_count = (u32)schemas.size;
+    SERIALIZER_WRITE_TYPE(meta_block_writer, (data_ptr_t)&schema_count, u32);
     VECTOR_FOREACH(&schemas, schema)
     {
         // 写入 schema 到元数据块
@@ -673,6 +689,8 @@ void checkpointManager_createpoint(CheckpointManager* self)
     }
     vector_deinit(&schemas);
     metaBlockWriter_flush(meta_block_writer);
+    SingleFileBlockManager* sfbm = (SingleFileBlockManager*)block_manager;
+    sfbm->meta_block = meta_block;
     DatabaseHeader header;
     header.meta_block = meta_block;
     VCALL(block_manager, write_header, header);

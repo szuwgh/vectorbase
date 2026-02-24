@@ -146,12 +146,12 @@ static FileHandle* create_mem_file_handle(MemoryFile* mf)
 }
 
 // Test FileBuffer creation
-void test_fileBuffer_create(void)
+void test_FileBuffer_create(void)
 {
-    printf("\n=== Test fileBuffer_create ===\n");
+    printf("\n=== Test FileBuffer_create ===\n");
 
     usize buffer_size = 8192;
-    FileBuffer* fb = fileBuffer_create(buffer_size);
+    FileBuffer* fb = FileBuffer_create(buffer_size);
 
     if (!fb)
     {
@@ -192,7 +192,7 @@ void test_fileBuffer_read_write(void)
     printf("\n=== Test fileBuffer_read_write ===\n");
 
     usize buffer_size = 4096;
-    FileBuffer* fb = fileBuffer_create(buffer_size);
+    FileBuffer* fb = FileBuffer_create(buffer_size);
     if (!fb)
     {
         FAIL("FileBuffer creation failed");
@@ -250,7 +250,7 @@ void test_fileBuffer_checksum(void)
 {
     printf("\n=== Test fileBuffer_checksum ===\n");
 
-    FileBuffer* fb = fileBuffer_create(4096);
+    FileBuffer* fb = FileBuffer_create(4096);
     if (!fb)
     {
         FAIL("FileBuffer creation failed");
@@ -294,7 +294,7 @@ void test_fileBuffer_clear(void)
 {
     printf("\n=== Test fileBuffer_clear ===\n");
 
-    FileBuffer* fb = fileBuffer_create(4096);
+    FileBuffer* fb = FileBuffer_create(4096);
     if (!fb)
     {
         FAIL("FileBuffer creation failed");
@@ -336,7 +336,7 @@ void test_fileBuffer_multiple_operations(void)
 {
     printf("\n=== Test fileBuffer_multiple_operations ===\n");
 
-    FileBuffer* fb = fileBuffer_create(4096);
+    FileBuffer* fb = FileBuffer_create(4096);
     MemoryFile* mf = create_memory_file(16384);
     FileHandle* fh = create_mem_file_handle(mf);
 
@@ -380,7 +380,7 @@ void test_fileBuffer_vcall_integration(void)
 {
     printf("\n=== Test fileBuffer_vcall_integration ===\n");
 
-    FileBuffer* fb = fileBuffer_create(4096);
+    FileBuffer* fb = FileBuffer_create(4096);
     MemoryFile* mf = create_memory_file(8192);
     FileHandle* fh = create_mem_file_handle(mf);
 
@@ -420,7 +420,7 @@ int main(void)
     printf("   FileBuffer Test Suite\n");
     printf("========================================\n");
 
-    test_fileBuffer_create();
+    test_FileBuffer_create();
     test_fileBuffer_clear();
     test_fileBuffer_read_write();
     test_fileBuffer_checksum();

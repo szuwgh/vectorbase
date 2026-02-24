@@ -49,14 +49,14 @@ typedef struct
 typedef struct
 {
     usize size;
-    u8* internal_buf;
+    data_ptr_t internal_buf;
     usize internal_size;
-    u8* buffer;
+    data_ptr_t buffer;
     // data数组是柔性数组，它不占用结构体本身的大小，而是紧跟在结构体之后
     u8 data[];
 } FileBuffer;
 
-FileBuffer* fileBuffer_create(usize size);
+FileBuffer* FileBuffer_create(usize size);
 
 // BlockManager 类型枚举 - 用于区分不同的实现
 typedef enum
@@ -295,10 +295,12 @@ void metaBlockWriter_write_data(MetaBlockWriter* self, data_ptr_t buffer, usize 
 #define SERIALIZER_WRITE_U32(sw_ptr, value) \
     SERIALIZER_WRITE(sw_ptr, (data_ptr_t) & (u32){value}, sizeof(u32))
 
-#define SERIALIZER_WRITE_STRING(sw_ptr, str)                      \
-    usize str_len = strlen(str);                                  \
-    SERIALIZER_WRITE_TYPE(sw_ptr, (data_ptr_t)(&str_len), usize); \
-    SERIALIZER_WRITE(sw_ptr, (data_ptr_t)str, str_len)
+#define SERIALIZER_WRITE_STRING(sw_ptr, str)                           \
+    do {                                                               \
+        usize _str_len = strlen(str);                                  \
+        SERIALIZER_WRITE_TYPE(sw_ptr, (data_ptr_t)(&_str_len), usize); \
+        SERIALIZER_WRITE(sw_ptr, (data_ptr_t)(str), _str_len);         \
+    } while (0)
 
 typedef struct
 {
@@ -315,5 +317,6 @@ typedef struct
 
 void destory_single_manager(SingleFileBlockManager* manager);
 void checkpointManager_createpoint(CheckpointManager* self);
+void checkpointManager_loadfromstorage(CheckpointManager* self);
 
 #endif  // STORAGE_H

@@ -54,6 +54,13 @@ typedef struct
     CatalogSet indexes;
 } SchemaCatalogEntry;
 
+typedef struct
+{
+    EXTENDS(CatalogEntry);
+    ColumnDefinition* columns;
+    usize column_count;
+} TableCatalogEntry;
+
 // 目录项 相当于pg catalog
 typedef struct
 {
