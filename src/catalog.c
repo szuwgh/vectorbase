@@ -1,7 +1,11 @@
 #include <stdlib.h>
 #include <string.h>
+#include "vb_type.h"
+#include "vector.h"
 #include "catalog.h"
 #include "hash.h"
+#include "parser.h"
+#include "datatable.h"
 
 void catalogSet_init(CatalogSet* set)
 {
@@ -38,6 +42,39 @@ static SchemaCatalogEntry* make_schema_entry(char* name)
     catalogSet_init(&entry->tables);
     catalogSet_init(&entry->indexes);
     return entry;
+}
+
+static TableCatalogEntry* make_table_entry(Catalog* catalog, SchemaCatalogEntry* schema, char* name,
+                                           CreateTableInfo* info)
+{
+    TableCatalogEntry* entry = malloc(sizeof(TableCatalogEntry));
+    if (!entry) return NULL;
+    catalogEntry_init(&entry->base, TABLE, name);
+    entry->schema = schema;
+    entry->column_count = info->col_count;
+    Vector types = VEC(TypeID, info->col_count);
+    for (int i = 0; i < info->col_count; i++)
+    {
+        TypeID t = get_internal_type(info->columns[i].type);
+        vector_push_back(&types, &t);
+    }
+    entry->datatable =
+        Datatable_create(catalog->storage, info->schema_name, name, info->col_count, types.data);
+    entry->columns = malloc(info->col_count * sizeof(ColumnDefinition));
+    if (!entry->columns)
+    {
+        free(entry);
+        return NULL;
+    }
+    memcpy(entry->columns, info->columns, info->col_count * sizeof(ColumnDefinition));
+    return entry;
+}
+
+static void tablecatalogEntry_destroy(TableCatalogEntry* entry)
+{
+    free(entry->base.name);
+    free(entry->columns);
+    free(entry);
 }
 
 static void schemacatalogEntry_destroy(SchemaCatalogEntry* entry)
@@ -140,6 +177,18 @@ bool catalogSet_drop_entry(CatalogSet* set, const char* name)
     return true;
 }
 
+static void count_entry_callback(CatalogEntry* entry, void* ctx)
+{
+    if (!entry->deleted) ((u32*)ctx)[0]++;
+}
+
+u32 catalogSet_get_entry_count(CatalogSet* set)
+{
+    u32 count = 0;
+    catalogSet_scan(set, count_entry_callback, &count);
+    return count;
+}
+
 int catalog_create_schema(Catalog* catalog, CreateSchemaInfo* info)
 {
     char* name_copy = strdup(info->schema_name);
@@ -170,11 +219,50 @@ int catalog_drop_schema(Catalog* catalog, const char* schema_name)
     return 0;
 }
 
+int catalog_create_table(Catalog* catalog, CreateTableInfo* info)
+{
+    SchemaCatalogEntry* schema_entry = catalog_get_schema(catalog, info->schema_name);
+    if (!schema_entry) return -1;
+    char* name_copy = strdup(info->table_name);
+    if (!name_copy) return -1;
+    TableCatalogEntry* entry = make_table_entry(catalog, schema_entry, name_copy, info);
+    if (!entry)
+    {
+        free(name_copy);
+        return -1;
+    }
+    if (!catalogSet_create_entry(&schema_entry->tables, info->table_name, (CatalogEntry*)entry))
+    {
+        tablecatalogEntry_destroy(entry);
+        if (!info->if_not_exists) return -2; // 已存在
+    }
+    return 0;
+}
+
+TableCatalogEntry* catalog_get_table(Catalog* catalog, const char* schema_name,
+                                     const char* table_name)
+{
+    SchemaCatalogEntry* schema = catalog_get_schema(catalog, schema_name);
+    if (!schema) return NULL;
+    return (TableCatalogEntry*)catalogSet_get_entry(&schema->tables, table_name);
+}
+
+Vector tableCatalogEntry_get_types(TableCatalogEntry* entry)
+{
+    Vector result = VEC(SQLType, entry->column_count);
+    for (usize i = 0; i < entry->column_count; i++)
+    {
+        vector_push_back(&result, &entry->columns[i].type);
+    }
+    return result;
+}
+
 Catalog* catalog_create()
 {
     Catalog* catalog = malloc(sizeof(Catalog));
     if (!catalog) return NULL;
     catalogSet_init(&catalog->schemas);
+    catalog->storage = NULL;
     return catalog;
 }
 

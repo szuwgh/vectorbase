@@ -4,6 +4,9 @@
 #include "vb_type.h"
 #include "hash.h"
 #include "parser.h"
+#include "vector.h"
+typedef struct DataTable DataTable;
+typedef struct StorageManager StorageManager;
 
 #define DEFAULT_SCHEMA "main"
 
@@ -46,7 +49,8 @@ void catalogSet_scan(CatalogSet* set, CatalogScanFn scan_fn, void* ctx);
 
 bool catalogSet_drop_entry(CatalogSet* set, const char* name);
 
-// 模式目录项 相当于pg database
+u32 catalogSet_get_entry_count(CatalogSet* set);// 模式目录项 相当于pg database
+
 typedef struct
 {
     EXTENDS(CatalogEntry);
@@ -54,17 +58,24 @@ typedef struct
     CatalogSet indexes;
 } SchemaCatalogEntry;
 
+usize schemaCatalogEntry_get_table_count(SchemaCatalogEntry* entry);
+
 typedef struct
 {
     EXTENDS(CatalogEntry);
+    SchemaCatalogEntry* schema;
+    DataTable* datatable;
     ColumnDefinition* columns;
     usize column_count;
 } TableCatalogEntry;
+
+Vector tableCatalogEntry_get_types(TableCatalogEntry* entry);
 
 // 目录项 相当于pg catalog
 typedef struct
 {
     CatalogSet schemas;
+    StorageManager* storage;
 } Catalog;
 
 // 创建目录项
@@ -77,5 +88,10 @@ int catalog_create_schema(Catalog* catalog, CreateSchemaInfo* info);
 SchemaCatalogEntry* catalog_get_schema(Catalog* catalog, const char* schema_name);
 
 int catalog_drop_schema(Catalog* catalog, const char* schema_name);
+
+int catalog_create_table(Catalog* catalog, CreateTableInfo* info);
+
+TableCatalogEntry* catalog_get_table(Catalog* catalog, const char* schema_name,
+                                     const char* table_name);
 
 #endif

@@ -39,6 +39,8 @@ typedef struct
 
 void SegmentTree_init(SegmentTree* tree);
 
+void SegmentTree_deinit(SegmentTree* tree, void (*node_destroy)(SegmentBase*));
+
 void segmentTree_append_segment(SegmentTree* tree, SegmentBase* segment);
 
 // 列存储段
@@ -46,7 +48,7 @@ typedef struct
 {
     EXTENDS(SegmentBase);
     block_id_t block_id; // 指向的块ID
-    usize offset; // 指向的字节偏移量
+    usize byte_offset; // 指向的字节偏移量
     BlockManager* block_manager; // 指向的块管理器
     Block* block; // 指向的块
 } ColumnSegment;
@@ -55,6 +57,8 @@ ColumnSegment* ColumnSegment_create1(BlockManager* manager, block_id_t block_id,
                                      usize count);
 
 ColumnSegment* ColumnSegment_create2(usize start);
+
+void ColumnSegment_destroy(ColumnSegment* segment);
 
 typedef struct
 {
@@ -71,6 +75,8 @@ typedef struct
 } RowSegment;
 
 RowSegment* RowSegment_create(DataTable* table, usize start);
+
+void RowSegment_destroy(RowSegment* segment);
 
 SegmentBase* segmentTree_get_root_segment(SegmentTree* tree);
 

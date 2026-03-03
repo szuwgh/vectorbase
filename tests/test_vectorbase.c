@@ -26,9 +26,9 @@ void test_VectorBase_zero_initialization(void)
     VectorBase vb = {0};
 }
 
-void test_fileBuffer_create(void)
+void test_FileBuffer_create(void)
 {
-    FileBuffer* fb = fileBuffer_create(4096);
+    FileBuffer* fb = FileBuffer_create(4096);
     if (!fb)
     {
         printf("FileBuffer creation failed\n");
@@ -42,6 +42,6 @@ void test_fileBuffer_create(void)
 // Run all tests
 int main(void)
 {
-    test_fileBuffer_create();
+    test_FileBuffer_create();
     printf("Running VectorBase tests...\n");
 }

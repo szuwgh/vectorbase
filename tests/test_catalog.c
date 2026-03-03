@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "../src/catalog.h"
+#include "../src/datatable.h"
 
 static int pass_count = 0;
 static int fail_count = 0;
@@ -314,8 +315,7 @@ void test_catalog_create_destroy(void)
     }
 
     // schemas should be initialized
-    if (catalog->schemas.data.nbuckets == HMAP_DEFAULT_NBUCKETS &&
-        catalog->schemas.data.len == 0)
+    if (catalog->schemas.data.nbuckets == HMAP_DEFAULT_NBUCKETS && catalog->schemas.data.len == 0)
         PASS("Catalog schemas CatalogSet initialized");
     else
         FAIL("Catalog schemas not properly initialized");
@@ -334,9 +334,13 @@ void test_catalog_create_schema(void)
     printf("\n=== Test Catalog create_schema ===\n");
 
     Catalog* catalog = catalog_create();
-    if (!catalog) { FAIL("catalog_create failed"); return; }
+    if (!catalog)
+    {
+        FAIL("catalog_create failed");
+        return;
+    }
 
-    CreateSchemaInfo info = { .schema_name = "test_db", .if_not_exists = false };
+    CreateSchemaInfo info = {.schema_name = "test_db", .if_not_exists = false};
     int ret = catalog_create_schema(catalog, &info);
 
     if (ret == 0)
@@ -376,7 +380,11 @@ void test_catalog_get_schema(void)
     printf("\n=== Test Catalog get_schema ===\n");
 
     Catalog* catalog = catalog_create();
-    if (!catalog) { FAIL("catalog_create failed"); return; }
+    if (!catalog)
+    {
+        FAIL("catalog_create failed");
+        return;
+    }
 
     // Get from empty catalog
     SchemaCatalogEntry* empty = catalog_get_schema(catalog, "nope");
@@ -386,7 +394,7 @@ void test_catalog_get_schema(void)
         FAIL("Get non-existent schema should return NULL");
 
     // Create and get
-    CreateSchemaInfo info = { .schema_name = "mydb", .if_not_exists = false };
+    CreateSchemaInfo info = {.schema_name = "mydb", .if_not_exists = false};
     catalog_create_schema(catalog, &info);
 
     SchemaCatalogEntry* schema = catalog_get_schema(catalog, "mydb");
@@ -411,9 +419,13 @@ void test_catalog_drop_schema(void)
     printf("\n=== Test Catalog drop_schema ===\n");
 
     Catalog* catalog = catalog_create();
-    if (!catalog) { FAIL("catalog_create failed"); return; }
+    if (!catalog)
+    {
+        FAIL("catalog_create failed");
+        return;
+    }
 
-    CreateSchemaInfo info = { .schema_name = "dropme", .if_not_exists = false };
+    CreateSchemaInfo info = {.schema_name = "dropme", .if_not_exists = false};
     catalog_create_schema(catalog, &info);
 
     // Drop
@@ -439,10 +451,14 @@ void test_catalog_drop_default_schema(void)
     printf("\n=== Test Catalog drop default schema ===\n");
 
     Catalog* catalog = catalog_create();
-    if (!catalog) { FAIL("catalog_create failed"); return; }
+    if (!catalog)
+    {
+        FAIL("catalog_create failed");
+        return;
+    }
 
     // Create "main" schema first
-    CreateSchemaInfo info = { .schema_name = DEFAULT_SCHEMA, .if_not_exists = false };
+    CreateSchemaInfo info = {.schema_name = DEFAULT_SCHEMA, .if_not_exists = false};
     catalog_create_schema(catalog, &info);
 
     // Try to drop "main"
@@ -468,10 +484,14 @@ void test_catalog_if_not_exists(void)
     printf("\n=== Test Catalog if_not_exists ===\n");
 
     Catalog* catalog = catalog_create();
-    if (!catalog) { FAIL("catalog_create failed"); return; }
+    if (!catalog)
+    {
+        FAIL("catalog_create failed");
+        return;
+    }
 
     // Create schema
-    CreateSchemaInfo info1 = { .schema_name = "dup_schema", .if_not_exists = false };
+    CreateSchemaInfo info1 = {.schema_name = "dup_schema", .if_not_exists = false};
     int ret1 = catalog_create_schema(catalog, &info1);
     if (ret1 == 0)
         PASS("First create succeeds");
@@ -479,7 +499,7 @@ void test_catalog_if_not_exists(void)
         FAIL("First create should succeed");
 
     // Duplicate without if_not_exists -> error (-2)
-    CreateSchemaInfo info2 = { .schema_name = "dup_schema", .if_not_exists = false };
+    CreateSchemaInfo info2 = {.schema_name = "dup_schema", .if_not_exists = false};
     int ret2 = catalog_create_schema(catalog, &info2);
     if (ret2 == -2)
         PASS("Duplicate without if_not_exists returns -2");
@@ -487,7 +507,7 @@ void test_catalog_if_not_exists(void)
         FAIL("Duplicate without if_not_exists should return -2, got %d", ret2);
 
     // Duplicate with if_not_exists -> success (0)
-    CreateSchemaInfo info3 = { .schema_name = "dup_schema", .if_not_exists = true };
+    CreateSchemaInfo info3 = {.schema_name = "dup_schema", .if_not_exists = true};
     int ret3 = catalog_create_schema(catalog, &info3);
     if (ret3 == 0)
         PASS("Duplicate with if_not_exists returns 0 (no error)");
@@ -503,13 +523,22 @@ void test_schema_entry_fields(void)
     printf("\n=== Test SchemaCatalogEntry fields ===\n");
 
     Catalog* catalog = catalog_create();
-    if (!catalog) { FAIL("catalog_create failed"); return; }
+    if (!catalog)
+    {
+        FAIL("catalog_create failed");
+        return;
+    }
 
-    CreateSchemaInfo info = { .schema_name = "fieldtest", .if_not_exists = false };
+    CreateSchemaInfo info = {.schema_name = "fieldtest", .if_not_exists = false};
     catalog_create_schema(catalog, &info);
 
     SchemaCatalogEntry* schema = catalog_get_schema(catalog, "fieldtest");
-    if (!schema) { FAIL("Schema not found"); catalog_destroy(catalog); return; }
+    if (!schema)
+    {
+        FAIL("Schema not found");
+        catalog_destroy(catalog);
+        return;
+    }
 
     // EXTENDS(CatalogEntry) -> base field
     if (schema->base.type == SCHEMA)
@@ -523,15 +552,13 @@ void test_schema_entry_fields(void)
         FAIL("base.deleted should be false");
 
     // tables CatalogSet should be initialized
-    if (schema->tables.data.nbuckets == HMAP_DEFAULT_NBUCKETS &&
-        schema->tables.data.len == 0)
+    if (schema->tables.data.nbuckets == HMAP_DEFAULT_NBUCKETS && schema->tables.data.len == 0)
         PASS("SchemaCatalogEntry.tables initialized (empty)");
     else
         FAIL("tables CatalogSet not initialized");
 
     // indexes CatalogSet should be initialized
-    if (schema->indexes.data.nbuckets == HMAP_DEFAULT_NBUCKETS &&
-        schema->indexes.data.len == 0)
+    if (schema->indexes.data.nbuckets == HMAP_DEFAULT_NBUCKETS && schema->indexes.data.len == 0)
         PASS("SchemaCatalogEntry.indexes initialized (empty)");
     else
         FAIL("indexes CatalogSet not initialized");
@@ -545,14 +572,18 @@ void test_catalog_multiple_schemas(void)
     printf("\n=== Test Catalog multiple schemas ===\n");
 
     Catalog* catalog = catalog_create();
-    if (!catalog) { FAIL("catalog_create failed"); return; }
+    if (!catalog)
+    {
+        FAIL("catalog_create failed");
+        return;
+    }
 
     const char* names[] = {"alpha", "beta", "gamma", "delta", "epsilon"};
     int count = 5;
 
     for (int i = 0; i < count; i++)
     {
-        CreateSchemaInfo info = { .schema_name = (char*)names[i], .if_not_exists = false };
+        CreateSchemaInfo info = {.schema_name = (char*)names[i], .if_not_exists = false};
         int ret = catalog_create_schema(catalog, &info);
         if (ret != 0)
         {
@@ -575,8 +606,7 @@ void test_catalog_multiple_schemas(void)
             break;
         }
     }
-    if (all_ok)
-        PASS("All %d schemas retrievable with correct fields", count);
+    if (all_ok) PASS("All %d schemas retrievable with correct fields", count);
 
     // Drop one in the middle
     catalog_drop_schema(catalog, "gamma");
@@ -599,8 +629,7 @@ void test_catalog_multiple_schemas(void)
             break;
         }
     }
-    if (rest_ok)
-        PASS("Remaining schemas intact after drop");
+    if (rest_ok) PASS("Remaining schemas intact after drop");
 
     catalog_destroy(catalog);
 }
@@ -611,10 +640,14 @@ void test_catalog_schema_drop_recreate(void)
     printf("\n=== Test Catalog schema drop and re-create ===\n");
 
     Catalog* catalog = catalog_create();
-    if (!catalog) { FAIL("catalog_create failed"); return; }
+    if (!catalog)
+    {
+        FAIL("catalog_create failed");
+        return;
+    }
 
     // Create
-    CreateSchemaInfo info1 = { .schema_name = "temp", .if_not_exists = false };
+    CreateSchemaInfo info1 = {.schema_name = "temp", .if_not_exists = false};
     catalog_create_schema(catalog, &info1);
     SchemaCatalogEntry* s1 = catalog_get_schema(catalog, "temp");
     if (s1 != NULL)
@@ -635,7 +668,7 @@ void test_catalog_schema_drop_recreate(void)
         FAIL("Schema should be dropped");
 
     // Re-create
-    CreateSchemaInfo info2 = { .schema_name = "temp", .if_not_exists = false };
+    CreateSchemaInfo info2 = {.schema_name = "temp", .if_not_exists = false};
     int ret = catalog_create_schema(catalog, &info2);
     if (ret == 0)
         PASS("Re-create schema 'temp' succeeds");
@@ -717,8 +750,7 @@ void test_catalogset_stress(void)
             break;
         }
     }
-    if (all_ok)
-        PASS("All %d entries retrievable", N);
+    if (all_ok) PASS("All %d entries retrievable", N);
 
     // Drop every other entry
     for (int i = 0; i < N; i += 2)
@@ -733,11 +765,19 @@ void test_catalogset_stress(void)
         CatalogEntry* got = catalogSet_get_entry(&set, names[i]);
         if (i % 2 == 0)
         {
-            if (got != NULL) { drop_ok = false; break; }
+            if (got != NULL)
+            {
+                drop_ok = false;
+                break;
+            }
         }
         else
         {
-            if (got != entries[i]) { drop_ok = false; break; }
+            if (got != entries[i])
+            {
+                drop_ok = false;
+                break;
+            }
         }
     }
     if (drop_ok)
@@ -754,13 +794,22 @@ void test_schema_nested_catalogsets(void)
     printf("\n=== Test Schema nested CatalogSets ===\n");
 
     Catalog* catalog = catalog_create();
-    if (!catalog) { FAIL("catalog_create failed"); return; }
+    if (!catalog)
+    {
+        FAIL("catalog_create failed");
+        return;
+    }
 
-    CreateSchemaInfo info = { .schema_name = "nested_test", .if_not_exists = false };
+    CreateSchemaInfo info = {.schema_name = "nested_test", .if_not_exists = false};
     catalog_create_schema(catalog, &info);
 
     SchemaCatalogEntry* schema = catalog_get_schema(catalog, "nested_test");
-    if (!schema) { FAIL("Schema not found"); catalog_destroy(catalog); return; }
+    if (!schema)
+    {
+        FAIL("Schema not found");
+        catalog_destroy(catalog);
+        return;
+    }
 
     // Insert entries into the schema's tables CatalogSet
     CatalogEntry* t1 = test_make_entry(TABLE, "users");
@@ -806,6 +855,694 @@ void test_schema_nested_catalogsets(void)
     catalog_destroy(catalog);
 }
 
+// ========== Test: CREATE TABLE basic ==========
+void test_create_table_basic(void)
+{
+    printf("\n=== Test CREATE TABLE basic ===\n");
+
+    Catalog* catalog = catalog_create();
+    if (!catalog) { FAIL("catalog_create failed"); return; }
+
+    CreateSchemaInfo si = {.schema_name = "public", .if_not_exists = false};
+    catalog_create_schema(catalog, &si);
+
+    ColumnDefinition cols[] = {
+        {.name = "id",      .type = SQLT_BIGINT},
+        {.name = "price",   .type = SQLT_FLOAT},
+        {.name = "count",   .type = SQLT_INTEGER},
+    };
+    CreateTableInfo ti = {
+        .schema_name = "public", .table_name = "products",
+        .if_not_exists = false, .columns = cols, .col_count = 3,
+    };
+
+    int ret = catalog_create_table(catalog, &ti);
+    if (ret == 0) PASS("catalog_create_table returns 0");
+    else          FAIL("catalog_create_table returned %d", ret);
+
+    TableCatalogEntry* tbl = catalog_get_table(catalog, "public", "products");
+    if (tbl != NULL) PASS("catalog_get_table returns non-NULL");
+    else { FAIL("catalog_get_table returned NULL"); catalog_destroy(catalog); return; }
+
+    if (tbl->base.type == TABLE)
+        PASS("TableCatalogEntry.base.type == TABLE");
+    else
+        FAIL("base.type should be TABLE, got %d", tbl->base.type);
+
+    if (strcmp(tbl->base.name, "products") == 0)
+        PASS("TableCatalogEntry.base.name == 'products'");
+    else
+        FAIL("base.name should be 'products'");
+
+    if (tbl->base.deleted == false)
+        PASS("TableCatalogEntry.base.deleted == false");
+    else
+        FAIL("base.deleted should be false");
+
+    if (tbl->column_count == 3)
+        PASS("column_count == 3");
+    else
+        FAIL("column_count should be 3, got %zu", tbl->column_count);
+
+    if (tbl->columns[0].type == SQLT_BIGINT && strcmp(tbl->columns[0].name, "id") == 0)
+        PASS("Column 0: id BIGINT");
+    else
+        FAIL("Column 0 incorrect");
+
+    if (tbl->columns[1].type == SQLT_FLOAT && strcmp(tbl->columns[1].name, "price") == 0)
+        PASS("Column 1: price FLOAT");
+    else
+        FAIL("Column 1 incorrect");
+
+    if (tbl->columns[2].type == SQLT_INTEGER && strcmp(tbl->columns[2].name, "count") == 0)
+        PASS("Column 2: count INTEGER");
+    else
+        FAIL("Column 2 incorrect");
+
+    // Verify DataTable storage was created
+    if (tbl->storage != NULL)
+        PASS("tbl->storage (DataTable) is non-NULL");
+    else
+        FAIL("tbl->storage should be non-NULL");
+
+    if (tbl->storage && tbl->storage->column_count == 3)
+        PASS("DataTable column_count == 3");
+    else
+        FAIL("DataTable column_count mismatch");
+
+    // Verify internal TypeID mapping: BIGINT->INT64, FLOAT->FLOAT32, INTEGER->INT32
+    if (tbl->storage && tbl->storage->column_types[0] == TYPE_INT64)
+        PASS("DataTable col 0: BIGINT -> TYPE_INT64");
+    else
+        FAIL("DataTable col 0 type mismatch");
+
+    if (tbl->storage && tbl->storage->column_types[1] == TYPE_FLOAT32)
+        PASS("DataTable col 1: FLOAT -> TYPE_FLOAT32");
+    else
+        FAIL("DataTable col 1 type mismatch");
+
+    if (tbl->storage && tbl->storage->column_types[2] == TYPE_INT32)
+        PASS("DataTable col 2: INTEGER -> TYPE_INT32");
+    else
+        FAIL("DataTable col 2 type mismatch");
+
+    catalog_destroy(catalog);
+}
+
+// ========== Test: CREATE TABLE in non-existent schema ==========
+void test_create_table_no_schema(void)
+{
+    printf("\n=== Test CREATE TABLE in non-existent schema ===\n");
+
+    Catalog* catalog = catalog_create();
+    if (!catalog) { FAIL("catalog_create failed"); return; }
+
+    ColumnDefinition cols[] = {{.name = "x", .type = SQLT_INTEGER}};
+    CreateTableInfo ti = {
+        .schema_name = "ghost_schema", .table_name = "t1",
+        .if_not_exists = false, .columns = cols, .col_count = 1,
+    };
+
+    int ret = catalog_create_table(catalog, &ti);
+    if (ret == -1)
+        PASS("CREATE TABLE in non-existent schema returns -1");
+    else
+        FAIL("Expected -1, got %d", ret);
+
+    catalog_destroy(catalog);
+}
+
+// ========== Test: CREATE TABLE duplicate ==========
+void test_create_table_duplicate(void)
+{
+    printf("\n=== Test CREATE TABLE duplicate ===\n");
+
+    Catalog* catalog = catalog_create();
+    if (!catalog) { FAIL("catalog_create failed"); return; }
+
+    CreateSchemaInfo si = {.schema_name = "s1", .if_not_exists = false};
+    catalog_create_schema(catalog, &si);
+
+    ColumnDefinition cols1[] = {{.name = "a", .type = SQLT_INTEGER}};
+    CreateTableInfo ti1 = {
+        .schema_name = "s1", .table_name = "dup",
+        .if_not_exists = false, .columns = cols1, .col_count = 1,
+    };
+    int ret1 = catalog_create_table(catalog, &ti1);
+    if (ret1 == 0) PASS("First CREATE TABLE succeeds");
+    else           FAIL("First CREATE TABLE should succeed, got %d", ret1);
+
+    ColumnDefinition cols2[] = {{.name = "b", .type = SQLT_FLOAT}};
+    CreateTableInfo ti2 = {
+        .schema_name = "s1", .table_name = "dup",
+        .if_not_exists = false, .columns = cols2, .col_count = 1,
+    };
+    int ret2 = catalog_create_table(catalog, &ti2);
+    if (ret2 == -2) PASS("Duplicate CREATE TABLE returns -2");
+    else            FAIL("Duplicate should return -2, got %d", ret2);
+
+    TableCatalogEntry* tbl = catalog_get_table(catalog, "s1", "dup");
+    if (tbl && tbl->column_count == 1 && tbl->columns[0].type == SQLT_INTEGER)
+        PASS("Original table still intact after duplicate rejected");
+    else
+        FAIL("Original table should be unchanged");
+
+    catalog_destroy(catalog);
+}
+
+// ========== Test: CREATE TABLE if_not_exists ==========
+void test_create_table_if_not_exists(void)
+{
+    printf("\n=== Test CREATE TABLE IF NOT EXISTS ===\n");
+
+    Catalog* catalog = catalog_create();
+    if (!catalog) { FAIL("catalog_create failed"); return; }
+
+    CreateSchemaInfo si = {.schema_name = "s1", .if_not_exists = false};
+    catalog_create_schema(catalog, &si);
+
+    ColumnDefinition cols1[] = {{.name = "v", .type = SQLT_INTEGER}};
+    CreateTableInfo ti1 = {
+        .schema_name = "s1", .table_name = "safe",
+        .if_not_exists = false, .columns = cols1, .col_count = 1,
+    };
+    catalog_create_table(catalog, &ti1);
+
+    ColumnDefinition cols2[] = {{.name = "w", .type = SQLT_FLOAT}};
+    CreateTableInfo ti2 = {
+        .schema_name = "s1", .table_name = "safe",
+        .if_not_exists = true, .columns = cols2, .col_count = 1,
+    };
+    int ret = catalog_create_table(catalog, &ti2);
+    if (ret == 0) PASS("Duplicate with IF NOT EXISTS returns 0");
+    else          FAIL("Expected 0, got %d", ret);
+
+    TableCatalogEntry* tbl = catalog_get_table(catalog, "s1", "safe");
+    if (tbl && tbl->columns[0].type == SQLT_INTEGER)
+        PASS("Original table not replaced by IF NOT EXISTS");
+    else
+        FAIL("Original table should be unchanged");
+
+    catalog_destroy(catalog);
+}
+
+// ========== Test: GET TABLE non-existent ==========
+void test_get_table_nonexistent(void)
+{
+    printf("\n=== Test GET TABLE non-existent ===\n");
+
+    Catalog* catalog = catalog_create();
+    if (!catalog) { FAIL("catalog_create failed"); return; }
+
+    TableCatalogEntry* t1 = catalog_get_table(catalog, "nope", "nope");
+    if (t1 == NULL) PASS("Get table from non-existent schema returns NULL");
+    else            FAIL("Should return NULL");
+
+    CreateSchemaInfo si = {.schema_name = "s1", .if_not_exists = false};
+    catalog_create_schema(catalog, &si);
+
+    TableCatalogEntry* t2 = catalog_get_table(catalog, "s1", "missing");
+    if (t2 == NULL) PASS("Get non-existent table from existing schema returns NULL");
+    else            FAIL("Should return NULL");
+
+    catalog_destroy(catalog);
+}
+
+// ========== Test: Multiple tables in one schema ==========
+void test_create_multiple_tables(void)
+{
+    printf("\n=== Test multiple tables in one schema ===\n");
+
+    Catalog* catalog = catalog_create();
+    if (!catalog) { FAIL("catalog_create failed"); return; }
+
+    CreateSchemaInfo si = {.schema_name = "db", .if_not_exists = false};
+    catalog_create_schema(catalog, &si);
+
+    const char* table_names[] = {"users", "orders", "products", "logs", "sessions"};
+    const int N = 5;
+
+    for (int i = 0; i < N; i++)
+    {
+        ColumnDefinition cols[] = {
+            {.name = "id",  .type = SQLT_BIGINT},
+            {.name = "val", .type = SQLT_DOUBLE},
+        };
+        CreateTableInfo ti = {
+            .schema_name = "db", .table_name = (char*)table_names[i],
+            .if_not_exists = false, .columns = cols, .col_count = 2,
+        };
+        int ret = catalog_create_table(catalog, &ti);
+        if (ret != 0)
+        {
+            FAIL("Failed to create table '%s' (ret=%d)", table_names[i], ret);
+            catalog_destroy(catalog);
+            return;
+        }
+    }
+    PASS("Created %d tables in schema 'db'", N);
+
+    bool all_ok = true;
+    for (int i = 0; i < N; i++)
+    {
+        TableCatalogEntry* tbl = catalog_get_table(catalog, "db", table_names[i]);
+        if (!tbl || tbl->base.type != TABLE || strcmp(tbl->base.name, table_names[i]) != 0
+            || tbl->column_count != 2)
+        {
+            all_ok = false;
+            FAIL("Table '%s' not found or has incorrect fields", table_names[i]);
+            break;
+        }
+    }
+    if (all_ok) PASS("All %d tables retrievable with correct fields", N);
+
+    catalog_destroy(catalog);
+}
+
+// ========== Test: Same table name in different schemas ==========
+void test_create_table_different_schemas(void)
+{
+    printf("\n=== Test same table name in different schemas ===\n");
+
+    Catalog* catalog = catalog_create();
+    if (!catalog) { FAIL("catalog_create failed"); return; }
+
+    CreateSchemaInfo si1 = {.schema_name = "schema_a", .if_not_exists = false};
+    CreateSchemaInfo si2 = {.schema_name = "schema_b", .if_not_exists = false};
+    catalog_create_schema(catalog, &si1);
+    catalog_create_schema(catalog, &si2);
+
+    ColumnDefinition cols_a[] = {{.name = "id", .type = SQLT_BIGINT}};
+    CreateTableInfo ti_a = {
+        .schema_name = "schema_a", .table_name = "users",
+        .if_not_exists = false, .columns = cols_a, .col_count = 1,
+    };
+    int ret_a = catalog_create_table(catalog, &ti_a);
+
+    ColumnDefinition cols_b[] = {
+        {.name = "uid",   .type = SQLT_INTEGER},
+        {.name = "score", .type = SQLT_DOUBLE},
+    };
+    CreateTableInfo ti_b = {
+        .schema_name = "schema_b", .table_name = "users",
+        .if_not_exists = false, .columns = cols_b, .col_count = 2,
+    };
+    int ret_b = catalog_create_table(catalog, &ti_b);
+
+    if (ret_a == 0 && ret_b == 0)
+        PASS("Same table name created in two different schemas");
+    else
+        FAIL("Creation failed (ret_a=%d, ret_b=%d)", ret_a, ret_b);
+
+    TableCatalogEntry* ta = catalog_get_table(catalog, "schema_a", "users");
+    TableCatalogEntry* tb = catalog_get_table(catalog, "schema_b", "users");
+
+    if (ta && tb && ta != tb)
+        PASS("Tables are distinct objects");
+    else
+        FAIL("Tables should be distinct");
+
+    if (ta && ta->column_count == 1 && ta->columns[0].type == SQLT_BIGINT)
+        PASS("schema_a.users has 1 BIGINT column");
+    else
+        FAIL("schema_a.users columns incorrect");
+
+    if (tb && tb->column_count == 2 && tb->columns[0].type == SQLT_INTEGER
+        && tb->columns[1].type == SQLT_DOUBLE)
+        PASS("schema_b.users has 2 columns (INTEGER, DOUBLE)");
+    else
+        FAIL("schema_b.users columns incorrect");
+
+    catalog_destroy(catalog);
+}
+
+// ========== Test: CREATE TABLE with all column types ==========
+void test_create_table_all_column_types(void)
+{
+    printf("\n=== Test CREATE TABLE with all column types ===\n");
+
+    Catalog* catalog = catalog_create();
+    if (!catalog) { FAIL("catalog_create failed"); return; }
+
+    CreateSchemaInfo si = {.schema_name = "types_db", .if_not_exists = false};
+    catalog_create_schema(catalog, &si);
+
+    ColumnDefinition cols[] = {
+        {.name = "c_tiny",  .type = SQLT_TINYINT},
+        {.name = "c_small", .type = SQLT_SMALLINT},
+        {.name = "c_int",   .type = SQLT_INTEGER},
+        {.name = "c_big",   .type = SQLT_BIGINT},
+        {.name = "c_float", .type = SQLT_FLOAT},
+        {.name = "c_dbl",   .type = SQLT_DOUBLE},
+    };
+    CreateTableInfo ti = {
+        .schema_name = "types_db", .table_name = "all_types",
+        .if_not_exists = false, .columns = cols, .col_count = 6,
+    };
+
+    int ret = catalog_create_table(catalog, &ti);
+    if (ret == 0) PASS("Table with all 6 column types created");
+    else { FAIL("Creation failed (ret=%d)", ret); catalog_destroy(catalog); return; }
+
+    TableCatalogEntry* tbl = catalog_get_table(catalog, "types_db", "all_types");
+    if (!tbl) { FAIL("Table not found"); catalog_destroy(catalog); return; }
+
+    // Verify ColumnDefinition types
+    SQLType exp_sql[] = {SQLT_TINYINT, SQLT_SMALLINT, SQLT_INTEGER,
+                         SQLT_BIGINT, SQLT_FLOAT, SQLT_DOUBLE};
+    const char* exp_names[] = {"c_tiny", "c_small", "c_int", "c_big", "c_float", "c_dbl"};
+    bool cols_ok = true;
+    for (int i = 0; i < 6; i++)
+    {
+        if (tbl->columns[i].type != exp_sql[i]
+            || strcmp(tbl->columns[i].name, exp_names[i]) != 0)
+        {
+            cols_ok = false;
+            FAIL("Column %d mismatch", i);
+            break;
+        }
+    }
+    if (cols_ok) PASS("All 6 column definitions match");
+
+    // Verify DataTable internal TypeID mapping
+    TypeID exp_tid[] = {TYPE_INT8, TYPE_INT16, TYPE_INT32, TYPE_INT64, TYPE_FLOAT32, TYPE_FLOAT64};
+    bool tid_ok = true;
+    for (int i = 0; i < 6; i++)
+    {
+        if (tbl->storage->column_types[i] != exp_tid[i])
+        {
+            tid_ok = false;
+            FAIL("DataTable col %d: expected TypeID %d, got %d",
+                 i, exp_tid[i], tbl->storage->column_types[i]);
+            break;
+        }
+    }
+    if (tid_ok) PASS("All 6 DataTable TypeIDs correct");
+
+    catalog_destroy(catalog);
+}
+
+// ========== Test: CREATE TABLE with single column ==========
+void test_create_table_single_column(void)
+{
+    printf("\n=== Test CREATE TABLE with single column ===\n");
+
+    Catalog* catalog = catalog_create();
+    if (!catalog) { FAIL("catalog_create failed"); return; }
+
+    CreateSchemaInfo si = {.schema_name = "s", .if_not_exists = false};
+    catalog_create_schema(catalog, &si);
+
+    ColumnDefinition cols[] = {{.name = "only_col", .type = SQLT_DOUBLE}};
+    CreateTableInfo ti = {
+        .schema_name = "s", .table_name = "single",
+        .if_not_exists = false, .columns = cols, .col_count = 1,
+    };
+
+    int ret = catalog_create_table(catalog, &ti);
+    if (ret == 0) PASS("Single-column table created");
+    else          FAIL("Expected 0, got %d", ret);
+
+    TableCatalogEntry* tbl = catalog_get_table(catalog, "s", "single");
+    if (tbl && tbl->column_count == 1
+        && strcmp(tbl->columns[0].name, "only_col") == 0
+        && tbl->columns[0].type == SQLT_DOUBLE)
+        PASS("Single column verified: only_col DOUBLE");
+    else
+        FAIL("Single column verification failed");
+
+    if (tbl && tbl->storage && tbl->storage->column_types[0] == TYPE_FLOAT64)
+        PASS("DataTable TypeID: DOUBLE -> TYPE_FLOAT64");
+    else
+        FAIL("DataTable TypeID mismatch");
+
+    catalog_destroy(catalog);
+}
+
+// ========== Test: CREATE TABLE with many columns ==========
+void test_create_table_many_columns(void)
+{
+    printf("\n=== Test CREATE TABLE with many columns ===\n");
+
+    Catalog* catalog = catalog_create();
+    if (!catalog) { FAIL("catalog_create failed"); return; }
+
+    CreateSchemaInfo si = {.schema_name = "wide", .if_not_exists = false};
+    catalog_create_schema(catalog, &si);
+
+    const int NCOLS = 50;
+    ColumnDefinition cols[50];
+    char names[50][16];
+    SQLType cycle[] = {SQLT_TINYINT, SQLT_SMALLINT, SQLT_INTEGER,
+                       SQLT_BIGINT, SQLT_FLOAT, SQLT_DOUBLE};
+    for (int i = 0; i < NCOLS; i++)
+    {
+        snprintf(names[i], sizeof(names[i]), "col_%02d", i);
+        cols[i].name = names[i];
+        cols[i].type = cycle[i % 6];
+    }
+
+    CreateTableInfo ti = {
+        .schema_name = "wide", .table_name = "big_table",
+        .if_not_exists = false, .columns = cols, .col_count = NCOLS,
+    };
+
+    int ret = catalog_create_table(catalog, &ti);
+    if (ret == 0) PASS("Table with %d columns created", NCOLS);
+    else { FAIL("Creation failed (ret=%d)", ret); catalog_destroy(catalog); return; }
+
+    TableCatalogEntry* tbl = catalog_get_table(catalog, "wide", "big_table");
+    if (tbl && tbl->column_count == (usize)NCOLS)
+        PASS("column_count == %d", NCOLS);
+    else
+        FAIL("column_count mismatch");
+
+    bool spot_ok = true;
+    for (int i = 0; i < NCOLS; i++)
+    {
+        if (tbl->columns[i].type != cycle[i % 6]
+            || strcmp(tbl->columns[i].name, names[i]) != 0)
+        {
+            spot_ok = false;
+            FAIL("Column %d mismatch", i);
+            break;
+        }
+    }
+    if (spot_ok) PASS("All %d columns verified", NCOLS);
+
+    catalog_destroy(catalog);
+}
+
+// ========== Test: CREATE TABLE then drop schema ==========
+void test_create_table_drop_schema(void)
+{
+    printf("\n=== Test CREATE TABLE then drop schema ===\n");
+
+    Catalog* catalog = catalog_create();
+    if (!catalog) { FAIL("catalog_create failed"); return; }
+
+    CreateSchemaInfo si = {.schema_name = "ephemeral", .if_not_exists = false};
+    catalog_create_schema(catalog, &si);
+
+    ColumnDefinition cols[] = {{.name = "x", .type = SQLT_INTEGER}};
+    CreateTableInfo ti = {
+        .schema_name = "ephemeral", .table_name = "t1",
+        .if_not_exists = false, .columns = cols, .col_count = 1,
+    };
+    catalog_create_table(catalog, &ti);
+
+    TableCatalogEntry* before = catalog_get_table(catalog, "ephemeral", "t1");
+    if (before != NULL) PASS("Table exists before schema drop");
+    else                FAIL("Table should exist");
+
+    catalog_drop_schema(catalog, "ephemeral");
+
+    TableCatalogEntry* after = catalog_get_table(catalog, "ephemeral", "t1");
+    if (after == NULL) PASS("Table unreachable after schema dropped");
+    else               FAIL("Table should be unreachable after schema drop");
+
+    catalog_destroy(catalog);
+}
+
+// ========== Test: CREATE TABLE stress — many tables ==========
+void test_create_table_stress(void)
+{
+    printf("\n=== Test CREATE TABLE stress ===\n");
+
+    Catalog* catalog = catalog_create();
+    if (!catalog) { FAIL("catalog_create failed"); return; }
+
+    CreateSchemaInfo si = {.schema_name = "stress_db", .if_not_exists = false};
+    catalog_create_schema(catalog, &si);
+
+    const int N = 100;
+    char tnames[100][32];
+    for (int i = 0; i < N; i++)
+    {
+        snprintf(tnames[i], sizeof(tnames[i]), "table_%03d", i);
+        ColumnDefinition cols[] = {
+            {.name = "id",  .type = SQLT_BIGINT},
+            {.name = "val", .type = SQLT_DOUBLE},
+        };
+        CreateTableInfo ti = {
+            .schema_name = "stress_db", .table_name = tnames[i],
+            .if_not_exists = false, .columns = cols, .col_count = 2,
+        };
+        int ret = catalog_create_table(catalog, &ti);
+        if (ret != 0)
+        {
+            FAIL("Failed to create table %d (ret=%d)", i, ret);
+            catalog_destroy(catalog);
+            return;
+        }
+    }
+    PASS("Created %d tables", N);
+
+    bool all_ok = true;
+    for (int i = 0; i < N; i++)
+    {
+        TableCatalogEntry* tbl = catalog_get_table(catalog, "stress_db", tnames[i]);
+        if (!tbl || tbl->base.type != TABLE || strcmp(tbl->base.name, tnames[i]) != 0
+            || tbl->column_count != 2)
+        {
+            all_ok = false;
+            FAIL("Table '%s' incorrect", tnames[i]);
+            break;
+        }
+    }
+    if (all_ok) PASS("All %d tables verified", N);
+
+    catalog_destroy(catalog);
+}
+
+// ========== Test: CREATE TABLE + append/scan through DataTable storage ==========
+void test_create_table_append_scan(void)
+{
+    printf("\n=== Test CREATE TABLE + append/scan ===\n");
+
+    Catalog* catalog = catalog_create();
+    if (!catalog) { FAIL("catalog_create failed"); return; }
+
+    CreateSchemaInfo si = {.schema_name = "test", .if_not_exists = false};
+    catalog_create_schema(catalog, &si);
+
+    ColumnDefinition cols[] = {
+        {.name = "id",    .type = SQLT_BIGINT},
+        {.name = "score", .type = SQLT_DOUBLE},
+    };
+    CreateTableInfo ti = {
+        .schema_name = "test", .table_name = "scores",
+        .if_not_exists = false, .columns = cols, .col_count = 2,
+    };
+    catalog_create_table(catalog, &ti);
+
+    TableCatalogEntry* tbl = catalog_get_table(catalog, "test", "scores");
+    if (!tbl || !tbl->storage)
+    {
+        FAIL("Table or storage is NULL");
+        catalog_destroy(catalog);
+        return;
+    }
+
+    DataTable* dt = tbl->storage;
+
+    // Append 5 rows
+    const i64 ids[] = {10, 20, 30, 40, 50};
+    const f64 scores[] = {1.5, 2.5, 3.5, 4.5, 5.5};
+
+    DataChunk chunk;
+    DataChunk_init(&chunk, 2);
+    chunk.columns[0] = (ColumnVector){TYPE_INT64, 5, (data_ptr_t)ids};
+    chunk.columns[1] = (ColumnVector){TYPE_FLOAT64, 5, (data_ptr_t)scores};
+    datatable_append(dt, &chunk);
+    free(chunk.columns);
+    PASS("Appended 5 rows via DataTable storage");
+
+    // Scan back
+    ScanState state;
+    datatable_init_scan(dt, &state);
+
+    DataChunk output;
+    DataChunk_init(&output, 2);
+    usize esz0 = get_typeid_size(TYPE_INT64);
+    usize esz1 = get_typeid_size(TYPE_FLOAT64);
+    output.columns[0] = (ColumnVector){TYPE_INT64, 0, malloc(STORAGE_CHUNK_SIZE * esz0)};
+    output.columns[1] = (ColumnVector){TYPE_FLOAT64, 0, malloc(STORAGE_CHUNK_SIZE * esz1)};
+
+    usize proj[] = {0, 1};
+    bool got_data = datatable_scan(dt, &state, &output, proj, 2);
+    if (got_data && output.columns[0].count == 5)
+        PASS("Scan returned 5 rows");
+    else
+        FAIL("Scan row count mismatch");
+
+    // Verify values
+    i64* out_ids = (i64*)output.columns[0].data;
+    f64* out_scores = (f64*)output.columns[1].data;
+    bool vals_ok = true;
+    for (int i = 0; i < 5; i++)
+    {
+        if (out_ids[i] != ids[i] || out_scores[i] != scores[i])
+        {
+            vals_ok = false;
+            FAIL("Row %d mismatch: id=%ld score=%.1f", i, out_ids[i], out_scores[i]);
+            break;
+        }
+    }
+    if (vals_ok) PASS("All 5 rows data correct");
+
+    free(output.columns[0].data);
+    free(output.columns[1].data);
+    free(output.columns);
+    scanstate_deinit(&state);
+    catalog_destroy(catalog);
+}
+
+// ========== Test: CREATE TABLE DataTable type mapping for all types ==========
+void test_create_table_type_mapping(void)
+{
+    printf("\n=== Test CREATE TABLE type mapping ===\n");
+
+    Catalog* catalog = catalog_create();
+    if (!catalog) { FAIL("catalog_create failed"); return; }
+
+    CreateSchemaInfo si = {.schema_name = "map", .if_not_exists = false};
+    catalog_create_schema(catalog, &si);
+
+    // One column per SQL type
+    struct { SQLType sql; TypeID expected; const char* label; } cases[] = {
+        {SQLT_TINYINT,  TYPE_INT8,    "TINYINT->INT8"},
+        {SQLT_SMALLINT, TYPE_INT16,   "SMALLINT->INT16"},
+        {SQLT_INTEGER,  TYPE_INT32,   "INTEGER->INT32"},
+        {SQLT_BIGINT,   TYPE_INT64,   "BIGINT->INT64"},
+        {SQLT_FLOAT,    TYPE_FLOAT32, "FLOAT->FLOAT32"},
+        {SQLT_DOUBLE,   TYPE_FLOAT64, "DOUBLE->FLOAT64"},
+    };
+    int ncases = sizeof(cases) / sizeof(cases[0]);
+
+    bool all_ok = true;
+    for (int i = 0; i < ncases; i++)
+    {
+        char tname[32];
+        snprintf(tname, sizeof(tname), "t_%d", i);
+        ColumnDefinition col = {.name = "c", .type = cases[i].sql};
+        CreateTableInfo ti = {
+            .schema_name = "map", .table_name = tname,
+            .if_not_exists = false, .columns = &col, .col_count = 1,
+        };
+        catalog_create_table(catalog, &ti);
+        TableCatalogEntry* tbl = catalog_get_table(catalog, "map", tname);
+        if (!tbl || !tbl->storage || tbl->storage->column_types[0] != cases[i].expected)
+        {
+            all_ok = false;
+            FAIL("Type mapping failed: %s", cases[i].label);
+        }
+    }
+    if (all_ok) PASS("All %d type mappings correct", ncases);
+
+    catalog_destroy(catalog);
+}
+
 // ========== Test: DEFAULT_SCHEMA constant ==========
 void test_default_schema_constant(void)
 {
@@ -847,6 +1584,22 @@ int main(void)
     test_catalog_type_enum();
     test_schema_nested_catalogsets();
     test_default_schema_constant();
+
+    // CREATE TABLE tests
+    test_create_table_basic();
+    test_create_table_no_schema();
+    test_create_table_duplicate();
+    test_create_table_if_not_exists();
+    test_get_table_nonexistent();
+    test_create_multiple_tables();
+    test_create_table_different_schemas();
+    test_create_table_all_column_types();
+    test_create_table_single_column();
+    test_create_table_many_columns();
+    test_create_table_drop_schema();
+    test_create_table_stress();
+    test_create_table_append_scan();
+    test_create_table_type_mapping();
 
     printf("\n========================================\n");
     printf("   Results: %d passed, %d failed\n", pass_count, fail_count);

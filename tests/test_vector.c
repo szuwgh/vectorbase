@@ -6,17 +6,15 @@
 static int pass_count = 0;
 static int fail_count = 0;
 
-#define PASS(msg, ...)                            \
-    do                                            \
-    {                                             \
-        pass_count++;                             \
+#define PASS(msg, ...)                             \
+    do {                                           \
+        pass_count++;                              \
         printf("[PASS] " msg "\n", ##__VA_ARGS__); \
     } while (0)
 
-#define FAIL(msg, ...)                            \
-    do                                            \
-    {                                             \
-        fail_count++;                             \
+#define FAIL(msg, ...)                             \
+    do {                                           \
+        fail_count++;                              \
         printf("[FAIL] " msg "\n", ##__VA_ARGS__); \
     } while (0)
 
@@ -208,7 +206,11 @@ void test_vector_reserve(void)
     for (int i = 0; i < 50; i++)
     {
         int* p = (int*)vector_get(vec, i);
-        if (!p || *p != i) { data_ok = false; break; }
+        if (!p || *p != i)
+        {
+            data_ok = false;
+            break;
+        }
     }
     if (data_ok)
     {
@@ -228,7 +230,11 @@ void test_vector_push_pop(void)
     printf("\n=== Test vector_push_pop ===\n");
 
     Vector* vec = vector_create(sizeof(int), 4);
-    if (!vec) { FAIL("Vector creation failed"); return; }
+    if (!vec)
+    {
+        FAIL("Vector creation failed");
+        return;
+    }
 
     int values[] = {10, 20, 30, 40, 50};
     int num = 5;
@@ -252,7 +258,11 @@ void test_vector_push_pop(void)
     for (usize i = 0; i < vector_size(vec); i++)
     {
         int* val = (int*)vector_get(vec, i);
-        if (!val || *val != expected[i]) { unchanged = false; break; }
+        if (!val || *val != expected[i])
+        {
+            unchanged = false;
+            break;
+        }
     }
 
     if (unchanged)
@@ -304,7 +314,11 @@ void test_vector_get_set(void)
     printf("\n=== Test vector_get_set ===\n");
 
     Vector* vec = vector_create(sizeof(int), 0);
-    if (!vec) { FAIL("Vector creation failed"); return; }
+    if (!vec)
+    {
+        FAIL("Vector creation failed");
+        return;
+    }
 
     int data[] = {100, 200, 300, 400, 500};
     for (int i = 0; i < 5; i++) vector_push_back(vec, &data[i]);
@@ -314,10 +328,16 @@ void test_vector_get_set(void)
     for (int i = 0; i < 5; i++)
     {
         int* val = VECTOR_GET(vec, i, int);
-        if (!val || *val != data[i]) { all_correct = false; break; }
+        if (!val || *val != data[i])
+        {
+            all_correct = false;
+            break;
+        }
     }
-    if (all_correct) PASS("All get operations correct");
-    else FAIL("Some get operations failed");
+    if (all_correct)
+        PASS("All get operations correct");
+    else
+        FAIL("Some get operations failed");
 
     // Test out of bounds get
     if (vector_get(vec, 100) == NULL)
@@ -334,8 +354,10 @@ void test_vector_get_set(void)
     if (vector_set(vec, 2, &new_value) == 0)
     {
         int* val = (int*)vector_get(vec, 2);
-        if (val && *val == 999) PASS("Set operation works");
-        else FAIL("Set verification failed");
+        if (val && *val == 999)
+            PASS("Set operation works");
+        else
+            FAIL("Set verification failed");
     }
     else
     {
@@ -382,7 +404,11 @@ void test_vector_struct(void)
     printf("\n=== Test vector_struct ===\n");
 
     Vector* vec = vector_create(sizeof(TestStruct), 0);
-    if (!vec) { FAIL("Vector creation failed"); return; }
+    if (!vec)
+    {
+        FAIL("Vector creation failed");
+        return;
+    }
 
     TestStruct s1 = {1, "Alice", 95.5};
     TestStruct s2 = {2, "Bob", 87.3};
@@ -392,8 +418,10 @@ void test_vector_struct(void)
     vector_push_back(vec, &s2);
     vector_push_back(vec, &s3);
 
-    if (vector_size(vec) == 3) PASS("Added 3 structs");
-    else FAIL("Size incorrect");
+    if (vector_size(vec) == 3)
+        PASS("Added 3 structs");
+    else
+        FAIL("Size incorrect");
 
     // Modify original
     s1.id = 999;
@@ -418,7 +446,11 @@ void test_vector_insert_erase(void)
     printf("\n=== Test vector_insert_erase ===\n");
 
     Vector* vec = vector_create(sizeof(int), 0);
-    if (!vec) { FAIL("Vector creation failed"); return; }
+    if (!vec)
+    {
+        FAIL("Vector creation failed");
+        return;
+    }
 
     int data[] = {1, 2, 4, 5};
     for (int i = 0; i < 4; i++) vector_push_back(vec, &data[i]);
@@ -432,10 +464,16 @@ void test_vector_insert_erase(void)
         for (int i = 0; i < 5; i++)
         {
             int* v = (int*)vector_get(vec, i);
-            if (!v || *v != expected[i]) { ok = false; break; }
+            if (!v || *v != expected[i])
+            {
+                ok = false;
+                break;
+            }
         }
-        if (ok) PASS("Insert at middle works");
-        else FAIL("Insert at middle produced wrong data");
+        if (ok)
+            PASS("Insert at middle works");
+        else
+            FAIL("Insert at middle produced wrong data");
     }
     else
     {
@@ -447,8 +485,10 @@ void test_vector_insert_erase(void)
     if (vector_insert(vec, 0, &zero) == 0)
     {
         int* v = (int*)vector_get(vec, 0);
-        if (v && *v == 0) PASS("Insert at beginning works");
-        else FAIL("Insert at beginning failed");
+        if (v && *v == 0)
+            PASS("Insert at beginning works");
+        else
+            FAIL("Insert at beginning failed");
     }
 
     // Insert at end (append)
@@ -456,8 +496,10 @@ void test_vector_insert_erase(void)
     if (vector_insert(vec, vector_size(vec), &six) == 0)
     {
         int* v = (int*)vector_back(vec);
-        if (v && *v == 6) PASS("Insert at end works");
-        else FAIL("Insert at end failed");
+        if (v && *v == 6)
+            PASS("Insert at end works");
+        else
+            FAIL("Insert at end failed");
     }
 
     // Insert beyond size
@@ -508,7 +550,11 @@ void test_vector_clear_resize(void)
     printf("\n=== Test vector_clear_resize ===\n");
 
     Vector* vec = vector_create(sizeof(int), 0);
-    if (!vec) { FAIL("Vector creation failed"); return; }
+    if (!vec)
+    {
+        FAIL("Vector creation failed");
+        return;
+    }
 
     int data[] = {1, 2, 3, 4, 5};
     for (int i = 0; i < 5; i++) vector_push_back(vec, &data[i]);
@@ -531,10 +577,16 @@ void test_vector_clear_resize(void)
         for (usize i = 0; i < 5; i++)
         {
             int val = *(int*)vector_get(vec, i);
-            if (val != 0) { all_zero = false; break; }
+            if (val != 0)
+            {
+                all_zero = false;
+                break;
+            }
         }
-        if (all_zero) PASS("Resize with zero-init works");
-        else FAIL("Resize zero-init failed");
+        if (all_zero)
+            PASS("Resize with zero-init works");
+        else
+            FAIL("Resize zero-init failed");
     }
     else
     {
@@ -549,10 +601,16 @@ void test_vector_clear_resize(void)
         for (usize i = 5; i < 8; i++)
         {
             int val = *(int*)vector_get(vec, i);
-            if (val != 42) { ok = false; break; }
+            if (val != 42)
+            {
+                ok = false;
+                break;
+            }
         }
-        if (ok) PASS("Resize with default value works");
-        else FAIL("Resize default value failed");
+        if (ok)
+            PASS("Resize with default value works");
+        else
+            FAIL("Resize default value failed");
     }
 
     // Resize to shrink
@@ -574,7 +632,11 @@ void test_vector_find(void)
     printf("\n=== Test vector_find ===\n");
 
     Vector* vec = vector_create(sizeof(int), 0);
-    if (!vec) { FAIL("Vector creation failed"); return; }
+    if (!vec)
+    {
+        FAIL("Vector creation failed");
+        return;
+    }
 
     int data[] = {10, 20, 30, 40, 50};
     for (int i = 0; i < 5; i++) vector_push_back(vec, &data[i]);
@@ -627,7 +689,11 @@ void test_vector_access(void)
     printf("\n=== Test vector_access (front/back/data) ===\n");
 
     Vector* vec = vector_create(sizeof(int), 0);
-    if (!vec) { FAIL("Vector creation failed"); return; }
+    if (!vec)
+    {
+        FAIL("Vector creation failed");
+        return;
+    }
 
     // Empty vector
     if (vector_front(vec) == NULL && vector_back(vec) == NULL)
@@ -645,11 +711,15 @@ void test_vector_access(void)
     int* front = VECTOR_FRONT(vec, int);
     int* back = VECTOR_BACK(vec, int);
 
-    if (front && *front == 100) PASS("Front element: %d", *front);
-    else FAIL("Front element incorrect");
+    if (front && *front == 100)
+        PASS("Front element: %d", *front);
+    else
+        FAIL("Front element incorrect");
 
-    if (back && *back == 300) PASS("Back element: %d", *back);
-    else FAIL("Back element incorrect");
+    if (back && *back == 300)
+        PASS("Back element: %d", *back);
+    else
+        FAIL("Back element incorrect");
 
     int* raw_data = (int*)vector_data(vec);
     if (raw_data && raw_data[0] == 100 && raw_data[1] == 200 && raw_data[2] == 300)
@@ -662,14 +732,20 @@ void test_vector_access(void)
     }
 
     // NULL vector
-    if (vector_front(NULL) == NULL) PASS("front(NULL) returns NULL");
-    else FAIL("front(NULL) should return NULL");
+    if (vector_front(NULL) == NULL)
+        PASS("front(NULL) returns NULL");
+    else
+        FAIL("front(NULL) should return NULL");
 
-    if (vector_back(NULL) == NULL) PASS("back(NULL) returns NULL");
-    else FAIL("back(NULL) should return NULL");
+    if (vector_back(NULL) == NULL)
+        PASS("back(NULL) returns NULL");
+    else
+        FAIL("back(NULL) should return NULL");
 
-    if (vector_data(NULL) == NULL) PASS("data(NULL) returns NULL");
-    else FAIL("data(NULL) should return NULL");
+    if (vector_data(NULL) == NULL)
+        PASS("data(NULL) returns NULL");
+    else
+        FAIL("data(NULL) should return NULL");
 
     vector_destroy(vec);
 }
@@ -693,30 +769,44 @@ void test_vector_null_handling(void)
 
     // vector_push_back with NULL vec
     int val = 42;
-    if (vector_push_back(NULL, &val) == -1) PASS("push_back(NULL, ...) returns -1");
-    else FAIL("push_back(NULL, ...) should return -1");
+    if (vector_push_back(NULL, &val) == -1)
+        PASS("push_back(NULL, ...) returns -1");
+    else
+        FAIL("push_back(NULL, ...) should return -1");
 
     // vector_push_back with NULL element
     Vector* vec = vector_create(sizeof(int), 0);
-    if (vector_push_back(vec, NULL) == -1) PASS("push_back(vec, NULL) returns -1");
-    else FAIL("push_back(vec, NULL) should return -1");
+    if (vector_push_back(vec, NULL) == -1)
+        PASS("push_back(vec, NULL) returns -1");
+    else
+        FAIL("push_back(vec, NULL) should return -1");
 
     // vector_pop_back with NULL vec
-    if (vector_pop_back(NULL, NULL) == -1) PASS("pop_back(NULL) returns -1");
-    else FAIL("pop_back(NULL) should return -1");
+    if (vector_pop_back(NULL, NULL) == -1)
+        PASS("pop_back(NULL) returns -1");
+    else
+        FAIL("pop_back(NULL) should return -1");
 
     // vector_size/capacity/element_size with NULL
-    if (vector_size(NULL) == 0) PASS("size(NULL) returns 0");
-    else FAIL("size(NULL) should return 0");
+    if (vector_size(NULL) == 0)
+        PASS("size(NULL) returns 0");
+    else
+        FAIL("size(NULL) should return 0");
 
-    if (vector_capacity(NULL) == 0) PASS("capacity(NULL) returns 0");
-    else FAIL("capacity(NULL) should return 0");
+    if (vector_capacity(NULL) == 0)
+        PASS("capacity(NULL) returns 0");
+    else
+        FAIL("capacity(NULL) should return 0");
 
-    if (vector_element_size(NULL) == 0) PASS("element_size(NULL) returns 0");
-    else FAIL("element_size(NULL) should return 0");
+    if (vector_element_size(NULL) == 0)
+        PASS("element_size(NULL) returns 0");
+    else
+        FAIL("element_size(NULL) should return 0");
 
-    if (vector_empty(NULL) == true) PASS("empty(NULL) returns true");
-    else FAIL("empty(NULL) should return true");
+    if (vector_empty(NULL) == true)
+        PASS("empty(NULL) returns true");
+    else
+        FAIL("empty(NULL) should return true");
 
     vector_destroy(vec);
 }
@@ -727,7 +817,11 @@ void test_vector_stress(void)
     printf("\n=== Test vector_stress ===\n");
 
     Vector* vec = vector_create(sizeof(int), 0);
-    if (!vec) { FAIL("Vector creation failed"); return; }
+    if (!vec)
+    {
+        FAIL("Vector creation failed");
+        return;
+    }
 
     const int num = 10000;
 
@@ -746,11 +840,17 @@ void test_vector_stress(void)
     for (int i = 0; i < num; i++)
     {
         int* val = (int*)vector_get(vec, i);
-        if (!val || *val != i) { all_correct = false; break; }
+        if (!val || *val != i)
+        {
+            all_correct = false;
+            break;
+        }
     }
 
-    if (all_correct) PASS("All %d elements verified", num);
-    else FAIL("Some elements incorrect");
+    if (all_correct)
+        PASS("All %d elements verified", num);
+    else
+        FAIL("Some elements incorrect");
 
     vector_destroy(vec);
 }
@@ -761,7 +861,11 @@ void test_vector_pointer_storage(void)
     printf("\n=== Test vector_pointer_storage ===\n");
 
     Vector* ptr_vec = vector_create(sizeof(TestStruct*), 0);
-    if (!ptr_vec) { FAIL("Vector creation failed"); return; }
+    if (!ptr_vec)
+    {
+        FAIL("Vector creation failed");
+        return;
+    }
 
     TestStruct* s1 = (TestStruct*)malloc(sizeof(TestStruct));
     TestStruct* s2 = (TestStruct*)malloc(sizeof(TestStruct));
@@ -847,7 +951,11 @@ void test_vector_iter_empty(void)
     printf("\n=== Test vector_iter_empty ===\n");
 
     Vector* vec = vector_create(sizeof(int), 0);
-    if (!vec) { FAIL("Vector creation failed"); return; }
+    if (!vec)
+    {
+        FAIL("Vector creation failed");
+        return;
+    }
 
     VectorIterator iter;
     vector_iter_init(&iter, vec);
@@ -874,7 +982,11 @@ void test_vector_iter_single(void)
     printf("\n=== Test vector_iter_single ===\n");
 
     Vector* vec = vector_create(sizeof(int), 0);
-    if (!vec) { FAIL("Vector creation failed"); return; }
+    if (!vec)
+    {
+        FAIL("Vector creation failed");
+        return;
+    }
 
     int val = 42;
     vector_push_back(vec, &val);
@@ -910,7 +1022,11 @@ void test_vector_iter_order(void)
     printf("\n=== Test vector_iter_order ===\n");
 
     Vector* vec = vector_create(sizeof(int), 0);
-    if (!vec) { FAIL("Vector creation failed"); return; }
+    if (!vec)
+    {
+        FAIL("Vector creation failed");
+        return;
+    }
 
     int data[] = {10, 20, 30, 40, 50};
     for (int i = 0; i < 5; i++) vector_push_back(vec, &data[i]);
@@ -936,7 +1052,11 @@ void test_vector_iter_order(void)
     bool in_order = true;
     for (int i = 0; i < 5 && i < count; i++)
     {
-        if (results[i] != data[i]) { in_order = false; break; }
+        if (results[i] != data[i])
+        {
+            in_order = false;
+            break;
+        }
     }
     if (in_order && count == 5)
         PASS("Elements in correct order: 10,20,30,40,50");
@@ -952,7 +1072,11 @@ void test_vector_iter_get_pointer(void)
     printf("\n=== Test vector_iter_get_pointer ===\n");
 
     Vector* vec = vector_create(sizeof(int), 0);
-    if (!vec) { FAIL("Vector creation failed"); return; }
+    if (!vec)
+    {
+        FAIL("Vector creation failed");
+        return;
+    }
 
     int data[] = {100, 200, 300};
     for (int i = 0; i < 3; i++) vector_push_back(vec, &data[i]);
@@ -987,7 +1111,11 @@ void test_vector_iter_struct(void)
     printf("\n=== Test vector_iter_struct ===\n");
 
     Vector* vec = vector_create(sizeof(TestStruct), 0);
-    if (!vec) { FAIL("Vector creation failed"); return; }
+    if (!vec)
+    {
+        FAIL("Vector creation failed");
+        return;
+    }
 
     TestStruct items[] = {
         {1, "Alice", 95.5},
@@ -1004,8 +1132,7 @@ void test_vector_iter_struct(void)
     while (vector_iter_next(&iter))
     {
         TestStruct* s = (TestStruct*)vector_iter_get(&iter);
-        if (!s || s->id != items[count].id ||
-            strcmp(s->name, items[count].name) != 0)
+        if (!s || s->id != items[count].id || strcmp(s->name, items[count].name) != 0)
         {
             all_match = false;
         }
@@ -1026,7 +1153,11 @@ void test_vector_iter_after_modify(void)
     printf("\n=== Test vector_iter_after_modify ===\n");
 
     Vector* vec = vector_create(sizeof(int), 0);
-    if (!vec) { FAIL("Vector creation failed"); return; }
+    if (!vec)
+    {
+        FAIL("Vector creation failed");
+        return;
+    }
 
     // Push 5, pop 2, iterate remaining 3
     int data[] = {10, 20, 30, 40, 50};
@@ -1065,7 +1196,11 @@ void test_vector_iter_reinit(void)
     printf("\n=== Test vector_iter_reinit ===\n");
 
     Vector* vec = vector_create(sizeof(int), 0);
-    if (!vec) { FAIL("Vector creation failed"); return; }
+    if (!vec)
+    {
+        FAIL("Vector creation failed");
+        return;
+    }
 
     int data[] = {1, 2, 3, 4};
     for (int i = 0; i < 4; i++) vector_push_back(vec, &data[i]);
@@ -1096,7 +1231,11 @@ void test_vector_iter_large(void)
     printf("\n=== Test vector_iter_large ===\n");
 
     Vector* vec = vector_create(sizeof(int), 0);
-    if (!vec) { FAIL("Vector creation failed"); return; }
+    if (!vec)
+    {
+        FAIL("Vector creation failed");
+        return;
+    }
 
     const int N = 1000;
     for (int i = 0; i < N; i++) vector_push_back(vec, &i);
@@ -1133,7 +1272,11 @@ void test_vector_iter_consistency(void)
     printf("\n=== Test vector_iter_consistency ===\n");
 
     Vector* vec = vector_create(sizeof(int), 0);
-    if (!vec) { FAIL("Vector creation failed"); return; }
+    if (!vec)
+    {
+        FAIL("Vector creation failed");
+        return;
+    }
 
     int data[] = {100, 200, 300};
     for (int i = 0; i < 3; i++) vector_push_back(vec, &data[i]);
@@ -1147,7 +1290,11 @@ void test_vector_iter_consistency(void)
     while (vector_iter_next(&iter))
     {
         void* val = vector_iter_get(&iter);
-        if (!val) { consistent = false; break; }
+        if (!val)
+        {
+            consistent = false;
+            break;
+        }
         count++;
     }
 
@@ -1171,7 +1318,11 @@ void test_vector_foreach_basic(void)
     printf("\n=== Test VECTOR_FOREACH basic ===\n");
 
     Vector* vec = vector_create(sizeof(int), 0);
-    if (!vec) { FAIL("Vector creation failed"); return; }
+    if (!vec)
+    {
+        FAIL("Vector creation failed");
+        return;
+    }
 
     int data[] = {10, 20, 30, 40, 50};
     for (int i = 0; i < 5; i++) vector_push_back(vec, &data[i]);
@@ -1204,7 +1355,11 @@ void test_vector_foreach_empty(void)
     printf("\n=== Test VECTOR_FOREACH empty ===\n");
 
     Vector* vec = vector_create(sizeof(int), 0);
-    if (!vec) { FAIL("Vector creation failed"); return; }
+    if (!vec)
+    {
+        FAIL("Vector creation failed");
+        return;
+    }
 
     int count = 0;
     VECTOR_FOREACH(vec, elem)
@@ -1227,7 +1382,11 @@ void test_vector_foreach_single(void)
     printf("\n=== Test VECTOR_FOREACH single ===\n");
 
     Vector* vec = vector_create(sizeof(int), 0);
-    if (!vec) { FAIL("Vector creation failed"); return; }
+    if (!vec)
+    {
+        FAIL("Vector creation failed");
+        return;
+    }
 
     int val = 99;
     vector_push_back(vec, &val);
@@ -1260,7 +1419,11 @@ void test_vector_foreach_order(void)
     printf("\n=== Test VECTOR_FOREACH order ===\n");
 
     Vector* vec = vector_create(sizeof(int), 0);
-    if (!vec) { FAIL("Vector creation failed"); return; }
+    if (!vec)
+    {
+        FAIL("Vector creation failed");
+        return;
+    }
 
     int data[] = {5, 4, 3, 2, 1};
     for (int i = 0; i < 5; i++) vector_push_back(vec, &data[i]);
@@ -1276,7 +1439,11 @@ void test_vector_foreach_order(void)
     bool in_order = true;
     for (int i = 0; i < 5; i++)
     {
-        if (results[i] != data[i]) { in_order = false; break; }
+        if (results[i] != data[i])
+        {
+            in_order = false;
+            break;
+        }
     }
 
     if (in_order)
@@ -1293,7 +1460,11 @@ void test_vector_foreach_struct(void)
     printf("\n=== Test VECTOR_FOREACH struct ===\n");
 
     Vector* vec = vector_create(sizeof(TestStruct), 0);
-    if (!vec) { FAIL("Vector creation failed"); return; }
+    if (!vec)
+    {
+        FAIL("Vector creation failed");
+        return;
+    }
 
     TestStruct items[] = {
         {1, "Alice", 95.5},
@@ -1307,8 +1478,7 @@ void test_vector_foreach_struct(void)
     VECTOR_FOREACH(vec, elem)
     {
         TestStruct* s = (TestStruct*)elem;
-        if (!s || s->id != items[count].id ||
-            strcmp(s->name, items[count].name) != 0)
+        if (!s || s->id != items[count].id || strcmp(s->name, items[count].name) != 0)
         {
             all_match = false;
         }
@@ -1329,7 +1499,11 @@ void test_vector_foreach_modify(void)
     printf("\n=== Test VECTOR_FOREACH modify ===\n");
 
     Vector* vec = vector_create(sizeof(int), 0);
-    if (!vec) { FAIL("Vector creation failed"); return; }
+    if (!vec)
+    {
+        FAIL("Vector creation failed");
+        return;
+    }
 
     for (int i = 1; i <= 5; i++) vector_push_back(vec, &i);
 
@@ -1346,7 +1520,11 @@ void test_vector_foreach_modify(void)
     for (int i = 0; i < 5; i++)
     {
         int* v = (int*)vector_get(vec, i);
-        if (!v || *v != expected[i]) { ok = false; break; }
+        if (!v || *v != expected[i])
+        {
+            ok = false;
+            break;
+        }
     }
 
     if (ok)
@@ -1363,7 +1541,11 @@ void test_vector_foreach_after_pop(void)
     printf("\n=== Test VECTOR_FOREACH after pop ===\n");
 
     Vector* vec = vector_create(sizeof(int), 0);
-    if (!vec) { FAIL("Vector creation failed"); return; }
+    if (!vec)
+    {
+        FAIL("Vector creation failed");
+        return;
+    }
 
     int data[] = {10, 20, 30, 40, 50};
     for (int i = 0; i < 5; i++) vector_push_back(vec, &data[i]);
@@ -1426,7 +1608,11 @@ void test_vector_foreach_two_loops(void)
     printf("\n=== Test VECTOR_FOREACH two loops ===\n");
 
     Vector* vec = vector_create(sizeof(int), 0);
-    if (!vec) { FAIL("Vector creation failed"); return; }
+    if (!vec)
+    {
+        FAIL("Vector creation failed");
+        return;
+    }
 
     for (int i = 1; i <= 4; i++) vector_push_back(vec, &i);
 
@@ -1464,7 +1650,11 @@ void test_vector_foreach_large(void)
     printf("\n=== Test VECTOR_FOREACH large ===\n");
 
     Vector* vec = vector_create(sizeof(int), 0);
-    if (!vec) { FAIL("Vector creation failed"); return; }
+    if (!vec)
+    {
+        FAIL("Vector creation failed");
+        return;
+    }
 
     const int N = 1000;
     for (int i = 0; i < N; i++) vector_push_back(vec, &i);
@@ -1498,7 +1688,11 @@ void test_vector_foreach_nonnull(void)
     printf("\n=== Test VECTOR_FOREACH non-null guarantee ===\n");
 
     Vector* vec = vector_create(sizeof(int), 0);
-    if (!vec) { FAIL("Vector creation failed"); return; }
+    if (!vec)
+    {
+        FAIL("Vector creation failed");
+        return;
+    }
 
     int data[] = {1, 2, 3, 4, 5};
     for (int i = 0; i < 5; i++) vector_push_back(vec, &data[i]);
@@ -1507,7 +1701,11 @@ void test_vector_foreach_nonnull(void)
     int count = 0;
     VECTOR_FOREACH(vec, elem)
     {
-        if (!elem) { all_nonnull = false; break; }
+        if (!elem)
+        {
+            all_nonnull = false;
+            break;
+        }
         count++;
     }
 

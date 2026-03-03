@@ -6,10 +6,14 @@
 #include "catalog.h"
 #include "hash.h"
 #include "interface.h"
+#include "parser.h"
+#include "types.h"
 #include "vb_type.h"
 #include "vector.h"
+#include "datatable.h"
+#include "operator.h"
 
-static Block* create_block(block_id_t block_id)
+Block* Block_create(block_id_t block_id)
 {
     Block* block = (Block*)malloc(sizeof(Block));
     if (!block)
@@ -26,7 +30,7 @@ static Block* create_block(block_id_t block_id)
     return block;
 }
 
-static void block_destroy(Block* block)
+void block_destroy(Block* block)
 {
     if (!block)
     {
@@ -273,11 +277,18 @@ void metaBlockReader_destroy(MetaBlockReader* reader)
     free(reader);
 }
 
-static void init_meteblock_writer(MetaBlockWriter* writer, BlockManager* manager)
+static void MetaBlockWriter_init(MetaBlockWriter* writer, BlockManager* manager)
 {
     writer->manager = manager;
     writer->block = VCALL(manager, create_block);
     writer->offset = sizeof(block_id_t);
+}
+
+MetaBlockWriter* MetaBlockWriter_create(BlockManager* manager)
+{
+    MetaBlockWriter* writer = (MetaBlockWriter*)malloc(sizeof(MetaBlockWriter));
+    MetaBlockWriter_init(writer, manager);
+    return writer;
 }
 
 static void metaBlockWriter_flush(MetaBlockWriter* writer)
@@ -293,7 +304,7 @@ static void metaBlockWriter_flush(MetaBlockWriter* writer)
     }
 }
 
-static void metaBlockWriter_destroy(MetaBlockWriter* writer)
+static void metaBlockWriter_deinit(MetaBlockWriter* writer)
 {
     if (!writer)
     {
@@ -304,7 +315,18 @@ static void metaBlockWriter_destroy(MetaBlockWriter* writer)
     {
         fileBuffer_destroy(writer->block->fb);
         free(writer->block);
+        writer->block = NULL;
     }
+}
+
+static void metaBlockWriter_destroy(MetaBlockWriter* writer)
+{
+    if (!writer)
+    {
+        return;
+    }
+    metaBlockWriter_deinit(writer);
+    free(writer);
 }
 
 void metaBlockWriter_write_data(MetaBlockWriter* writer, data_ptr_t buffer, usize write_size)
@@ -339,7 +361,7 @@ void metaBlockWriter_write_data(MetaBlockWriter* writer, data_ptr_t buffer, usiz
     writer->offset = offset;
 }
 
-void destory_single_manager(SingleFileBlockManager* manager)
+static void destory_single_manager(SingleFileBlockManager* manager)
 {
     if (!manager)
     {
@@ -398,10 +420,16 @@ static block_id_t single_file_block_manager_get_free_block_id(BlockManager* self
     return manager->max_block++;
 }
 
+static block_id_t single_file_block_manager_get_frist_meta_block(BlockManager* self)
+{
+    SingleFileBlockManager* manager = (SingleFileBlockManager*)self;
+    return manager->meta_block;
+}
+
 static Block* single_file_block_manager_create_block(BlockManager* self)
 {
     SingleFileBlockManager* manager = (SingleFileBlockManager*)self;
-    Block* block = create_block(single_file_block_manager_get_free_block_id(self));
+    Block* block = Block_create(single_file_block_manager_get_free_block_id(self));
     return block;
 }
 
@@ -466,7 +494,7 @@ static void single_file_block_manager_write_header(BlockManager* self, DatabaseH
     if (manager->used_blocks.size > 0)
     {
         MetaBlockWriter writer;
-        init_meteblock_writer(&writer, self);
+        MetaBlockWriter_init(&writer, self);
         header.free_list_id = writer.block->id;
         SERIALIZER_WRITE_TYPE(&writer, (data_ptr_t)&manager->used_blocks.size, usize);
         // Read 的块会放进 free_list，因为 Checkpoint
@@ -477,8 +505,7 @@ static void single_file_block_manager_write_header(BlockManager* self, DatabaseH
             block_id_t* block_id = vector_get(&manager->used_blocks, i);
             SERIALIZER_WRITE_TYPE(&writer, (data_ptr_t)block_id, block_id_t);
         }
-        metaBlockWriter_flush(&writer);
-        metaBlockWriter_destroy(&writer);
+        metaBlockWriter_deinit(&writer);
     }
     else
     {
@@ -510,6 +537,7 @@ static BlockManagerVTable single_file_block_manager_vtable = {
     VTABLE_ENTRY(create_block, single_file_block_manager_create_block),
     VTABLE_ENTRY(destroy, single_file_block_manager_destroy),
     VTABLE_ENTRY(get_free_block_id, single_file_block_manager_get_free_block_id),
+    VTABLE_ENTRY(get_frist_meta_block, single_file_block_manager_get_frist_meta_block),
     VTABLE_ENTRY(write_header, single_file_block_manager_write_header)};
 
 static void initialize_manager(SingleFileBlockManager* manager, DatabaseHeader* header)
@@ -644,6 +672,7 @@ SingleFileBlockManager* create_new_database(const char* path, bool create_new)
 
 static void schema_scan_fn(CatalogEntry* entry, void* ctx)
 {
+    if (entry->deleted) return;
     Vector* schemas = (Vector*)ctx;
     SchemaCatalogEntry* schema = (SchemaCatalogEntry*)entry;
     vector_push_back(schemas, schema);
@@ -655,27 +684,222 @@ static void checkpointManager_destroy(CheckpointManager* self)
     free(self);
 }
 
+static void checkpointManager_write_table_catalog(CheckpointManager* self, TableCatalogEntry* entry)
+{
+    // 写入 schema 名称
+    SERIALIZER_WRITE_STRING(self->meta_block_writer, entry->schema->base.name);
+    // 写入 table 名称
+    SERIALIZER_WRITE_STRING(self->meta_block_writer, entry->base.name);
+    // 写入列数量
+    SERIALIZER_WRITE_U32(self->meta_block_writer, entry->column_count);
+    // 写入列类型
+    for (int i = 0; i < entry->column_count; i++)
+    {
+        // 写入列名称
+        SERIALIZER_WRITE_STRING(self->meta_block_writer, entry->columns[i].name);
+        // 写入列类型
+        SERIALIZER_WRITE_U8(self->meta_block_writer, entry->columns[i].type);
+    }
+}
+
+static void TableDataWriter_init(TableDataWriter* self, CheckpointManager* manager,
+                                 TableCatalogEntry* table)
+{
+   // TableDataWriter* tabledata_writer = (TableDataWriter*)malloc(sizeof(TableDataWriter));
+    self->manager = manager;
+    self->table = table;
+    Vector_init(&self->blocks, sizeof(Block*), table->column_count);
+    Vector_init(&self->offsets, sizeof(usize), 0);
+    Vector_init(&self->tuple_counts, sizeof(usize), 0);
+    Vector_init(&self->row_numbers, sizeof(usize), 0);
+    Vector_init(&self->indexes, sizeof(usize), 0);
+    Vector_init(&self->data_pointers, sizeof(Vector), table->column_count);
+}
+
+static void tableDataWriter_deinit(TableDataWriter* self)
+{
+    vector_deinit(&self->blocks);
+    vector_deinit(&self->offsets);
+    vector_deinit(&self->tuple_counts);
+    vector_deinit(&self->row_numbers);
+    vector_deinit(&self->indexes);
+    VECTOR_FOREACH(&self->data_pointers, data_pointer)
+    {
+        vector_deinit(data_pointer);
+    }
+    vector_deinit(&self->data_pointers);
+}
+
+static usize get_type_header_size(SQLType type)
+{
+    return 0;
+}
+
+static void TableDataWriter_flush_block(TableDataWriter* self, usize col)
+{
+    if (VECTOR_AT(&self->tuple_counts, col, usize) == 0) return;
+    // assert()
+    DataPointer data;
+    Block* blk = VECTOR_AT(&self->blocks, col, Block*);
+    blk->id = VCALL(self->manager->block_manager, get_free_block_id);
+    data.min = 0;
+    data.max = 0;
+    data.block_id = blk->id;
+    data.offset = 0;
+    data.tuple_count = VECTOR_AT(&self->tuple_counts, col, usize);
+    data.row_start = VECTOR_AT(&self->row_numbers, col, usize);
+    Vector* data_pointers = VECTOR_GET(&self->data_pointers, col, Vector);
+    vector_push_back(data_pointers, &data);
+    VCALL(self->manager->block_manager, write, blk);
+    usize zero = 0;
+    vector_set(&self->offsets, col, &zero);
+    usize row_number = VECTOR_AT(&self->row_numbers, col, usize);
+    usize new_row_number = row_number + VECTOR_AT(&self->tuple_counts, col, usize);
+    vector_set(&self->row_numbers, col, &new_row_number);
+    vector_set(&self->tuple_counts, col, &zero);
+}
+
+static void TableDataWriter_flush_if_full(TableDataWriter* self, usize col, usize write_size)
+{
+    if (VECTOR_AT(&self->offsets, col, usize) + write_size >= BLOCK_SIZE)
+    {
+        TableDataWriter_flush_block(self, col);
+    }
+}
+
+static void tableDataWriter_writecolumndata(TableDataWriter* self, DataChunk* chunk,
+                                            usize column_index)
+{
+    TypeID type = chunk->columns[column_index].type;
+    usize size = get_typeid_size(type) * dataChunk_size(chunk);
+    TableDataWriter_flush_if_full(self, column_index, size);
+    data_ptr_t ptr = VECTOR_AT(&self->blocks, column_index, Block*)->fb->buffer +
+                     VECTOR_AT(&self->offsets, column_index, usize);
+    ColumnVector source = chunk->columns[column_index];
+    copy_to_storage(&source, ptr, 0, source.count);
+
+    usize new_offset = VECTOR_AT(&self->offsets, column_index, usize) + size;
+    vector_set(&self->offsets, column_index, &new_offset);
+    usize new_tc = VECTOR_AT(&self->tuple_counts, column_index, usize) + dataChunk_size(chunk);
+    vector_set(&self->tuple_counts, column_index, &new_tc);
+}
+
+static void tableDataWriter_write_data_pointers(TableDataWriter* self)
+{
+    VECTOR_FOREACH(&self->data_pointers, data_pointer_list)
+    {
+        usize size = vector_size(data_pointer_list);
+        SERIALIZER_WRITE_U64(self->manager->tabledata_writer, size);
+        VECTOR_FOREACH(data_pointer_list, dp)
+        {
+            DataPointer* data_pointer = (DataPointer*)dp;
+            SERIALIZER_WRITE_F64(self->manager->tabledata_writer, data_pointer->min);
+            SERIALIZER_WRITE_F64(self->manager->tabledata_writer, data_pointer->max);
+            SERIALIZER_WRITE_U64(self->manager->tabledata_writer, data_pointer->row_start);
+            SERIALIZER_WRITE_U64(self->manager->tabledata_writer, data_pointer->tuple_count);
+            SERIALIZER_WRITE_U64(self->manager->tabledata_writer, data_pointer->block_id);
+            SERIALIZER_WRITE_U32(self->manager->tabledata_writer, data_pointer->offset);
+        }
+    }
+}
+
+static void tableDataWriter_write_data(TableDataWriter* self)
+{
+    ScanState state;
+    datatable_init_scan(self->table->datatable, &state);
+    // 为每列准备一个  Block 作为写缓冲区：
+    Vector column_ids = VEC(Oid, self->table->column_count);
+    for (int i = 0; i < self->table->column_count; i++)
+    {
+        vector_push_back(&column_ids, &self->table->columns[i].oid);
+    }
+    Vector types = tableCatalogEntry_get_types(self->table);
+    DataChunk chunk = MAKE(DataChunk, types);
+    usize zero = 0;
+    for (int i = 0; i < self->table->column_count; i++)
+    {
+        // for each column, create a block that serves as the buffer for that blocks data
+        Block* blk = Block_create(INVALID_BLOCK);
+        vector_push_back(&self->blocks, &blk);
+        vector_push_back(&self->offsets, &zero);
+        vector_push_back(&self->tuple_counts, &zero);
+        vector_push_back(&self->row_numbers, &zero);
+        Vector dp_list;
+        Vector_init(&dp_list, sizeof(DataPointer), 0);
+        vector_push_back(&self->data_pointers, &dp_list);
+    }
+    while (true)
+    {
+        dataChunk_reset(&chunk);
+        datatable_scan(self->table->datatable, &state, &chunk, column_ids.data,
+                       self->table->column_count);
+
+         // 每次返回最多 STANDARD_VECTOR_SIZE
+        if (dataChunk_size(&chunk) == 0) break;
+        for (usize i = 0; i < chunk.column_count; i++)
+        {
+            assert(chunk.columns[i].type == get_internal_type(self->table->columns[i].type));
+            tableDataWriter_writecolumndata(self, &chunk, i);
+        }
+    }
+    for (int i = 0; i < self->table->column_count; i++)
+    {
+        TableDataWriter_flush_block(self, i);
+    }
+    scanstate_deinit(&state);
+    vector_deinit(&column_ids);
+    vector_deinit(&types);
+    tableDataWriter_write_data_pointers(self);
+}
+
+//   DBHeader.meta_block
+//       → metadata_writer 链 (Schema 定义 + Table 定义 + td_block/td_offset)
+//           → tabledata_writer 链 (每列的 DataPointer 索引数组)
+//               → DataPointer.block_id → 实际列数据 Block (256KB 原始数据)
+static void checkpointManager_write_table(CheckpointManager* self, TableCatalogEntry* entry)
+{
+    checkpointManager_write_table_catalog(self, entry);
+    // 写入 td_block_id
+    SERIALIZER_WRITE_U64(self->meta_block_writer, self->tabledata_writer->block->id);
+    // 写入 td_offset
+    SERIALIZER_WRITE_U64(self->meta_block_writer, self->tabledata_writer->offset);
+
+    TableDataWriter writer = MAKE(TableDataWriter, self, entry);
+    tableDataWriter_write_data(&writer);
+    tableDataWriter_deinit(&writer);
+}
+
 static void checkpointManager_write_schema(CheckpointManager* self, SchemaCatalogEntry* entry)
 {
     // 写入 schema 名称
     SERIALIZER_WRITE_STRING(self->meta_block_writer, GET_PARENT_FIELD(entry, name));
-    // 写 table 数量（当前阶段为 0，占位）
-    SERIALIZER_WRITE_U32(self->meta_block_writer, 0);
+    // 写 table 数量
+    SERIALIZER_WRITE_U32(self->meta_block_writer, catalogSet_get_entry_count(&entry->tables));
+    HMAP_FOREACH(&entry->tables.data, _table_raw)
+    {
+        TableCatalogEntry* tbl = *(TableCatalogEntry**)_table_raw;
+       // 跳过已删除的条目（与 catalogSet_get_entry_count 计数逻辑一致）
+        if (tbl->base.deleted) continue;
+        checkpointManager_write_table(self, tbl);
+    }
     // 写索引数量（当前阶段为 0，占位）
     SERIALIZER_WRITE_U32(self->meta_block_writer, 0);
 }
 
-static void checkpointManager_read_schema(CheckpointManager* self, MetaBlockReader* reader)
+CheckpointManager* CheckpointManager_create(BlockManager* block_manager, Catalog* catalog)
 {
-    CreateSchemaInfo schema;
-    createSchemaInfo_deserialize(&schema, reader);
-    // 写入 schema 到 catalog
-    catalog_create_schema(self->catalog, &schema);
+    CheckpointManager* self = (CheckpointManager*)malloc(sizeof(CheckpointManager));
+    self->block_manager = block_manager;
+    self->catalog = catalog;
+
+    return self;
 }
 
 void checkpointManager_createpoint(CheckpointManager* self)
 {
     BlockManager* block_manager = self->block_manager;
+    self->meta_block_writer = MetaBlockWriter_create(block_manager);
+    self->tabledata_writer = MetaBlockWriter_create(block_manager);
     MetaBlockWriter* meta_block_writer = self->meta_block_writer;
     block_id_t meta_block = meta_block_writer->block->id;
     Vector schemas = VEC(SchemaCatalogEntry, 0);
@@ -689,6 +913,15 @@ void checkpointManager_createpoint(CheckpointManager* self)
     }
     vector_deinit(&schemas);
     metaBlockWriter_flush(meta_block_writer);
+    metaBlockWriter_flush(self->tabledata_writer);
+
+       // 释放 MetaBlockWriter 资源（flush 后 Block 内容已写入磁盘）
+    metaBlockWriter_destroy(meta_block_writer);
+    metaBlockWriter_destroy(self->tabledata_writer);
+
+    self->meta_block_writer = NULL;
+    self->tabledata_writer = NULL;
+
     SingleFileBlockManager* sfbm = (SingleFileBlockManager*)block_manager;
     sfbm->meta_block = meta_block;
     DatabaseHeader header;
@@ -696,11 +929,201 @@ void checkpointManager_createpoint(CheckpointManager* self)
     VCALL(block_manager, write_header, header);
 }
 
+static void TableDataReader_init(TableDataReader* self, CheckpointManager* manager,
+                                 TableCatalogEntry* table, MetaBlockReader* reader)
+{
+    self->manager = manager;
+    self->table = table;
+    self->reader = reader;
+
+    Vector_init(&self->blocks, sizeof(Block*), table->column_count);
+    Vector_init(&self->offsets, sizeof(usize), 0);
+    Vector_init(&self->tuple_counts, sizeof(usize), 0);
+    Vector_init(&self->row_numbers, sizeof(usize), 0);
+    Vector_init(&self->indexes, sizeof(usize), 0);
+    Vector_init(&self->data_pointers, sizeof(Vector), table->column_count);
+}
+
+static void TableDataReader_deinit(TableDataReader* self)
+{
+    for (usize i = 0; i < vector_size(&self->data_pointers); i++)
+    {
+        Vector* dp_vec = vector_get(&self->data_pointers, i);
+        vector_deinit(dp_vec);
+    }
+    vector_deinit(&self->data_pointers);
+    for (usize i = 0; i < vector_size(&self->blocks); i++)
+    {
+        Block* blk = VECTOR_AT(&self->blocks, i, Block*);
+        block_destroy(blk);
+    }
+    vector_deinit(&self->blocks);
+    vector_deinit(&self->offsets);
+    vector_deinit(&self->tuple_counts);
+    vector_deinit(&self->indexes);
+}
+
+static void tableDataReader_read_data_pointers(TableDataReader* self)
+{
+    for (usize i = 0; i < self->table->column_count; i++)
+    {
+        u64 dp_count = DESERIALIZER_READ_U64(self->reader);
+        Vector dp_list;
+        Vector_init(&dp_list, sizeof(DataPointer), dp_count);
+        for (u64 j = 0; j < dp_count; j++)
+        {
+            DataPointer dp;
+            dp.min = DESERIALIZER_READ_F64(self->reader);
+            dp.max = DESERIALIZER_READ_F64(self->reader);
+            dp.row_start = DESERIALIZER_READ_U64(self->reader);
+            dp.tuple_count = DESERIALIZER_READ_U64(self->reader);
+            dp.block_id = DESERIALIZER_READ_U64(self->reader);
+            dp.offset = DESERIALIZER_READ_U32(self->reader);
+            vector_push_back(&dp_list, &dp);
+        }
+        vector_push_back(&self->data_pointers, &dp_list);
+    }
+}
+
+static bool tableDataReader_read_block(TableDataReader* self, usize col)
+{
+    usize idx = VECTOR_AT(&self->indexes, col, usize);
+    Vector* dp_list = VECTOR_GET(&self->data_pointers, col, Vector);
+    if (idx >= vector_size(dp_list)) return false;
+
+    DataPointer* dp = vector_get(dp_list, idx);
+    Block* blk = VECTOR_AT(&self->blocks, col, Block*);
+    blk->id = dp->block_id;
+    // read the data for the block from disk
+    VCALL(self->manager->block_manager, read, blk);
+    usize off = (usize)dp->offset;
+    vector_set(&self->offsets, col, &off);
+    usize zero = 0;
+    vector_set(&self->tuple_counts, col, &zero);
+    usize next_idx = idx + 1;
+    vector_set(&self->indexes, col, &next_idx);
+    return true;
+}
+
+static void tableDataReader_read_table(TableDataReader* self)
+{
+    // 读取数据指针
+    tableDataReader_read_data_pointers(self);
+    usize col_count = self->table->column_count;
+    Vector* dp0 = VECTOR_GET(&self->data_pointers, 0, Vector);
+    if (vector_size(dp0) == 0) return; // 空表
+
+    usize zero = 0;
+    for (usize col = 0; col < col_count; col++)
+    {
+        Block* blk = Block_create(INVALID_BLOCK);
+        vector_push_back(&self->blocks, &blk);
+        vector_push_back(&self->offsets, &zero);
+        vector_push_back(&self->tuple_counts, &zero);
+        vector_push_back(&self->indexes, &zero);
+        tableDataReader_read_block(self, col);
+    }
+
+    Vector types = tableCatalogEntry_get_types(self->table);
+    DataChunk chunk = MAKE(DataChunk, types); // DataChunk_init
+    while (true)
+    {
+        dataChunk_reset(&chunk);
+        for (usize col = 0; col < col_count; col++)
+        {
+            TypeID type = get_internal_type(self->table->columns[col].type);
+            usize type_size = get_typeid_size(type);
+            usize filled = 0;
+            while (filled < STANDARD_VECTOR_SIZE)
+            {
+                usize idx = VECTOR_AT(&self->indexes, col, usize);
+                if (idx == 0) break;
+                Vector* dp_list = VECTOR_GET(&self->data_pointers, col, Vector);
+                DataPointer* dp = vector_get(dp_list, idx - 1);
+                usize tc = VECTOR_AT(&self->tuple_counts, col, usize);
+                // 计算当前块中剩余的元组数量
+                usize remaining_in_block = dp->tuple_count - tc;
+                if (remaining_in_block == 0)
+                {
+                    // no tuples left in this block
+                    // move to next block
+                    if (!tableDataReader_read_block(self, col)) break;
+                    continue;
+                }
+                usize to_read = MIN(STANDARD_VECTOR_SIZE - filled, remaining_in_block);
+                usize off = VECTOR_AT(&self->offsets, col, usize);
+                Block* blk = VECTOR_AT(&self->blocks, col, Block*);
+                data_ptr_t src = blk->fb->buffer + off;
+                data_ptr_t dst = chunk.columns[col].data + filled * type_size;
+                memcpy(dst, src, to_read * type_size);
+                filled += to_read;
+                usize new_off = off + to_read * type_size;
+                vector_set(&self->offsets, col, &new_off);
+                usize new_tc = tc + to_read;
+                vector_set(&self->tuple_counts, col, &new_tc);
+            }
+            chunk.columns[col].type = type;
+            chunk.columns[col].count = filled;
+        }
+        if (dataChunk_size(&chunk) == 0) break;
+        datatable_append(self->table->datatable, &chunk);
+    }
+    dataChunk_deinit(&chunk);
+    vector_deinit(&types);
+}
+
+static void checkpointManager_read_table(CheckpointManager* self, MetaBlockReader* reader)
+{
+    CreateTableInfo info;
+    createTableInfo_deserialize(&info, reader);
+    // 写入 table 到 catalog
+    catalog_create_table(self->catalog, &info);
+    block_id_t td_block_id = DESERIALIZER_READ_U64(reader);
+    // 读取 td_offset
+    u64 td_offset = DESERIALIZER_READ_U64(reader);
+
+    MetaBlockReader td_reader = MAKE(MetaBlockReader, self->block_manager, td_block_id);
+    td_reader.offset = td_offset;
+
+    TableCatalogEntry* table_entry =
+        catalog_get_table(self->catalog, info.schema_name, info.table_name);
+
+    TableDataReader data_reader = MAKE(TableDataReader, self, table_entry, &td_reader);
+    tableDataReader_read_table(&data_reader);
+    TableDataReader_deinit(&data_reader);
+    metaBlockReader_deinit(&td_reader);
+
+    // 5. 释放：table_name 和 columns 数组已由 catalog 拷贝，可安全释放
+   //    schema_name 被 DataTable 直接持有，不释放
+    //    columns[i].name 被 catalog memcpy 共享，不释放
+    free(info.table_name);
+    free(info.columns);
+}
+
+static void checkpointManager_read_schema(CheckpointManager* self, MetaBlockReader* reader)
+{
+    CreateSchemaInfo schema;
+    createSchemaInfo_deserialize(&schema, reader);
+    // 写入 schema 到 catalog
+    catalog_create_schema(self->catalog, &schema);
+    // 读取 table 数量
+    u32 table_count = DESERIALIZER_READ_U32(reader);
+    for (u32 i = 0; i < table_count; i++)
+    {
+        checkpointManager_read_table(self, reader);
+    }
+
+    // 读取 index_count（对称 write_schema 写入的 index_count = 0）
+    u32 index_count = DESERIALIZER_READ_U32(reader);
+    (void)index_count;
+        // 释放反序列化分配的 schema_name
+    free(schema.schema_name);
+}
+
 void checkpointManager_loadfromstorage(CheckpointManager* self)
 {
     BlockManager* block_manager = self->block_manager;
-    SingleFileBlockManager* sfbm = (SingleFileBlockManager*)block_manager;
-    block_id_t meta_block = sfbm->meta_block;
+    block_id_t meta_block = VCALL(block_manager, get_frist_meta_block);
     if (meta_block == INVALID_BLOCK) return;
     DatabaseHeader header;
     MetaBlockReader reader = MAKE(MetaBlockReader, block_manager, meta_block);

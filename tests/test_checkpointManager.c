@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include "storage.h"
 #include "catalog.h"
+#include "datatable.h"
 
 /* ============================================================
  * Test Framework
@@ -36,38 +37,10 @@ static void cleanup_db(void) { unlink(TEST_DB); }
 typedef struct
 {
     SingleFileBlockManager* sfbm;
+    StorageManager* sm;
     Catalog* catalog;
     CheckpointManager* cpm;
-    MetaBlockWriter* writer;
 } TestEnv;
-
-static void init_writer(MetaBlockWriter* writer, BlockManager* manager)
-{
-    writer->manager = manager;
-    writer->block = manager->vtable->create_block(manager);
-    writer->offset = sizeof(block_id_t);
-}
-
-static void free_writer(MetaBlockWriter* writer)
-{
-    if (writer)
-    {
-        if (writer->block)
-        {
-            fileBuffer_destroy(writer->block->fb);
-            free(writer->block);
-        }
-        free(writer);
-    }
-}
-
-static MetaBlockWriter* new_writer(BlockManager* manager)
-{
-    MetaBlockWriter* w = malloc(sizeof(MetaBlockWriter));
-    memset(w, 0, sizeof(MetaBlockWriter));
-    init_writer(w, manager);
-    return w;
-}
 
 static TestEnv create_test_env(void)
 {
@@ -79,34 +52,34 @@ static TestEnv create_test_env(void)
     CreateSchemaInfo main_info = {.schema_name = "main", .if_not_exists = true};
     catalog_create_schema(env.catalog, &main_info);
 
-    env.writer = new_writer((BlockManager*)env.sfbm);
+    env.sm = malloc(sizeof(StorageManager));
+    env.sm->block_manager = (BlockManager*)env.sfbm;
+    env.sm->wal_manager = NULL;
 
-    env.cpm = malloc(sizeof(CheckpointManager));
-    env.cpm->block_manager = (BlockManager*)env.sfbm;
-    env.cpm->catalog = env.catalog;
-    env.cpm->meta_block_writer = env.writer;
+    env.catalog->storage = env.sm;
+    env.cpm = CheckpointManager_create((BlockManager*)env.sfbm, env.catalog);
 
     return env;
-}
-
-static void reset_writer(TestEnv* env)
-{
-    free_writer(env->writer);
-    env->writer = new_writer((BlockManager*)env->sfbm);
-    env->cpm->meta_block_writer = env->writer;
 }
 
 static void destroy_test_env(TestEnv* env)
 {
     if (env->cpm) free(env->cpm);
-    free_writer(env->writer);
     if (env->catalog) catalog_destroy(env->catalog);
     if (env->sfbm) destory_single_manager(env->sfbm);
+    if (env->sm) free(env->sm);
     env->cpm = NULL;
-    env->writer = NULL;
     env->catalog = NULL;
     env->sfbm = NULL;
+    env->sm = NULL;
     cleanup_db();
+}
+
+/* Helper: create a CheckpointManager for loading into a fresh catalog */
+static CheckpointManager* make_load_cpm(TestEnv* env, Catalog* cat)
+{
+    cat->storage = env->sm;
+    return CheckpointManager_create((BlockManager*)env->sfbm, cat);
 }
 
 /* ============================================================
@@ -183,12 +156,8 @@ void test_loadfromstorage_empty(void)
           "Fresh database should have INVALID_BLOCK");
 
     Catalog* empty_catalog = catalog_create();
-    CheckpointManager load_cpm = {
-        .block_manager = (BlockManager*)env.sfbm,
-        .catalog = empty_catalog,
-        .meta_block_writer = NULL
-    };
-    checkpointManager_loadfromstorage(&load_cpm);
+    CheckpointManager* load_cpm = make_load_cpm(&env, empty_catalog);
+    checkpointManager_loadfromstorage(load_cpm);
     PASS("loadfromstorage on empty database does not crash");
 
     SchemaCatalogEntry* s = catalog_get_schema(empty_catalog, "main");
@@ -196,6 +165,7 @@ void test_loadfromstorage_empty(void)
           "No schemas in empty catalog after load",
           "Should have no schemas loaded from empty database");
 
+    free(load_cpm);
     catalog_destroy(empty_catalog);
     destroy_test_env(&env);
 }
@@ -216,7 +186,6 @@ void test_double_checkpoint(void)
     CreateSchemaInfo info = {.schema_name = "second_pass", .if_not_exists = false};
     catalog_create_schema(env.catalog, &info);
 
-    reset_writer(&env);
     checkpointManager_createpoint(env.cpm);
     u64 iter2 = env.sfbm->iteration_count;
     PASS("2nd checkpoint: iteration=%lu", (unsigned long)iter2);
@@ -250,16 +219,11 @@ void test_free_list_management(void)
     PASS("After 1st: free_list=%zu, used_blocks=%zu",
          env.sfbm->free_list.size, env.sfbm->used_blocks.size);
 
-    reset_writer(&env);
-
     // Load from storage — reads blocks, adding to used_blocks
     Catalog* tmp = catalog_create();
-    CheckpointManager load_cpm = {
-        .block_manager = (BlockManager*)env.sfbm,
-        .catalog = tmp,
-        .meta_block_writer = NULL
-    };
-    checkpointManager_loadfromstorage(&load_cpm);
+    CheckpointManager* load_cpm = make_load_cpm(&env, tmp);
+    checkpointManager_loadfromstorage(load_cpm);
+    free(load_cpm);
     catalog_destroy(tmp);
 
     usize used_after_load = env.sfbm->used_blocks.size;
@@ -297,7 +261,6 @@ void test_header_alternation(void)
     u8 after_1st = env.sfbm->active_header;
     PASS("After 1st checkpoint: active_header=%u", (unsigned)after_1st);
 
-    reset_writer(&env);
     checkpointManager_createpoint(env.cpm);
     u8 after_2nd = env.sfbm->active_header;
     PASS("After 2nd checkpoint: active_header=%u", (unsigned)after_2nd);
@@ -306,31 +269,6 @@ void test_header_alternation(void)
         PASS("Header toggled (%u -> %u)", (unsigned)after_1st, (unsigned)after_2nd);
     else
         FAIL("active_header should alternate between checkpoints");
-
-    destroy_test_env(&env);
-}
-
-/* ============================================================
- * Test: MetaBlockWriter lifecycle
- * ============================================================ */
-void test_metaBlockWriter_lifecycle(void)
-{
-    printf("\n=== Test MetaBlockWriter lifecycle ===\n");
-
-    TestEnv env = create_test_env();
-
-    CHECK(env.writer->block != NULL,
-          "Writer has allocated block",
-          "Writer block should not be NULL");
-
-    if (env.writer->offset == sizeof(block_id_t))
-        PASS("Writer offset starts at %zu", sizeof(block_id_t));
-    else
-        FAIL("Writer offset should start at sizeof(block_id_t)");
-
-    CHECK(env.writer->manager == (BlockManager*)env.sfbm,
-          "Writer manager points to block_manager",
-          "Writer manager should point to sfbm");
 
     destroy_test_env(&env);
 }
@@ -346,12 +284,8 @@ void test_roundtrip_single_schema(void)
     checkpointManager_createpoint(env.cpm);
 
     Catalog* loaded = catalog_create();
-    CheckpointManager load_cpm = {
-        .block_manager = (BlockManager*)env.sfbm,
-        .catalog = loaded,
-        .meta_block_writer = NULL
-    };
-    checkpointManager_loadfromstorage(&load_cpm);
+    CheckpointManager* load_cpm = make_load_cpm(&env, loaded);
+    checkpointManager_loadfromstorage(load_cpm);
 
     SchemaCatalogEntry* s = catalog_get_schema(loaded, "main");
     if (s)
@@ -366,6 +300,7 @@ void test_roundtrip_single_schema(void)
         FAIL("Roundtrip: 'main' schema NOT found");
     }
 
+    free(load_cpm);
     catalog_destroy(loaded);
     destroy_test_env(&env);
 }
@@ -391,12 +326,8 @@ void test_roundtrip_multi_schema(void)
           "meta_block should be valid");
 
     Catalog* loaded = catalog_create();
-    CheckpointManager load_cpm = {
-        .block_manager = (BlockManager*)env.sfbm,
-        .catalog = loaded,
-        .meta_block_writer = NULL
-    };
-    checkpointManager_loadfromstorage(&load_cpm);
+    CheckpointManager* load_cpm = make_load_cpm(&env, loaded);
+    checkpointManager_loadfromstorage(load_cpm);
 
     SchemaCatalogEntry* sm = catalog_get_schema(loaded, "main");
     SchemaCatalogEntry* sa = catalog_get_schema(loaded, "alpha");
@@ -406,6 +337,7 @@ void test_roundtrip_multi_schema(void)
     CHECK(sa != NULL, "Roundtrip: 'alpha' restored", "Roundtrip: 'alpha' NOT found");
     CHECK(sb != NULL, "Roundtrip: 'beta' restored", "Roundtrip: 'beta' NOT found");
 
+    free(load_cpm);
     catalog_destroy(loaded);
     destroy_test_env(&env);
 }
@@ -430,12 +362,8 @@ void test_roundtrip_many_schemas(void)
     checkpointManager_createpoint(env.cpm);
 
     Catalog* loaded = catalog_create();
-    CheckpointManager load_cpm = {
-        .block_manager = (BlockManager*)env.sfbm,
-        .catalog = loaded,
-        .meta_block_writer = NULL
-    };
-    checkpointManager_loadfromstorage(&load_cpm);
+    CheckpointManager* load_cpm = make_load_cpm(&env, loaded);
+    checkpointManager_loadfromstorage(load_cpm);
 
     // Check "main" + 10 schemas = 11 total
     CHECK(catalog_get_schema(loaded, "main") != NULL,
@@ -454,6 +382,7 @@ void test_roundtrip_many_schemas(void)
     if (all_ok)
         PASS("Roundtrip many: all 10 extra schemas restored");
 
+    free(load_cpm);
     catalog_destroy(loaded);
     destroy_test_env(&env);
 }
@@ -474,40 +403,33 @@ void test_two_full_cycles(void)
 
     // Load cycle 1
     Catalog* loaded1 = catalog_create();
-    CheckpointManager load1 = {
-        .block_manager = (BlockManager*)env.sfbm,
-        .catalog = loaded1,
-        .meta_block_writer = NULL
-    };
-    checkpointManager_loadfromstorage(&load1);
+    CheckpointManager* load1 = make_load_cpm(&env, loaded1);
+    checkpointManager_loadfromstorage(load1);
     CHECK(catalog_get_schema(loaded1, "main") != NULL,
           "Cycle 1 load: 'main' restored",
           "Cycle 1 load: 'main' NOT found");
+    free(load1);
     catalog_destroy(loaded1);
 
     // Cycle 2: add schema, checkpoint again
     CreateSchemaInfo info = {.schema_name = "cycle2_db", .if_not_exists = false};
     catalog_create_schema(env.catalog, &info);
 
-    reset_writer(&env);
     checkpointManager_createpoint(env.cpm);
     block_id_t meta2 = env.sfbm->meta_block;
     PASS("Cycle 2 checkpoint: meta_block=%lu", (unsigned long)meta2);
 
     // Load cycle 2
     Catalog* loaded2 = catalog_create();
-    CheckpointManager load2 = {
-        .block_manager = (BlockManager*)env.sfbm,
-        .catalog = loaded2,
-        .meta_block_writer = NULL
-    };
-    checkpointManager_loadfromstorage(&load2);
+    CheckpointManager* load2 = make_load_cpm(&env, loaded2);
+    checkpointManager_loadfromstorage(load2);
     CHECK(catalog_get_schema(loaded2, "main") != NULL,
           "Cycle 2 load: 'main' restored",
           "Cycle 2 load: 'main' NOT found");
     CHECK(catalog_get_schema(loaded2, "cycle2_db") != NULL,
           "Cycle 2 load: 'cycle2_db' restored",
           "Cycle 2 load: 'cycle2_db' NOT found");
+    free(load2);
     catalog_destroy(loaded2);
 
     destroy_test_env(&env);
@@ -515,7 +437,6 @@ void test_two_full_cycles(void)
 
 /* ============================================================
  * Test: reopen database from disk (create_new=false)
- * Verifies Bug #6 and #7 are fixed
  * ============================================================ */
 void test_reopen_database(void)
 {
@@ -529,21 +450,19 @@ void test_reopen_database(void)
         CHECK(sfbm != NULL, "Phase 1: created new database", "Failed to create database");
 
         Catalog* cat = catalog_create();
+        StorageManager p1_sm = { .block_manager = (BlockManager*)sfbm, .wal_manager = NULL };
+        cat->storage = &p1_sm;
+
         CreateSchemaInfo info1 = {.schema_name = "main", .if_not_exists = true};
         CreateSchemaInfo info2 = {.schema_name = "persist_me", .if_not_exists = false};
         catalog_create_schema(cat, &info1);
         catalog_create_schema(cat, &info2);
 
-        MetaBlockWriter* w = new_writer((BlockManager*)sfbm);
-        CheckpointManager cpm = {
-            .block_manager = (BlockManager*)sfbm,
-            .catalog = cat,
-            .meta_block_writer = w
-        };
-        checkpointManager_createpoint(&cpm);
+        CheckpointManager* cpm = CheckpointManager_create((BlockManager*)sfbm, cat);
+        checkpointManager_createpoint(cpm);
         PASS("Phase 1: checkpoint with [main, persist_me]");
 
-        free_writer(w);
+        free(cpm);
         catalog_destroy(cat);
         destory_single_manager(sfbm);
     }
@@ -570,12 +489,11 @@ void test_reopen_database(void)
 
         // Load schemas from disk
         Catalog* cat = catalog_create();
-        CheckpointManager load = {
-            .block_manager = (BlockManager*)sfbm,
-            .catalog = cat,
-            .meta_block_writer = NULL
-        };
-        checkpointManager_loadfromstorage(&load);
+        StorageManager p2_sm = { .block_manager = (BlockManager*)sfbm, .wal_manager = NULL };
+        cat->storage = &p2_sm;
+
+        CheckpointManager* load = CheckpointManager_create((BlockManager*)sfbm, cat);
+        checkpointManager_loadfromstorage(load);
 
         SchemaCatalogEntry* sm = catalog_get_schema(cat, "main");
         SchemaCatalogEntry* sp = catalog_get_schema(cat, "persist_me");
@@ -584,11 +502,454 @@ void test_reopen_database(void)
         CHECK(sp != NULL, "Phase 2: 'persist_me' schema loaded from disk",
               "Phase 2: 'persist_me' NOT found from disk");
 
+        free(load);
         catalog_destroy(cat);
         destory_single_manager(sfbm);
     }
 
     cleanup_db();
+}
+
+/* ============================================================
+ * Test: Table data roundtrip (checkpoint + load with INT32 data)
+ *
+ * This tests the full pipeline:
+ *   1. Create schema + table with 2 INT32 columns
+ *   2. Append 100 rows of data
+ *   3. checkpointManager_createpoint (writes to disk)
+ *   4. checkpointManager_loadfromstorage (reads from disk into
+ *      a fresh catalog)
+ *   5. Scan the loaded table and verify all 100 rows match
+ * ============================================================ */
+void test_table_data_roundtrip(void)
+{
+    printf("\n=== Test table data roundtrip ===\n");
+
+    TestEnv env = create_test_env();
+
+    /* --- 1. Create table "test_tbl" (col_a INT32, col_b INT32) --- */
+    ColumnDefinition cols[2] = {
+        {.name = "col_a", .oid = 0, .type = SQLT_INTEGER},
+        {.name = "col_b", .oid = 1, .type = SQLT_INTEGER},
+    };
+    CreateTableInfo tinfo = {
+        .schema_name = "main",
+        .table_name = "test_tbl",
+        .if_not_exists = false,
+        .columns = cols,
+        .col_count = 2,
+    };
+    int rc = catalog_create_table(env.catalog, &tinfo);
+    CHECK(rc == 0, "Created table 'test_tbl'", "Failed to create table");
+
+    TableCatalogEntry* tbl = catalog_get_table(env.catalog, "main", "test_tbl");
+    CHECK(tbl != NULL, "Table entry found in catalog", "Table entry NOT found");
+    if (!tbl) { destroy_test_env(&env); return; }
+
+    /* --- 2. Append 100 rows --- */
+    #define N_ROWS 100
+    Vector types = VEC(TypeID, 2);
+    TypeID t = TYPE_INT32;
+    vector_push_back(&types, &t);
+    vector_push_back(&types, &t);
+
+    DataChunk chunk = MAKE(DataChunk, types);
+    i32* col_a = (i32*)chunk.columns[0].data;
+    i32* col_b = (i32*)chunk.columns[1].data;
+    usize batch_size = MIN(N_ROWS, STANDARD_VECTOR_SIZE);
+    for (usize i = 0; i < batch_size; i++)
+    {
+        col_a[i] = (i32)(i * 10);
+        col_b[i] = (i32)(i * 10 + 1);
+    }
+    chunk.columns[0].count = batch_size;
+    chunk.columns[1].count = batch_size;
+    datatable_append(tbl->datatable, &chunk);
+
+    if (N_ROWS > STANDARD_VECTOR_SIZE)
+    {
+        dataChunk_reset(&chunk);
+        col_a = (i32*)chunk.columns[0].data;
+        col_b = (i32*)chunk.columns[1].data;
+        usize remaining = N_ROWS - STANDARD_VECTOR_SIZE;
+        for (usize i = 0; i < remaining; i++)
+        {
+            col_a[i] = (i32)((STANDARD_VECTOR_SIZE + i) * 10);
+            col_b[i] = (i32)((STANDARD_VECTOR_SIZE + i) * 10 + 1);
+        }
+        chunk.columns[0].count = remaining;
+        chunk.columns[1].count = remaining;
+        datatable_append(tbl->datatable, &chunk);
+    }
+    dataChunk_deinit(&chunk);
+    vector_deinit(&types);
+    PASS("Appended %d rows to table", N_ROWS);
+
+    /* --- 3. Checkpoint --- */
+    checkpointManager_createpoint(env.cpm);
+    PASS("Checkpoint created with table data");
+
+    /* --- 4. Load from storage --- */
+    Catalog* loaded = catalog_create();
+    CheckpointManager* load_cpm = make_load_cpm(&env, loaded);
+    checkpointManager_loadfromstorage(load_cpm);
+
+    SchemaCatalogEntry* ls = catalog_get_schema(loaded, "main");
+    CHECK(ls != NULL, "Loaded schema 'main'", "Schema 'main' NOT loaded");
+
+    TableCatalogEntry* lt = catalog_get_table(loaded, "main", "test_tbl");
+    CHECK(lt != NULL, "Loaded table 'test_tbl'", "Table 'test_tbl' NOT loaded");
+    if (!lt) { free(load_cpm); catalog_destroy(loaded); destroy_test_env(&env); return; }
+
+    CHECK(lt->column_count == 2,
+          "Loaded table has 2 columns",
+          "Loaded table column_count mismatch");
+    CHECK(lt->datatable != NULL,
+          "Loaded table has DataTable",
+          "Loaded table DataTable is NULL");
+
+    /* --- 5. Scan and verify --- */
+    Vector types2 = VEC(TypeID, 2);
+    vector_push_back(&types2, &t);
+    vector_push_back(&types2, &t);
+    DataChunk output = MAKE(DataChunk, types2);
+    ScanState state;
+    datatable_init_scan(lt->datatable, &state);
+
+    usize col_ids[2] = {0, 1};
+    usize total_rows = 0;
+    bool data_ok = true;
+
+    while (true)
+    {
+        dataChunk_reset(&output);
+        bool has_data = datatable_scan(lt->datatable, &state, &output, col_ids, 2);
+        if (!has_data || dataChunk_size(&output) == 0) break;
+
+        i32* ra = (i32*)output.columns[0].data;
+        i32* rb = (i32*)output.columns[1].data;
+        for (usize i = 0; i < dataChunk_size(&output); i++)
+        {
+            i32 expected_a = (i32)((total_rows + i) * 10);
+            i32 expected_b = (i32)((total_rows + i) * 10 + 1);
+            if (ra[i] != expected_a || rb[i] != expected_b)
+            {
+                FAIL("Row %zu: col_a=%d (expected %d), col_b=%d (expected %d)",
+                     total_rows + i, ra[i], expected_a, rb[i], expected_b);
+                data_ok = false;
+            }
+        }
+        total_rows += dataChunk_size(&output);
+    }
+
+    if (total_rows == N_ROWS)
+        PASS("Scan returned correct row count (%d)", N_ROWS);
+    else
+        FAIL("Scan row count mismatch: got %zu, expected %d", total_rows, N_ROWS);
+    if (data_ok && total_rows == N_ROWS)
+        PASS("All %d rows verified correct after roundtrip", N_ROWS);
+
+    scanstate_deinit(&state);
+    dataChunk_deinit(&output);
+    vector_deinit(&types2);
+    free(load_cpm);
+    catalog_destroy(loaded);
+    destroy_test_env(&env);
+    #undef N_ROWS
+}
+
+/* ============================================================
+ * Test: Table data roundtrip with large dataset (cross-segment)
+ *
+ * Writes 500 rows to test RowSegment boundary crossing
+ * (STORAGE_CHUNK_SIZE = 250)
+ * ============================================================ */
+void test_table_data_roundtrip_large(void)
+{
+    printf("\n=== Test table data roundtrip large (500 rows) ===\n");
+
+    TestEnv env = create_test_env();
+
+    ColumnDefinition cols[2] = {
+        {.name = "id",    .oid = 0, .type = SQLT_INTEGER},
+        {.name = "value", .oid = 1, .type = SQLT_DOUBLE},
+    };
+    CreateTableInfo tinfo = {
+        .schema_name = "main",
+        .table_name = "big_tbl",
+        .if_not_exists = false,
+        .columns = cols,
+        .col_count = 2,
+    };
+    catalog_create_table(env.catalog, &tinfo);
+    TableCatalogEntry* tbl = catalog_get_table(env.catalog, "main", "big_tbl");
+    CHECK(tbl != NULL, "Created big_tbl", "Failed to create big_tbl");
+    if (!tbl) { destroy_test_env(&env); return; }
+
+    #define TOTAL_ROWS 500
+    Vector types = VEC(TypeID, 2);
+    TypeID ti32 = TYPE_INT32;
+    TypeID tf64 = TYPE_FLOAT64;
+    vector_push_back(&types, &ti32);
+    vector_push_back(&types, &tf64);
+
+    DataChunk chunk = MAKE(DataChunk, types);
+    usize rows_written = 0;
+    while (rows_written < TOTAL_ROWS)
+    {
+        dataChunk_reset(&chunk);
+        usize batch = MIN(STANDARD_VECTOR_SIZE, TOTAL_ROWS - rows_written);
+        i32* ids = (i32*)chunk.columns[0].data;
+        f64* vals = (f64*)chunk.columns[1].data;
+        for (usize i = 0; i < batch; i++)
+        {
+            ids[i] = (i32)(rows_written + i);
+            vals[i] = (f64)(rows_written + i) * 1.5;
+        }
+        chunk.columns[0].count = batch;
+        chunk.columns[1].count = batch;
+        datatable_append(tbl->datatable, &chunk);
+        rows_written += batch;
+    }
+    dataChunk_deinit(&chunk);
+    PASS("Appended %d rows (crosses RowSegment boundary)", TOTAL_ROWS);
+
+    /* Checkpoint */
+    checkpointManager_createpoint(env.cpm);
+    PASS("Checkpoint with %d rows", TOTAL_ROWS);
+
+    /* Load */
+    Catalog* loaded = catalog_create();
+    CheckpointManager* load_cpm = make_load_cpm(&env, loaded);
+    checkpointManager_loadfromstorage(load_cpm);
+
+    TableCatalogEntry* lt = catalog_get_table(loaded, "main", "big_tbl");
+    CHECK(lt != NULL, "Loaded big_tbl", "big_tbl NOT loaded");
+    if (!lt) { free(load_cpm); catalog_destroy(loaded); destroy_test_env(&env); return; }
+
+    /* Scan and verify */
+    DataChunk output = MAKE(DataChunk, types);
+    ScanState state;
+    datatable_init_scan(lt->datatable, &state);
+    usize col_ids[2] = {0, 1};
+    usize total = 0;
+    bool ok = true;
+    while (true)
+    {
+        dataChunk_reset(&output);
+        if (!datatable_scan(lt->datatable, &state, &output, col_ids, 2)) break;
+        if (dataChunk_size(&output) == 0) break;
+        i32* ids = (i32*)output.columns[0].data;
+        f64* vals = (f64*)output.columns[1].data;
+        for (usize i = 0; i < dataChunk_size(&output); i++)
+        {
+            i32 eid = (i32)(total + i);
+            f64 eval = (f64)(total + i) * 1.5;
+            if (ids[i] != eid) { ok = false; FAIL("Row %zu: id=%d expected=%d", total+i, ids[i], eid); }
+            if (vals[i] != eval) { ok = false; FAIL("Row %zu: val=%.2f expected=%.2f", total+i, vals[i], eval); }
+        }
+        total += dataChunk_size(&output);
+    }
+    if (total == TOTAL_ROWS)
+        PASS("Scan returned correct row count (%d)", TOTAL_ROWS);
+    else
+        FAIL("Scan row count mismatch: got %zu, expected %d", total, TOTAL_ROWS);
+    if (ok && total == TOTAL_ROWS)
+        PASS("All %d rows verified after large roundtrip", TOTAL_ROWS);
+
+    scanstate_deinit(&state);
+    dataChunk_deinit(&output);
+    vector_deinit(&types);
+    free(load_cpm);
+    catalog_destroy(loaded);
+    destroy_test_env(&env);
+    #undef TOTAL_ROWS
+}
+
+/* ============================================================
+ * Test: Multiple tables roundtrip
+ * ============================================================ */
+void test_multi_table_roundtrip(void)
+{
+    printf("\n=== Test multi-table roundtrip ===\n");
+
+    TestEnv env = create_test_env();
+
+    /* Create table1 (2 INT32 cols, 20 rows) */
+    ColumnDefinition cols1[2] = {
+        {.name = "a", .oid = 0, .type = SQLT_INTEGER},
+        {.name = "b", .oid = 1, .type = SQLT_INTEGER},
+    };
+    CreateTableInfo ti1 = {
+        .schema_name = "main", .table_name = "t1",
+        .if_not_exists = false, .columns = cols1, .col_count = 2
+    };
+    catalog_create_table(env.catalog, &ti1);
+
+    /* Create table2 (1 DOUBLE col, 30 rows) */
+    ColumnDefinition cols2[1] = {
+        {.name = "x", .oid = 0, .type = SQLT_DOUBLE},
+    };
+    CreateTableInfo ti2 = {
+        .schema_name = "main", .table_name = "t2",
+        .if_not_exists = false, .columns = cols2, .col_count = 1
+    };
+    catalog_create_table(env.catalog, &ti2);
+
+    /* Append data to t1 */
+    TableCatalogEntry* tbl1 = catalog_get_table(env.catalog, "main", "t1");
+    {
+        Vector types = VEC(TypeID, 2);
+        TypeID t32 = TYPE_INT32;
+        vector_push_back(&types, &t32);
+        vector_push_back(&types, &t32);
+        DataChunk chunk = MAKE(DataChunk, types);
+        i32* ca = (i32*)chunk.columns[0].data;
+        i32* cb = (i32*)chunk.columns[1].data;
+        for (int i = 0; i < 20; i++) { ca[i] = i; cb[i] = i * 100; }
+        chunk.columns[0].count = 20;
+        chunk.columns[1].count = 20;
+        datatable_append(tbl1->datatable, &chunk);
+        dataChunk_deinit(&chunk);
+        vector_deinit(&types);
+    }
+
+    /* Append data to t2 */
+    TableCatalogEntry* tbl2 = catalog_get_table(env.catalog, "main", "t2");
+    {
+        Vector types = VEC(TypeID, 1);
+        TypeID t64 = TYPE_FLOAT64;
+        vector_push_back(&types, &t64);
+        DataChunk chunk = MAKE(DataChunk, types);
+        f64* cx = (f64*)chunk.columns[0].data;
+        for (int i = 0; i < 30; i++) cx[i] = i * 3.14;
+        chunk.columns[0].count = 30;
+        datatable_append(tbl2->datatable, &chunk);
+        dataChunk_deinit(&chunk);
+        vector_deinit(&types);
+    }
+
+    PASS("Populated t1(20 rows) and t2(30 rows)");
+
+    /* Checkpoint */
+    checkpointManager_createpoint(env.cpm);
+    PASS("Checkpoint with 2 tables");
+
+    /* Load */
+    Catalog* loaded = catalog_create();
+    CheckpointManager* load_cpm = make_load_cpm(&env, loaded);
+    checkpointManager_loadfromstorage(load_cpm);
+
+    TableCatalogEntry* lt1 = catalog_get_table(loaded, "main", "t1");
+    TableCatalogEntry* lt2 = catalog_get_table(loaded, "main", "t2");
+    CHECK(lt1 != NULL, "Loaded t1", "t1 NOT loaded");
+    CHECK(lt2 != NULL, "Loaded t2", "t2 NOT loaded");
+
+    /* Verify t1 */
+    if (lt1)
+    {
+        Vector types = VEC(TypeID, 2);
+        TypeID t32 = TYPE_INT32;
+        vector_push_back(&types, &t32);
+        vector_push_back(&types, &t32);
+        DataChunk output = MAKE(DataChunk, types);
+        ScanState state;
+        datatable_init_scan(lt1->datatable, &state);
+        usize col_ids[2] = {0, 1};
+        usize total = 0;
+        while (true)
+        {
+            dataChunk_reset(&output);
+            if (!datatable_scan(lt1->datatable, &state, &output, col_ids, 2)) break;
+            if (dataChunk_size(&output) == 0) break;
+            total += dataChunk_size(&output);
+        }
+        CHECK(total == 20, "t1 has 20 rows after load", "t1 row count mismatch");
+        scanstate_deinit(&state);
+        dataChunk_deinit(&output);
+        vector_deinit(&types);
+    }
+
+    /* Verify t2 */
+    if (lt2)
+    {
+        Vector types = VEC(TypeID, 1);
+        TypeID t64 = TYPE_FLOAT64;
+        vector_push_back(&types, &t64);
+        DataChunk output = MAKE(DataChunk, types);
+        ScanState state;
+        datatable_init_scan(lt2->datatable, &state);
+        usize col_ids[1] = {0};
+        usize total = 0;
+        while (true)
+        {
+            dataChunk_reset(&output);
+            if (!datatable_scan(lt2->datatable, &state, &output, col_ids, 1)) break;
+            if (dataChunk_size(&output) == 0) break;
+            total += dataChunk_size(&output);
+        }
+        CHECK(total == 30, "t2 has 30 rows after load", "t2 row count mismatch");
+        scanstate_deinit(&state);
+        dataChunk_deinit(&output);
+        vector_deinit(&types);
+    }
+
+    free(load_cpm);
+    catalog_destroy(loaded);
+    destroy_test_env(&env);
+}
+
+/* ============================================================
+ * Test: Empty table roundtrip
+ * ============================================================ */
+void test_empty_table_roundtrip(void)
+{
+    printf("\n=== Test empty table roundtrip ===\n");
+
+    TestEnv env = create_test_env();
+
+    ColumnDefinition cols[1] = {
+        {.name = "x", .oid = 0, .type = SQLT_INTEGER},
+    };
+    CreateTableInfo tinfo = {
+        .schema_name = "main", .table_name = "empty_tbl",
+        .if_not_exists = false, .columns = cols, .col_count = 1
+    };
+    catalog_create_table(env.catalog, &tinfo);
+    PASS("Created empty table 'empty_tbl'");
+
+    checkpointManager_createpoint(env.cpm);
+    PASS("Checkpoint with empty table");
+
+    Catalog* loaded = catalog_create();
+    CheckpointManager* load_cpm = make_load_cpm(&env, loaded);
+    checkpointManager_loadfromstorage(load_cpm);
+
+    TableCatalogEntry* lt = catalog_get_table(loaded, "main", "empty_tbl");
+    CHECK(lt != NULL, "Loaded empty_tbl", "empty_tbl NOT loaded");
+    if (lt)
+    {
+        CHECK(lt->column_count == 1, "column_count == 1", "column_count wrong");
+        ScanState state;
+        datatable_init_scan(lt->datatable, &state);
+        Vector types = VEC(TypeID, 1);
+        TypeID t32 = TYPE_INT32;
+        vector_push_back(&types, &t32);
+        DataChunk output = MAKE(DataChunk, types);
+        dataChunk_reset(&output);
+        usize col_ids[1] = {0};
+        bool has = datatable_scan(lt->datatable, &state, &output, col_ids, 1);
+        usize rows = dataChunk_size(&output);
+        CHECK(rows == 0, "Empty table scan returns 0 rows", "Expected 0 rows from empty table");
+        scanstate_deinit(&state);
+        dataChunk_deinit(&output);
+        vector_deinit(&types);
+        (void)has;
+    }
+
+    free(load_cpm);
+    catalog_destroy(loaded);
+    destroy_test_env(&env);
 }
 
 /* ============================================================
@@ -600,16 +961,15 @@ int main(void)
     printf("   CheckpointManager Test Suite\n");
     printf("========================================\n");
 
-    // Functional tests
+    // Schema-only tests
     test_createpoint_single_schema();
     test_createpoint_multiple_schemas();
     test_loadfromstorage_empty();
     test_double_checkpoint();
     test_free_list_management();
     test_header_alternation();
-    test_metaBlockWriter_lifecycle();
 
-    // Roundtrip tests
+    // Schema roundtrip tests
     test_roundtrip_single_schema();
     test_roundtrip_multi_schema();
     test_roundtrip_many_schemas();
@@ -617,6 +977,12 @@ int main(void)
 
     // Disk persistence test
     test_reopen_database();
+
+    // Table data roundtrip tests
+    test_empty_table_roundtrip();
+    test_table_data_roundtrip();
+    test_table_data_roundtrip_large();
+    test_multi_table_roundtrip();
 
     printf("\n========================================\n");
     printf("   Results: %d passed, %d failed\n", pass_count, fail_count);

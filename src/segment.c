@@ -9,16 +9,49 @@ void SegmentTree_init(SegmentTree* tree)
     tree->nodes = NEW(Vector, sizeof(SegmentNode), 1);
 }
 
+void SegmentTree_deinit(SegmentTree* tree, void (*node_destroy)(SegmentBase*))
+{
+    if (!tree) return;
+    if (node_destroy)
+    {
+        SegmentBase* cur = tree->root_node;
+        while (cur)
+        {
+            SegmentBase* next = cur->next;
+            node_destroy(cur);
+            cur = next;
+        }
+    }
+    if (tree->nodes)
+    {
+        vector_destroy(tree->nodes);
+        tree->nodes = NULL;
+    }
+    tree->root_node = NULL;
+}
+
 ColumnSegment* ColumnSegment_create2(usize start)
 {
     ColumnSegment* segment = malloc(sizeof(ColumnSegment));
     segment->base.start = start;
     segment->base.count = 0;
+    segment->base.next = NULL;
     segment->block_id = INVALID_BLOCK;
-    segment->offset = 0;
+    segment->byte_offset = 0;
     segment->block_manager = NULL;
     segment->block = NULL;
     return segment;
+}
+
+void ColumnSegment_destroy(ColumnSegment* segment)
+{
+    if (!segment) return;
+    if (segment->block)
+    {
+        block_destroy(segment->block);
+        segment->block = NULL;
+    }
+    free(segment);
 }
 
 RowSegment* RowSegment_create(DataTable* table, usize start)
@@ -29,6 +62,14 @@ RowSegment* RowSegment_create(DataTable* table, usize start)
     segment->base.next = NULL;
     segment->table = table;
     return segment;
+}
+
+void RowSegment_destroy(RowSegment* segment)
+{
+    if (!segment) return;
+    free(segment->columns);
+    segment->columns = NULL;
+    free(segment);
 }
 
 SegmentBase* segmentTree_get_root_segment(SegmentTree* tree)
@@ -71,8 +112,13 @@ data_ptr_t segment_get_data(ColumnSegment* segment)
 {
     if (segment->block == NULL)
     {
-       // segment->block =
+        segment->block = Block_create(segment->block_id);
+        if (segment->block_id != INVALID_BLOCK)
+        {
+            VCALL(segment->block_manager, read, segment->block);
+        }
     }
+    return segment->block->fb->buffer;
 }
 
 void segmentTree_append_segment(SegmentTree* tree, SegmentBase* segment)

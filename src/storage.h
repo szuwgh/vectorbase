@@ -107,6 +107,9 @@ typedef struct Block
     FileBuffer* fb;
 } Block;
 
+Block* Block_create(block_id_t block_id);
+void block_destroy(Block* block);
+
   // BlockManager 虚类（接口）- 使用函数指针实现多态
 typedef struct BlockManager BlockManager;
 
@@ -148,6 +151,7 @@ DEFINE_CLASS(BlockManager,
     VMETHOD(BlockManager, write, void, Block* block)
     VMETHOD(BlockManager, get_free_block_id, block_id_t)
     VMETHOD(BlockManager, create_block, Block*)
+    VMETHOD(BlockManager, get_frist_meta_block, block_id_t)
     VMETHOD(BlockManager, write_header, void, DatabaseHeader)
     VMETHOD(BlockManager, destroy, void)
     ,
@@ -244,7 +248,10 @@ void metaBlockReader_destroy(MetaBlockReader* reader);
     })
 
 #define DESERIALIZER_READ_U32(dr_ptr) DESERIALIZER_READ_TYPE(dr_ptr, (data_ptr_t) & _tmp, u32)
-
+#define DESERIALIZER_READ_U8(dr_ptr)  DESERIALIZER_READ_TYPE(dr_ptr, (data_ptr_t) & _tmp, u8)
+#define DESERIALIZER_READ_U16(dr_ptr) DESERIALIZER_READ_TYPE(dr_ptr, (data_ptr_t) & _tmp, u16)
+#define DESERIALIZER_READ_F32(dr_ptr) DESERIALIZER_READ_TYPE(dr_ptr, (data_ptr_t) & _tmp, f32)
+#define DESERIALIZER_READ_F64(dr_ptr) DESERIALIZER_READ_TYPE(dr_ptr, (data_ptr_t) & _tmp, f64)
 #define DESERIALIZER_READ_U64(dr_ptr) DESERIALIZER_READ_TYPE(dr_ptr, (data_ptr_t) & _tmp, u64)
 
 #define DESERIALIZER_READ_STRING(dr_ptr)                                   \
@@ -292,8 +299,20 @@ void metaBlockWriter_write_data(MetaBlockWriter* self, data_ptr_t buffer, usize 
 
 #define SERIALIZER_WRITE_TYPE(sw_ptr, buffer, type) SERIALIZER_WRITE(sw_ptr, buffer, sizeof(type))
 
+#define SERIALIZER_WRITE_F32(sw_ptr, value) \
+    SERIALIZER_WRITE_TYPE(sw_ptr, (data_ptr_t) & (f32){value}, f32)
+
+#define SERIALIZER_WRITE_F64(sw_ptr, value) \
+    SERIALIZER_WRITE_TYPE(sw_ptr, (data_ptr_t) & (f64){value}, f64)
+
+#define SERIALIZER_WRITE_U64(sw_ptr, value) \
+    SERIALIZER_WRITE_TYPE(sw_ptr, (data_ptr_t) & (u64){value}, u64)
+
 #define SERIALIZER_WRITE_U32(sw_ptr, value) \
-    SERIALIZER_WRITE(sw_ptr, (data_ptr_t) & (u32){value}, sizeof(u32))
+    SERIALIZER_WRITE_TYPE(sw_ptr, (data_ptr_t) & (u32){value}, u32)
+
+#define SERIALIZER_WRITE_U8(sw_ptr, value) \
+    SERIALIZER_WRITE_TYPE(sw_ptr, (data_ptr_t) & (u8){value}, u8)
 
 #define SERIALIZER_WRITE_STRING(sw_ptr, str)                           \
     do {                                                               \
@@ -302,7 +321,7 @@ void metaBlockWriter_write_data(MetaBlockWriter* self, data_ptr_t buffer, usize 
         SERIALIZER_WRITE(sw_ptr, (data_ptr_t)(str), _str_len);         \
     } while (0)
 
-typedef struct
+typedef struct StorageManager
 {
     BlockManager* block_manager; // 块管理器指针
     WALManager* wal_manager; // WAL 管理器指针
@@ -310,13 +329,54 @@ typedef struct
 
 typedef struct
 {
-    BlockManager* block_manager; // 块管理器指针
+    BlockManager* block_manager; // 存储管理器指针
     Catalog* catalog; // 目录指针
     MetaBlockWriter* meta_block_writer; // 元数据块写入器指针
+    MetaBlockWriter* tabledata_writer; // 元数据块读取器指针
 } CheckpointManager;
 
-void destory_single_manager(SingleFileBlockManager* manager);
+CheckpointManager* CheckpointManager_create(BlockManager* block_manager, Catalog* catalog);
 void checkpointManager_createpoint(CheckpointManager* self);
 void checkpointManager_loadfromstorage(CheckpointManager* self);
+
+typedef struct
+{
+    EXTENDS(Serializer); // 继承
+    CheckpointManager* manager;  // 检查点管理器指针
+    TableCatalogEntry* table;  // 表目录项指针
+    Vector blocks; // 块 ID 向量  vector<unique_ptr<Block>>
+    Vector offsets; // 偏移量向量 vector<usize>
+    Vector tuple_counts; // 元组数量向量 vector<usize>
+    Vector row_numbers; // 行号向量 vector<usize>
+    Vector indexes; // 索引偏移量向量 vector<usize>
+    Vector data_pointers;// vector<vector<DataPointer>> data_pointers;
+} TableDataWriter;
+
+typedef struct
+{
+    f64 min; // 指向数据的最小偏移量
+    f64 max; // 指向数据的最大偏移量
+    u64 row_start; // 指向数据的行号开始偏移量
+    u64 tuple_count; // 指向数据的行号结束偏移量
+    block_id_t block_id; // 指向数据的块 ID
+    u32 offset;// 指向数据的偏移量
+} DataPointer;
+
+typedef struct
+{
+    CheckpointManager* manager;  // 管理器指针
+    TableCatalogEntry* table;  // 表目录项指针
+    MetaBlockReader* reader;  // 元数据读取器指针
+    Vector blocks; // 块 ID 向量  vector<unique_ptr<Block>>
+    Vector offsets; // 偏移量向量 vector<usize>
+    Vector tuple_counts; // 元组数量向量 vector<usize>
+    Vector row_numbers; // 行号向量 vector<usize>
+    // 每一列的数据在磁盘上被拆分成多个 Block 存储，data_pointers[col]
+    // 记录了该列所有 Block 的元信息（block_id、offset、tuple_count 等）。indexes[col]
+    // 就是指向这个数组的当前读取位置
+    // 记录列 col 下一个待读取的数据块在 data_pointers[col] 中的下标
+    Vector indexes; // 索引偏移量向量 vector<usize>
+    Vector data_pointers; // vector<vector<DataPointer>> data_pointers;
+} TableDataReader;
 
 #endif  // STORAGE_H

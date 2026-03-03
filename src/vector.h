@@ -81,7 +81,8 @@ int Vector_init(Vector* vec, usize element_size, usize initial_capacity);
  * @param initial_capacity 初始容量，如果为0则使用默认容量
  * @return Vector* 新创建的Vector指针，失败返回NULL
  */
-Vector* Vector_create(usize element_size, usize initial_capacity);
+Vector* vector_create(usize element_size, usize initial_capacity);
+#define Vector_create vector_create
 
 /**
  * @brief 销毁Vector并释放所有资源
@@ -283,6 +284,7 @@ void* vector_iter_get(VectorIterator* iter);
 
 // 类型安全的宏辅助（可选）
 #define VECTOR_GET(vec, index, type) ((type*)vector_get(vec, index))
+#define VECTOR_AT(vec, index, type)  (*VECTOR_GET(vec, index, type))
 
 #define VECTOR_FRONT(vec, type)      ((type*)vector_front(vec))
 

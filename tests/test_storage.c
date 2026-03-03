@@ -70,7 +70,7 @@ static Block* mock_create_block(BlockManager* self) {
     Block* b = (Block*)malloc(sizeof(Block));
     if (!b) return NULL;
     b->id = id;
-    b->fb = fileBuffer_create(BLOCK_SIZE);
+    b->fb = FileBuffer_create(BLOCK_SIZE);
     if (!b->fb) { free(b); return NULL; }
     return b;
 }
@@ -114,8 +114,8 @@ static void manual_flush(MetaBlockWriter* w) {
 
 void test_filebuffer_create(void) {
     printf("\n--- test_filebuffer_create ---\n");
-    FileBuffer* fb = fileBuffer_create(4096);
-    ASSERT_NOT_NULL(fb, "fileBuffer_create(4096) non-NULL");
+    FileBuffer* fb = FileBuffer_create(4096);
+    ASSERT_NOT_NULL(fb, "FileBuffer_create(4096) non-NULL");
     if (!fb) return;
     ASSERT_NOT_NULL(fb->internal_buf, "internal_buf set");
     ASSERT_NOT_NULL(fb->buffer, "buffer set");
@@ -130,8 +130,8 @@ void test_filebuffer_create(void) {
 
 void test_filebuffer_block_size(void) {
     printf("\n--- test_filebuffer_block_size ---\n");
-    FileBuffer* fb = fileBuffer_create(BLOCK_SIZE);
-    ASSERT_NOT_NULL(fb, "fileBuffer_create(BLOCK_SIZE) non-NULL");
+    FileBuffer* fb = FileBuffer_create(BLOCK_SIZE);
+    ASSERT_NOT_NULL(fb, "FileBuffer_create(BLOCK_SIZE) non-NULL");
     if (!fb) return;
     ASSERT_EQ_U64(fb->internal_size, BLOCK_SIZE, "internal_size == BLOCK_SIZE");
     ASSERT_EQ_U64(fb->size, BLOCK_SIZE - (usize)FILE_BUFFER_HEADER_SIZE,
@@ -141,7 +141,7 @@ void test_filebuffer_block_size(void) {
 
 void test_filebuffer_clear(void) {
     printf("\n--- test_filebuffer_clear ---\n");
-    FileBuffer* fb = fileBuffer_create(4096);
+    FileBuffer* fb = FileBuffer_create(4096);
     ASSERT_NOT_NULL(fb, "buffer created");
     if (!fb) return;
     memset(fb->buffer, 0xAA, fb->size);
@@ -250,7 +250,7 @@ void test_meta_reader_init(void) {
     memset(&reader, 0, sizeof(reader));
     reader.manager = (BlockManager*)mock;
     reader.block = (Block*)malloc(sizeof(Block));
-    reader.block->fb = fileBuffer_create(BLOCK_SIZE);
+    reader.block->fb = FileBuffer_create(BLOCK_SIZE);
     reader.block->id = 1;
     VCALL(reader.manager, read, reader.block);
     reader.next_block_id = *((block_id_t*)reader.block->fb->buffer);
@@ -282,7 +282,7 @@ void test_meta_reader_read_data(void) {
     reader.manager = (BlockManager*)mock;
     reader.block = (Block*)malloc(sizeof(Block));
     reader.block->id = 0;
-    reader.block->fb = fileBuffer_create(BLOCK_SIZE);
+    reader.block->fb = FileBuffer_create(BLOCK_SIZE);
     VCALL(reader.manager, read, reader.block);
     reader.next_block_id = *((block_id_t*)reader.block->fb->buffer);
     reader.offset = sizeof(block_id_t);
@@ -320,7 +320,7 @@ void test_meta_roundtrip(void) {
     reader.manager = (BlockManager*)mock;
     reader.block = (Block*)malloc(sizeof(Block));
     reader.block->id = write_bid;
-    reader.block->fb = fileBuffer_create(BLOCK_SIZE);
+    reader.block->fb = FileBuffer_create(BLOCK_SIZE);
     VCALL(reader.manager, read, reader.block);
     reader.next_block_id = *((block_id_t*)reader.block->fb->buffer);
     reader.offset = sizeof(block_id_t);

@@ -23,16 +23,7 @@ typedef u64 idx_t;
 typedef int16 i16;
 typedef uint16 u16;
 
-// internal types
-typedef enum
-{
-    TYPE_INT32 = 0,
-    TYPE_INT64 = 1,
-    TYPE_FLOAT32 = 2,
-    TYPE_FLOAT64 = 3,
-} TypeID;
-
-usize get_typeid_size(TypeID type);
+typedef u64 Oid;
 
 /**
  * MAKE(type, init_fn, ...) - 零初始化 + 调用 init 函数，返回结构体值
