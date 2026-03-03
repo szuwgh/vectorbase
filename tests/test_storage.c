@@ -363,7 +363,7 @@ void test_create_new_database(void) {
     ASSERT_NOT_NULL(mgr->header_buffer, "header_buffer set");
     ASSERT_EQ_U64(mgr->active_header, 1, "active_header == 1 (new db)");
     ASSERT_EQ_U64(mgr->max_block, 0, "max_block == 0");
-    ASSERT_EQ_U64(mgr->iteration_count, 0, "iteration_count == 0");
+    ASSERT_EQ_U64(mgr->iteration_count, 1, "iteration_count == 1 (H2 written with iter=1)");
     ASSERT_EQ_U64(mgr->used_blocks.size, 0, "used_blocks empty");
     ASSERT_EQ_U64(mgr->free_list.size, 0, "free_list empty");
 

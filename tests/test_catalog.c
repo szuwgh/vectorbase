@@ -920,28 +920,28 @@ void test_create_table_basic(void)
         FAIL("Column 2 incorrect");
 
     // Verify DataTable storage was created
-    if (tbl->storage != NULL)
-        PASS("tbl->storage (DataTable) is non-NULL");
+    if (tbl->datatable != NULL)
+        PASS("tbl->datatable (DataTable) is non-NULL");
     else
-        FAIL("tbl->storage should be non-NULL");
+        FAIL("tbl->datatable should be non-NULL");
 
-    if (tbl->storage && tbl->storage->column_count == 3)
+    if (tbl->datatable && tbl->datatable->column_count == 3)
         PASS("DataTable column_count == 3");
     else
         FAIL("DataTable column_count mismatch");
 
     // Verify internal TypeID mapping: BIGINT->INT64, FLOAT->FLOAT32, INTEGER->INT32
-    if (tbl->storage && tbl->storage->column_types[0] == TYPE_INT64)
+    if (tbl->datatable && tbl->datatable->column_types[0] == TYPE_INT64)
         PASS("DataTable col 0: BIGINT -> TYPE_INT64");
     else
         FAIL("DataTable col 0 type mismatch");
 
-    if (tbl->storage && tbl->storage->column_types[1] == TYPE_FLOAT32)
+    if (tbl->datatable && tbl->datatable->column_types[1] == TYPE_FLOAT32)
         PASS("DataTable col 1: FLOAT -> TYPE_FLOAT32");
     else
         FAIL("DataTable col 1 type mismatch");
 
-    if (tbl->storage && tbl->storage->column_types[2] == TYPE_INT32)
+    if (tbl->datatable && tbl->datatable->column_types[2] == TYPE_INT32)
         PASS("DataTable col 2: INTEGER -> TYPE_INT32");
     else
         FAIL("DataTable col 2 type mismatch");
@@ -1229,11 +1229,11 @@ void test_create_table_all_column_types(void)
     bool tid_ok = true;
     for (int i = 0; i < 6; i++)
     {
-        if (tbl->storage->column_types[i] != exp_tid[i])
+        if (tbl->datatable->column_types[i] != exp_tid[i])
         {
             tid_ok = false;
             FAIL("DataTable col %d: expected TypeID %d, got %d",
-                 i, exp_tid[i], tbl->storage->column_types[i]);
+                 i, exp_tid[i], tbl->datatable->column_types[i]);
             break;
         }
     }
@@ -1271,7 +1271,7 @@ void test_create_table_single_column(void)
     else
         FAIL("Single column verification failed");
 
-    if (tbl && tbl->storage && tbl->storage->column_types[0] == TYPE_FLOAT64)
+    if (tbl && tbl->datatable && tbl->datatable->column_types[0] == TYPE_FLOAT64)
         PASS("DataTable TypeID: DOUBLE -> TYPE_FLOAT64");
     else
         FAIL("DataTable TypeID mismatch");
@@ -1437,37 +1437,43 @@ void test_create_table_append_scan(void)
     catalog_create_table(catalog, &ti);
 
     TableCatalogEntry* tbl = catalog_get_table(catalog, "test", "scores");
-    if (!tbl || !tbl->storage)
+    if (!tbl || !tbl->datatable)
     {
-        FAIL("Table or storage is NULL");
+        FAIL("Table or datatable is NULL");
         catalog_destroy(catalog);
         return;
     }
 
-    DataTable* dt = tbl->storage;
+    DataTable* dt = tbl->datatable;
 
     // Append 5 rows
     const i64 ids[] = {10, 20, 30, 40, 50};
     const f64 scores[] = {1.5, 2.5, 3.5, 4.5, 5.5};
 
     DataChunk chunk;
-    DataChunk_init(&chunk, 2);
-    chunk.columns[0] = (ColumnVector){TYPE_INT64, 5, (data_ptr_t)ids};
-    chunk.columns[1] = (ColumnVector){TYPE_FLOAT64, 5, (data_ptr_t)scores};
+    Vector chunk_types = VEC(TypeID, 2);
+    TypeID t_i64 = TYPE_INT64;
+    TypeID t_f64 = TYPE_FLOAT64;
+    vector_push_back(&chunk_types, &t_i64);
+    vector_push_back(&chunk_types, &t_f64);
+    DataChunk_init(&chunk, chunk_types);
+    memcpy(chunk.columns[0].data, ids, 5 * sizeof(i64));
+    memcpy(chunk.columns[1].data, scores, 5 * sizeof(f64));
+    chunk.columns[0].count = 5;
+    chunk.columns[1].count = 5;
     datatable_append(dt, &chunk);
-    free(chunk.columns);
+    dataChunk_deinit(&chunk);
+    vector_deinit(&chunk_types);
     PASS("Appended 5 rows via DataTable storage");
 
     // Scan back
     ScanState state;
     datatable_init_scan(dt, &state);
 
-    DataChunk output;
-    DataChunk_init(&output, 2);
-    usize esz0 = get_typeid_size(TYPE_INT64);
-    usize esz1 = get_typeid_size(TYPE_FLOAT64);
-    output.columns[0] = (ColumnVector){TYPE_INT64, 0, malloc(STORAGE_CHUNK_SIZE * esz0)};
-    output.columns[1] = (ColumnVector){TYPE_FLOAT64, 0, malloc(STORAGE_CHUNK_SIZE * esz1)};
+    Vector out_types = VEC(TypeID, 2);
+    vector_push_back(&out_types, &t_i64);
+    vector_push_back(&out_types, &t_f64);
+    DataChunk output = MAKE(DataChunk, out_types);
 
     usize proj[] = {0, 1};
     bool got_data = datatable_scan(dt, &state, &output, proj, 2);
@@ -1491,9 +1497,8 @@ void test_create_table_append_scan(void)
     }
     if (vals_ok) PASS("All 5 rows data correct");
 
-    free(output.columns[0].data);
-    free(output.columns[1].data);
-    free(output.columns);
+    dataChunk_deinit(&output);
+    vector_deinit(&out_types);
     scanstate_deinit(&state);
     catalog_destroy(catalog);
 }
@@ -1532,7 +1537,7 @@ void test_create_table_type_mapping(void)
         };
         catalog_create_table(catalog, &ti);
         TableCatalogEntry* tbl = catalog_get_table(catalog, "map", tname);
-        if (!tbl || !tbl->storage || tbl->storage->column_types[0] != cases[i].expected)
+        if (!tbl || !tbl->datatable || tbl->datatable->column_types[0] != cases[i].expected)
         {
             all_ok = false;
             FAIL("Type mapping failed: %s", cases[i].label);

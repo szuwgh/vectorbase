@@ -361,7 +361,7 @@ void metaBlockWriter_write_data(MetaBlockWriter* writer, data_ptr_t buffer, usiz
     writer->offset = offset;
 }
 
-static void destory_single_manager(SingleFileBlockManager* manager)
+void destory_single_manager(SingleFileBlockManager* manager)
 {
     if (!manager)
     {
@@ -518,6 +518,7 @@ static void single_file_block_manager_write_header(BlockManager* self, DatabaseH
                      manager->active_header == 1 ? HEADER_SIZE : HEADER_SIZE * 2);
                      // 写入 H2 时，偏移量为 HEADER_SIZE * 2
     manager->active_header = 1 - manager->active_header;// 切换到 H2
+    manager->meta_block = header.meta_block;
     fileHandle_sync(manager->file_handle);
     vector_deinit(&manager->free_list);
     manager->free_list = manager->used_blocks;
@@ -922,8 +923,6 @@ void checkpointManager_createpoint(CheckpointManager* self)
     self->meta_block_writer = NULL;
     self->tabledata_writer = NULL;
 
-    SingleFileBlockManager* sfbm = (SingleFileBlockManager*)block_manager;
-    sfbm->meta_block = meta_block;
     DatabaseHeader header;
     header.meta_block = meta_block;
     VCALL(block_manager, write_header, header);
@@ -968,8 +967,7 @@ static void tableDataReader_read_data_pointers(TableDataReader* self)
     for (usize i = 0; i < self->table->column_count; i++)
     {
         u64 dp_count = DESERIALIZER_READ_U64(self->reader);
-        Vector dp_list;
-        Vector_init(&dp_list, sizeof(DataPointer), dp_count);
+        Vector dp_list = VEC(DataPointer, dp_count);
         for (u64 j = 0; j < dp_count; j++)
         {
             DataPointer dp;
@@ -1039,7 +1037,7 @@ static void tableDataReader_read_table(TableDataReader* self)
                 usize idx = VECTOR_AT(&self->indexes, col, usize);
                 if (idx == 0) break;
                 Vector* dp_list = VECTOR_GET(&self->data_pointers, col, Vector);
-                DataPointer* dp = vector_get(dp_list, idx - 1);
+                DataPointer* dp = VECTOR_GET(dp_list, idx - 1, DataPointer);
                 usize tc = VECTOR_AT(&self->tuple_counts, col, usize);
                 // 计算当前块中剩余的元组数量
                 usize remaining_in_block = dp->tuple_count - tc;
