@@ -339,6 +339,14 @@ CheckpointManager* CheckpointManager_create(BlockManager* block_manager, Catalog
 void checkpointManager_createpoint(CheckpointManager* self);
 void checkpointManager_loadfromstorage(CheckpointManager* self);
 
+MetaBlockWriter* MetaBlockWriter_create(BlockManager* manager);
+void metaBlockWriter_flush(MetaBlockWriter* writer);
+void metaBlockWriter_destroy(MetaBlockWriter* writer);
+void MetaBlockReader_init(MetaBlockReader* reader, BlockManager* manager, block_id_t block_id);
+void metaBlockReader_deinit(MetaBlockReader* reader);
+void checkpointManager_write_table(CheckpointManager* self, TableCatalogEntry* entry);
+void checkpointManager_read_table(CheckpointManager* self, MetaBlockReader* reader);
+
 typedef struct
 {
     EXTENDS(Serializer); // 继承

@@ -62,3 +62,6 @@ libvectorbase/
 compile_commands.json
 .cache/
 .vscode/
+research.md
+.claude
+tmp/

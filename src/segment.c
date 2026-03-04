@@ -30,6 +30,20 @@ void SegmentTree_deinit(SegmentTree* tree, void (*node_destroy)(SegmentBase*))
     tree->root_node = NULL;
 }
 
+ColumnSegment* ColumnSegment_create1(BlockManager* manager, block_id_t block_id, usize offset,
+                                     usize count)
+{
+    ColumnSegment* segment = malloc(sizeof(ColumnSegment));
+    segment->base.start = 0;
+    segment->base.count = count;
+    segment->base.next = NULL;
+    segment->block_id = block_id;
+    segment->byte_offset = offset;
+    segment->block_manager = manager;
+    segment->block = NULL; /* lazy loaded via segment_get_data */
+    return segment;
+}
+
 ColumnSegment* ColumnSegment_create2(usize start)
 {
     ColumnSegment* segment = malloc(sizeof(ColumnSegment));

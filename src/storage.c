@@ -222,7 +222,7 @@ static void metaBlockReader_read_new_block(MetaBlockReader* reader, block_id_t b
     reader->offset = sizeof(block_id_t);
 }
 
-static void MetaBlockReader_init(MetaBlockReader* reader, BlockManager* manager,
+void MetaBlockReader_init(MetaBlockReader* reader, BlockManager* manager,
                                  block_id_t block_id)
 {
     reader->manager = manager;
@@ -291,7 +291,7 @@ MetaBlockWriter* MetaBlockWriter_create(BlockManager* manager)
     return writer;
 }
 
-static void metaBlockWriter_flush(MetaBlockWriter* writer)
+void metaBlockWriter_flush(MetaBlockWriter* writer)
 {
     // flush the block to disk
     Block* block = writer->block;
@@ -319,7 +319,7 @@ static void metaBlockWriter_deinit(MetaBlockWriter* writer)
     }
 }
 
-static void metaBlockWriter_destroy(MetaBlockWriter* writer)
+void metaBlockWriter_destroy(MetaBlockWriter* writer)
 {
     if (!writer)
     {
@@ -857,7 +857,7 @@ static void tableDataWriter_write_data(TableDataWriter* self)
 //       → metadata_writer 链 (Schema 定义 + Table 定义 + td_block/td_offset)
 //           → tabledata_writer 链 (每列的 DataPointer 索引数组)
 //               → DataPointer.block_id → 实际列数据 Block (256KB 原始数据)
-static void checkpointManager_write_table(CheckpointManager* self, TableCatalogEntry* entry)
+void checkpointManager_write_table(CheckpointManager* self, TableCatalogEntry* entry)
 {
     checkpointManager_write_table_catalog(self, entry);
     // 写入 td_block_id
@@ -1070,7 +1070,7 @@ static void tableDataReader_read_table(TableDataReader* self)
     vector_deinit(&types);
 }
 
-static void checkpointManager_read_table(CheckpointManager* self, MetaBlockReader* reader)
+void checkpointManager_read_table(CheckpointManager* self, MetaBlockReader* reader)
 {
     CreateTableInfo info;
     createTableInfo_deserialize(&info, reader);
