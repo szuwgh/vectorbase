@@ -1,5 +1,5 @@
-#ifndef VECTORBASE_H
-#define VECTORBASE_H
+#ifndef DB_H
+#define DB_H
 #include "storage.h"
 #include "catalog.h"
 
@@ -7,6 +7,6 @@ typedef struct
 {
     StorageManager *storage_manager;
     Catalog *catalog;
-} VectorBase;
+} DB;
 
 #endif // VECTORBASE_H
