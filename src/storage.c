@@ -222,8 +222,7 @@ static void metaBlockReader_read_new_block(MetaBlockReader* reader, block_id_t b
     reader->offset = sizeof(block_id_t);
 }
 
-void MetaBlockReader_init(MetaBlockReader* reader, BlockManager* manager,
-                                 block_id_t block_id)
+void MetaBlockReader_init(MetaBlockReader* reader, BlockManager* manager, block_id_t block_id)
 {
     reader->manager = manager;
     reader->block = (Block*)malloc(sizeof(Block));
@@ -700,6 +699,17 @@ static void checkpointManager_write_table_catalog(CheckpointManager* self, Table
         SERIALIZER_WRITE_STRING(self->meta_block_writer, entry->columns[i].name);
         // 写入列类型
         SERIALIZER_WRITE_U8(self->meta_block_writer, entry->columns[i].type);
+
+        switch (entry->columns[i].type)
+        {
+            case SQLT_VECTOR:
+                // 写入向量维度
+                // 根据类型写入额外 options
+                SERIALIZER_WRITE_I16(self->meta_block_writer, entry->columns[i].options.vector.dim);
+                break;
+            default:
+                break;
+        }
     }
 }
 
@@ -771,12 +781,12 @@ static void TableDataWriter_flush_if_full(TableDataWriter* self, usize col, usiz
 static void tableDataWriter_writecolumndata(TableDataWriter* self, DataChunk* chunk,
                                             usize column_index)
 {
-    TypeID type = chunk->columns[column_index].type;
+    TypeID type = chunk->arrays[column_index].type;
     usize size = get_typeid_size(type) * dataChunk_size(chunk);
     TableDataWriter_flush_if_full(self, column_index, size);
     data_ptr_t ptr = VECTOR_AT(&self->blocks, column_index, Block*)->fb->buffer +
                      VECTOR_AT(&self->offsets, column_index, usize);
-    ColumnVector source = chunk->columns[column_index];
+    VectorBase source = chunk->arrays[column_index];
     copy_to_storage(&source, ptr, 0, source.count);
 
     usize new_offset = VECTOR_AT(&self->offsets, column_index, usize) + size;
@@ -837,9 +847,9 @@ static void tableDataWriter_write_data(TableDataWriter* self)
 
          // 每次返回最多 STANDARD_VECTOR_SIZE
         if (dataChunk_size(&chunk) == 0) break;
-        for (usize i = 0; i < chunk.column_count; i++)
+        for (usize i = 0; i < chunk.count; i++)
         {
-            assert(chunk.columns[i].type == get_internal_type(self->table->columns[i].type));
+            assert(chunk.arrays[i].type == get_internal_type(self->table->columns[i].type));
             tableDataWriter_writecolumndata(self, &chunk, i);
         }
     }
@@ -1052,7 +1062,7 @@ static void tableDataReader_read_table(TableDataReader* self)
                 usize off = VECTOR_AT(&self->offsets, col, usize);
                 Block* blk = VECTOR_AT(&self->blocks, col, Block*);
                 data_ptr_t src = blk->fb->buffer + off;
-                data_ptr_t dst = chunk.columns[col].data + filled * type_size;
+                data_ptr_t dst = chunk.arrays[col].data + filled * type_size;
                 memcpy(dst, src, to_read * type_size);
                 filled += to_read;
                 usize new_off = off + to_read * type_size;
@@ -1060,11 +1070,11 @@ static void tableDataReader_read_table(TableDataReader* self)
                 usize new_tc = tc + to_read;
                 vector_set(&self->tuple_counts, col, &new_tc);
             }
-            chunk.columns[col].type = type;
-            chunk.columns[col].count = filled;
+            chunk.arrays[col].type = type;
+            chunk.arrays[col].count = filled;
         }
         if (dataChunk_size(&chunk) == 0) break;
-        datatable_append(self->table->datatable, &chunk);
+        datatable_append_column(self->table->datatable, &chunk);
     }
     dataChunk_deinit(&chunk);
     vector_deinit(&types);

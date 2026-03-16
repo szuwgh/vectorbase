@@ -12,7 +12,7 @@
  *   H. datatable_scan — column projection
  *   I. datatable_scan — ColumnSegment boundary crossing
  *   J. datatable_scan — re-scan / exhaustion / multiple passes
- *   K. DataChunk / ColumnVector helpers
+ *   K. DataChunk / VectorBase helpers
  *   L. Combined append + scan workflows
  *
  * Key constants:
@@ -31,14 +31,14 @@
 #include "../src/vector.h"
 #include "../src/types.h"
 
-/* Compatibility wrapper: old API DataChunk_init_compat(&chunk, col_count) used TYPE_INT32 placeholders.
- * The new API requires a Vector of TypeID. This wrapper preserves the old call-site semantics. */
+/* Compatibility wrapper: old API DataChunk_init_compat(&chunk, col_count) used TYPE_INT32
+ * placeholders. The new API requires a Vector of TypeID. This wrapper preserves the old call-site
+ * semantics. */
 static void DataChunk_init_compat(DataChunk* chunk, usize col_count)
 {
     Vector types = VEC(TypeID, col_count);
     TypeID placeholder = TYPE_INT32;
-    for (usize i = 0; i < col_count; i++)
-        vector_push_back(&types, &placeholder);
+    for (usize i = 0; i < col_count; i++) vector_push_back(&types, &placeholder);
     DataChunk_init(chunk, types);
     vector_deinit(&types);
 }
@@ -179,7 +179,7 @@ static void test_append_empty_chunk(void)
 
     DataChunk empty;
     DataChunk_init_compat(&empty, 1);
-    empty.columns[0] = (ColumnVector){.type = TYPE_INT32, .count = 0, .data = NULL};
+    empty.columns[0] = (VectorBase){.type = TYPE_INT32, .count = 0, .data = NULL};
     datatable_append(table, &empty);
 
     RowSegment* root = (RowSegment*)segmentTree_get_root_segment(&table->row_storage_tree);
@@ -201,7 +201,7 @@ static void test_append_single_row(void)
     i32 val = 42;
     i32* buf = malloc(sizeof(i32));
     buf[0] = val;
-    chunk.columns[0] = (ColumnVector){.type = TYPE_INT32, .count = 1, .data = (data_ptr_t)buf};
+    chunk.arrays[0] = (VectorBase){.type = TYPE_INT32, .count = 1, .data = (data_ptr_t)buf};
 
     datatable_append(table, &chunk);
 
@@ -235,8 +235,8 @@ static void test_append_exact_chunk_size(void)
 
     DataChunk chunk;
     DataChunk_init_compat(&chunk, 1);
-    chunk.columns[0] =
-        (ColumnVector){.type = TYPE_INT32, .count = STORAGE_CHUNK_SIZE, .data = (data_ptr_t)data};
+    chunk.arrays[0] =
+        (VectorBase){.type = TYPE_INT32, .count = STORAGE_CHUNK_SIZE, .data = (data_ptr_t)data};
     datatable_append(table, &chunk);
 
     RowSegment* root = (RowSegment*)segmentTree_get_root_segment(&table->row_storage_tree);
@@ -273,7 +273,7 @@ static void test_append_chunk_plus_one(void)
 
     DataChunk chunk;
     DataChunk_init_compat(&chunk, 1);
-    chunk.columns[0] = (ColumnVector){.type = TYPE_INT32, .count = N, .data = (data_ptr_t)data};
+    chunk.arrays[0] = (VectorBase){.type = TYPE_INT32, .count = N, .data = (data_ptr_t)data};
     datatable_append(table, &chunk);
 
     RowSegment* r0 = (RowSegment*)segmentTree_get_root_segment(&table->row_storage_tree);
@@ -319,7 +319,7 @@ static void test_append_multi_small_within_chunk(void)
         }
         DataChunk c;
         DataChunk_init_compat(&c, 1);
-        c.columns[0] = (ColumnVector){.type = TYPE_INT32, .count = 40, .data = (data_ptr_t)buf};
+        c.columns[0] = (VectorBase){.type = TYPE_INT32, .count = 40, .data = (data_ptr_t)buf};
         datatable_append(table, &c);
         free(buf);
         free(c.columns);
@@ -357,7 +357,7 @@ static void test_append_cross_row_segment_boundary(void)
         }
         DataChunk c;
         DataChunk_init_compat(&c, 1);
-        c.columns[0] = (ColumnVector){.type = TYPE_INT64, .count = 200, .data = (data_ptr_t)buf};
+        c.columns[0] = (VectorBase){.type = TYPE_INT64, .count = 200, .data = (data_ptr_t)buf};
         datatable_append(table, &c);
         free(buf);
         free(c.columns);
@@ -395,7 +395,7 @@ static void test_append_one_by_one(void)
         buf[0] = val;
         DataChunk c;
         DataChunk_init_compat(&c, 1);
-        c.columns[0] = (ColumnVector){.type = TYPE_INT32, .count = 1, .data = (data_ptr_t)buf};
+        c.columns[0] = (VectorBase){.type = TYPE_INT32, .count = 1, .data = (data_ptr_t)buf};
         datatable_append(table, &c);
         free(buf);
         free(c.columns);
@@ -436,7 +436,7 @@ static void test_append_exact_multiple_chunks(void)
         }
         DataChunk c;
         DataChunk_init_compat(&c, 1);
-        c.columns[0] = (ColumnVector){.type = TYPE_INT32, .count = N, .data = (data_ptr_t)buf};
+        c.columns[0] = (VectorBase){.type = TYPE_INT32, .count = N, .data = (data_ptr_t)buf};
         datatable_append(table, &c);
         free(buf);
         free(c.columns);
@@ -481,7 +481,7 @@ static void test_append_cross_column_segment_i64(void)
 
     DataChunk c;
     DataChunk_init_compat(&c, 1);
-    c.columns[0] = (ColumnVector){.type = TYPE_INT64, .count = N, .data = (data_ptr_t)data};
+    c.columns[0] = (VectorBase){.type = TYPE_INT64, .count = N, .data = (data_ptr_t)data};
     datatable_append(table, &c);
 
     /* verify that ColumnSegment chain has >1 segment */
@@ -521,7 +521,7 @@ static void test_append_cross_column_segment_i32(void)
 
     DataChunk c;
     DataChunk_init_compat(&c, 1);
-    c.columns[0] = (ColumnVector){.type = TYPE_INT32, .count = N, .data = (data_ptr_t)data};
+    c.columns[0] = (VectorBase){.type = TYPE_INT32, .count = N, .data = (data_ptr_t)data};
     datatable_append(table, &c);
 
     ColumnSegment* cs0 =
@@ -581,7 +581,7 @@ static void test_scan_single_row(void)
     buf[0] = 999999LL;
     DataChunk c;
     DataChunk_init_compat(&c, 1);
-    c.columns[0] = (ColumnVector){.type = TYPE_INT64, .count = 1, .data = (data_ptr_t)buf};
+    c.columns[0] = (VectorBase){.type = TYPE_INT64, .count = 1, .data = (data_ptr_t)buf};
     datatable_append(table, &c);
 
     ScanState st;
@@ -621,7 +621,7 @@ static void test_scan_exact_one_batch(void)
     DataChunk c;
     DataChunk_init_compat(&c, 1);
     c.columns[0] =
-        (ColumnVector){.type = TYPE_INT32, .count = STORAGE_CHUNK_SIZE, .data = (data_ptr_t)data};
+        (VectorBase){.type = TYPE_INT32, .count = STORAGE_CHUNK_SIZE, .data = (data_ptr_t)data};
     datatable_append(table, &c);
 
     ScanState st;
@@ -657,7 +657,7 @@ static void test_scan_batch_sizes(void)
     for (usize i = 0; i < N; i++) data[i] = (i32)i;
     DataChunk c;
     DataChunk_init_compat(&c, 1);
-    c.columns[0] = (ColumnVector){.type = TYPE_INT32, .count = N, .data = (data_ptr_t)data};
+    c.columns[0] = (VectorBase){.type = TYPE_INT32, .count = N, .data = (data_ptr_t)data};
     datatable_append(table, &c);
 
     ScanState st;
@@ -672,12 +672,10 @@ static void test_scan_batch_sizes(void)
     usize total_rows = 0;
     while (datatable_scan(table, &st, &out, ids, 1))
     {
-        usize expected_size = (total_rows + STANDARD_VECTOR_SIZE <= N)
-                                  ? STANDARD_VECTOR_SIZE
-                                  : (N - total_rows);
+        usize expected_size =
+            (total_rows + STANDARD_VECTOR_SIZE <= N) ? STANDARD_VECTOR_SIZE : (N - total_rows);
         char msg[80];
-        snprintf(msg, sizeof(msg), "batch %d size == %lu", batches,
-                 (unsigned long)expected_size);
+        snprintf(msg, sizeof(msg), "batch %d size == %lu", batches, (unsigned long)expected_size);
         ASSERT_EQ_U64(out.columns[0].count, expected_size, msg);
         total_rows += out.columns[0].count;
         batches++;
@@ -706,7 +704,7 @@ static void test_scan_type_int32(void)
     for (usize i = 0; i < N; i++) data[i] = (i32)(i - 50);
     DataChunk c;
     DataChunk_init_compat(&c, 1);
-    c.columns[0] = (ColumnVector){.type = TYPE_INT32, .count = N, .data = (data_ptr_t)data};
+    c.columns[0] = (VectorBase){.type = TYPE_INT32, .count = N, .data = (data_ptr_t)data};
     datatable_append(table, &c);
 
     usize ids[] = {0};
@@ -732,7 +730,7 @@ static void test_scan_type_int64(void)
     for (usize i = 0; i < N; i++) data[i] = (i64)i * 100000LL;
     DataChunk c;
     DataChunk_init_compat(&c, 1);
-    c.columns[0] = (ColumnVector){.type = TYPE_INT64, .count = N, .data = (data_ptr_t)data};
+    c.columns[0] = (VectorBase){.type = TYPE_INT64, .count = N, .data = (data_ptr_t)data};
     datatable_append(table, &c);
 
     usize ids[] = {0};
@@ -758,7 +756,7 @@ static void test_scan_type_float32(void)
     for (usize i = 0; i < N; i++) data[i] = (f32)i * 0.123f;
     DataChunk c;
     DataChunk_init_compat(&c, 1);
-    c.columns[0] = (ColumnVector){.type = TYPE_FLOAT32, .count = N, .data = (data_ptr_t)data};
+    c.columns[0] = (VectorBase){.type = TYPE_FLOAT32, .count = N, .data = (data_ptr_t)data};
     datatable_append(table, &c);
 
     usize ids[] = {0};
@@ -784,7 +782,7 @@ static void test_scan_type_float64(void)
     for (usize i = 0; i < N; i++) data[i] = (f64)i * 1.23456789;
     DataChunk c;
     DataChunk_init_compat(&c, 1);
-    c.columns[0] = (ColumnVector){.type = TYPE_FLOAT64, .count = N, .data = (data_ptr_t)data};
+    c.columns[0] = (VectorBase){.type = TYPE_FLOAT64, .count = N, .data = (data_ptr_t)data};
     datatable_append(table, &c);
 
     usize ids[] = {0};
@@ -821,10 +819,10 @@ static void test_scan_all_four_types(void)
 
     DataChunk c;
     DataChunk_init_compat(&c, 4);
-    c.columns[0] = (ColumnVector){.type = TYPE_INT32, .count = N, .data = (data_ptr_t)d0};
-    c.columns[1] = (ColumnVector){.type = TYPE_INT64, .count = N, .data = (data_ptr_t)d1};
-    c.columns[2] = (ColumnVector){.type = TYPE_FLOAT32, .count = N, .data = (data_ptr_t)d2};
-    c.columns[3] = (ColumnVector){.type = TYPE_FLOAT64, .count = N, .data = (data_ptr_t)d3};
+    c.columns[0] = (VectorBase){.type = TYPE_INT32, .count = N, .data = (data_ptr_t)d0};
+    c.columns[1] = (VectorBase){.type = TYPE_INT64, .count = N, .data = (data_ptr_t)d1};
+    c.columns[2] = (VectorBase){.type = TYPE_FLOAT32, .count = N, .data = (data_ptr_t)d2};
+    c.columns[3] = (VectorBase){.type = TYPE_FLOAT64, .count = N, .data = (data_ptr_t)d3};
     datatable_append(table, &c);
 
     usize ids[] = {0, 1, 2, 3};
@@ -872,9 +870,9 @@ static void test_scan_project_first_col(void)
 
     DataChunk c;
     DataChunk_init_compat(&c, 3);
-    c.columns[0] = (ColumnVector){.type = TYPE_INT32, .count = N, .data = (data_ptr_t)d0};
-    c.columns[1] = (ColumnVector){.type = TYPE_INT64, .count = N, .data = (data_ptr_t)d1};
-    c.columns[2] = (ColumnVector){.type = TYPE_FLOAT64, .count = N, .data = (data_ptr_t)d2};
+    c.columns[0] = (VectorBase){.type = TYPE_INT32, .count = N, .data = (data_ptr_t)d0};
+    c.columns[1] = (VectorBase){.type = TYPE_INT64, .count = N, .data = (data_ptr_t)d1};
+    c.columns[2] = (VectorBase){.type = TYPE_FLOAT64, .count = N, .data = (data_ptr_t)d2};
     datatable_append(table, &c);
 
     usize ids[] = {0};
@@ -911,9 +909,9 @@ static void test_scan_project_last_col(void)
 
     DataChunk c;
     DataChunk_init_compat(&c, 3);
-    c.columns[0] = (ColumnVector){.type = TYPE_INT32, .count = N, .data = (data_ptr_t)d0};
-    c.columns[1] = (ColumnVector){.type = TYPE_INT64, .count = N, .data = (data_ptr_t)d1};
-    c.columns[2] = (ColumnVector){.type = TYPE_FLOAT64, .count = N, .data = (data_ptr_t)d2};
+    c.columns[0] = (VectorBase){.type = TYPE_INT32, .count = N, .data = (data_ptr_t)d0};
+    c.columns[1] = (VectorBase){.type = TYPE_INT64, .count = N, .data = (data_ptr_t)d1};
+    c.columns[2] = (VectorBase){.type = TYPE_FLOAT64, .count = N, .data = (data_ptr_t)d2};
     datatable_append(table, &c);
 
     usize ids[] = {2};
@@ -950,9 +948,9 @@ static void test_scan_project_reverse_order(void)
 
     DataChunk c;
     DataChunk_init_compat(&c, 3);
-    c.columns[0] = (ColumnVector){.type = TYPE_INT32, .count = N, .data = (data_ptr_t)d0};
-    c.columns[1] = (ColumnVector){.type = TYPE_INT64, .count = N, .data = (data_ptr_t)d1};
-    c.columns[2] = (ColumnVector){.type = TYPE_FLOAT32, .count = N, .data = (data_ptr_t)d2};
+    c.columns[0] = (VectorBase){.type = TYPE_INT32, .count = N, .data = (data_ptr_t)d0};
+    c.columns[1] = (VectorBase){.type = TYPE_INT64, .count = N, .data = (data_ptr_t)d1};
+    c.columns[2] = (VectorBase){.type = TYPE_FLOAT32, .count = N, .data = (data_ptr_t)d2};
     datatable_append(table, &c);
 
     /* scan columns in reverse: 2, 1, 0 */
@@ -996,10 +994,10 @@ static void test_scan_project_non_contiguous(void)
 
     DataChunk c;
     DataChunk_init_compat(&c, 4);
-    c.columns[0] = (ColumnVector){.type = TYPE_INT32, .count = N, .data = (data_ptr_t)d0};
-    c.columns[1] = (ColumnVector){.type = TYPE_INT64, .count = N, .data = (data_ptr_t)d1};
-    c.columns[2] = (ColumnVector){.type = TYPE_FLOAT32, .count = N, .data = (data_ptr_t)d2};
-    c.columns[3] = (ColumnVector){.type = TYPE_FLOAT64, .count = N, .data = (data_ptr_t)d3};
+    c.columns[0] = (VectorBase){.type = TYPE_INT32, .count = N, .data = (data_ptr_t)d0};
+    c.columns[1] = (VectorBase){.type = TYPE_INT64, .count = N, .data = (data_ptr_t)d1};
+    c.columns[2] = (VectorBase){.type = TYPE_FLOAT32, .count = N, .data = (data_ptr_t)d2};
+    c.columns[3] = (VectorBase){.type = TYPE_FLOAT64, .count = N, .data = (data_ptr_t)d3};
     datatable_append(table, &c);
 
     usize ids[] = {0, 3};
@@ -1035,7 +1033,7 @@ static void test_scan_cross_column_segment_i64(void)
     for (usize i = 0; i < N; i++) data[i] = (i64)(i * 97);
     DataChunk c;
     DataChunk_init_compat(&c, 1);
-    c.columns[0] = (ColumnVector){.type = TYPE_INT64, .count = N, .data = (data_ptr_t)data};
+    c.columns[0] = (VectorBase){.type = TYPE_INT64, .count = N, .data = (data_ptr_t)data};
     datatable_append(table, &c);
 
     /* scan in batches — one of them straddles the ColumnSegment boundary.
@@ -1085,7 +1083,7 @@ static void test_scan_cross_column_segment_i32(void)
     for (usize i = 0; i < N; i++) data[i] = (i32)(N - i);
     DataChunk c;
     DataChunk_init_compat(&c, 1);
-    c.columns[0] = (ColumnVector){.type = TYPE_INT32, .count = N, .data = (data_ptr_t)data};
+    c.columns[0] = (VectorBase){.type = TYPE_INT32, .count = N, .data = (data_ptr_t)data};
     datatable_append(table, &c);
 
     usize ids[] = {0};
@@ -1120,8 +1118,8 @@ static void test_scan_cross_column_segment_mixed(void)
     }
     DataChunk c;
     DataChunk_init_compat(&c, 2);
-    c.columns[0] = (ColumnVector){.type = TYPE_INT32, .count = N, .data = (data_ptr_t)d0};
-    c.columns[1] = (ColumnVector){.type = TYPE_INT64, .count = N, .data = (data_ptr_t)d1};
+    c.columns[0] = (VectorBase){.type = TYPE_INT32, .count = N, .data = (data_ptr_t)d0};
+    c.columns[1] = (VectorBase){.type = TYPE_INT64, .count = N, .data = (data_ptr_t)d1};
     datatable_append(table, &c);
 
     /* verify segment counts */
@@ -1176,7 +1174,7 @@ static void test_scan_rescan(void)
     for (usize i = 0; i < N; i++) data[i] = (i32)(i * 13);
     DataChunk c;
     DataChunk_init_compat(&c, 1);
-    c.columns[0] = (ColumnVector){.type = TYPE_INT32, .count = N, .data = (data_ptr_t)data};
+    c.columns[0] = (VectorBase){.type = TYPE_INT32, .count = N, .data = (data_ptr_t)data};
     datatable_append(table, &c);
 
     usize ids[] = {0};
@@ -1211,7 +1209,7 @@ static void test_scan_after_exhaustion(void)
     for (int i = 0; i < 10; i++) data[i] = i;
     DataChunk c;
     DataChunk_init_compat(&c, 1);
-    c.columns[0] = (ColumnVector){.type = TYPE_INT32, .count = 10, .data = (data_ptr_t)data};
+    c.columns[0] = (VectorBase){.type = TYPE_INT32, .count = 10, .data = (data_ptr_t)data};
     datatable_append(table, &c);
 
     ScanState st;
@@ -1253,8 +1251,8 @@ static void test_scan_state_init(void)
     }
     DataChunk c;
     DataChunk_init_compat(&c, 2);
-    c.columns[0] = (ColumnVector){.type = TYPE_INT32, .count = 100, .data = (data_ptr_t)d0};
-    c.columns[1] = (ColumnVector){.type = TYPE_INT64, .count = 100, .data = (data_ptr_t)d1};
+    c.columns[0] = (VectorBase){.type = TYPE_INT32, .count = 100, .data = (data_ptr_t)d0};
+    c.columns[1] = (VectorBase){.type = TYPE_INT64, .count = 100, .data = (data_ptr_t)d1};
     datatable_append(table, &c);
 
     ScanState st;
@@ -1277,7 +1275,7 @@ static void test_scan_state_init(void)
 }
 
 /* ============================================================
- * K. DataChunk / ColumnVector helpers
+ * K. DataChunk / VectorBase helpers
  * ============================================================ */
 
 /* K1. DataChunk_init, dataChunk_size */
@@ -1287,20 +1285,20 @@ static void test_datachunk_helpers(void)
 
     DataChunk chunk;
     DataChunk_init_compat(&chunk, 3);
-    ASSERT_EQ_U64(chunk.column_count, 3, "column_count == 3");
+    ASSERT_EQ_U64(chunk.count, 3, "column_count == 3");
     ASSERT_TRUE(chunk.columns != NULL, "columns allocated");
 
     /* size determined by first column's count */
-    chunk.columns[0].count = 42;
-    chunk.columns[1].count = 99;
-    chunk.columns[2].count = 0;
+    chunk.arrays[0].count = 42;
+    chunk.arrays[1].count = 99;
+    chunk.arrays[2].count = 0;
     ASSERT_EQ_U64(dataChunk_size(&chunk), 42, "dataChunk_size == col[0].count");
 
     /* dataChunk_clear zeros all counts */
     dataChunk_clear(&chunk);
-    ASSERT_EQ_U64(chunk.columns[0].count, 0, "after clear: col0.count == 0");
-    ASSERT_EQ_U64(chunk.columns[1].count, 0, "after clear: col1.count == 0");
-    ASSERT_EQ_U64(chunk.columns[2].count, 0, "after clear: col2.count == 0");
+    ASSERT_EQ_U64(chunk.arrays[0].count, 0, "after clear: col0.count == 0");
+    ASSERT_EQ_U64(chunk.arrays[1].count, 0, "after clear: col1.count == 0");
+    ASSERT_EQ_U64(chunk.arrays[2].count, 0, "after clear: col2.count == 0");
 
     free(chunk.columns);
 }
@@ -1310,12 +1308,12 @@ static void test_datachunk_size_zero_cols(void)
 {
     printf("\n--- K2. test_datachunk_size_zero_cols ---\n");
     DataChunk chunk;
-    chunk.column_count = 0;
+    chunk.count = 0;
     chunk.columns = NULL;
     ASSERT_EQ_U64(dataChunk_size(&chunk), 0, "0-column chunk size == 0");
 }
 
-/* K3. ColumnVector_from_vector */
+/* K3. VectorBase_from_vector */
 static void test_column_vector_from_vector(void)
 {
     printf("\n--- K3. test_column_vector_from_vector ---\n");
@@ -1327,8 +1325,8 @@ static void test_column_vector_from_vector(void)
         vector_push_back(&v, &val);
     }
 
-    ColumnVector cv;
-    ColumnVector_from_vector(&cv, v, TYPE_INT32);
+    VectorBase cv;
+    VectorBase_from_vector(&cv, v, TYPE_INT32);
 
     ASSERT_TRUE(cv.type == TYPE_INT32, "type == INT32");
     ASSERT_EQ_U64(cv.count, 3, "count == 3");
@@ -1349,15 +1347,15 @@ static void test_datachunk_append(void)
     DataChunk_init_compat(&chunk, 2);
 
     i32 buf1[] = {1, 2, 3};
-    ColumnVector cv1 = {.type = TYPE_INT32, .count = 3, .data = (data_ptr_t)buf1};
+    VectorBase cv1 = {.type = TYPE_INT32, .count = 3, .data = (data_ptr_t)buf1};
     dataChunk_append(&chunk, 0, cv1);
-    ASSERT_TRUE(chunk.columns[0].count == 3, "col 0 count == 3");
-    ASSERT_TRUE(chunk.columns[0].data == (data_ptr_t)buf1, "col 0 data ptr");
+    ASSERT_TRUE(chunk.arrays[0].count == 3, "col 0 count == 3");
+    ASSERT_TRUE(chunk.arrays[0].data == (data_ptr_t)buf1, "col 0 data ptr");
 
     i64 buf2[] = {10, 20};
-    ColumnVector cv2 = {.type = TYPE_INT64, .count = 2, .data = (data_ptr_t)buf2};
+    VectorBase cv2 = {.type = TYPE_INT64, .count = 2, .data = (data_ptr_t)buf2};
     dataChunk_append(&chunk, 1, cv2);
-    ASSERT_TRUE(chunk.columns[1].count == 2, "col 1 count == 2");
+    ASSERT_TRUE(chunk.arrays[1].count == 2, "col 1 count == 2");
 
     free(chunk.columns);
 }
@@ -1391,10 +1389,8 @@ static void test_combined_multi_append_full_scan(void)
         }
         DataChunk c;
         DataChunk_init_compat(&c, 2);
-        c.columns[0] =
-            (ColumnVector){.type = TYPE_INT32, .count = ROWS_PER, .data = (data_ptr_t)d0};
-        c.columns[1] =
-            (ColumnVector){.type = TYPE_INT64, .count = ROWS_PER, .data = (data_ptr_t)d1};
+        c.columns[0] = (VectorBase){.type = TYPE_INT32, .count = ROWS_PER, .data = (data_ptr_t)d0};
+        c.columns[1] = (VectorBase){.type = TYPE_INT64, .count = ROWS_PER, .data = (data_ptr_t)d1};
         datatable_append(table, &c);
         free(d0);
         free(d1);
@@ -1424,7 +1420,7 @@ static void test_combined_append_scan_append_rescan(void)
     for (int i = 0; i < 100; i++) d1[i] = i;
     DataChunk c1;
     DataChunk_init_compat(&c1, 1);
-    c1.columns[0] = (ColumnVector){.type = TYPE_INT32, .count = 100, .data = (data_ptr_t)d1};
+    c1.columns[0] = (VectorBase){.type = TYPE_INT32, .count = 100, .data = (data_ptr_t)d1};
     datatable_append(table, &c1);
 
     /* Scan #1: should see 100 rows */
@@ -1441,7 +1437,7 @@ static void test_combined_append_scan_append_rescan(void)
     for (int i = 0; i < 200; i++) d2[i] = 100 + i;
     DataChunk c2;
     DataChunk_init_compat(&c2, 1);
-    c2.columns[0] = (ColumnVector){.type = TYPE_INT32, .count = 200, .data = (data_ptr_t)d2};
+    c2.columns[0] = (VectorBase){.type = TYPE_INT32, .count = 200, .data = (data_ptr_t)d2};
     datatable_append(table, &c2);
 
     /* Scan #2: should see all 300 rows */
@@ -1482,7 +1478,7 @@ static void test_combined_large_i64(void)
     for (usize i = 0; i < N; i++) data[i] = (i64)(i * 31 + 17);
     DataChunk c;
     DataChunk_init_compat(&c, 1);
-    c.columns[0] = (ColumnVector){.type = TYPE_INT64, .count = N, .data = (data_ptr_t)data};
+    c.columns[0] = (VectorBase){.type = TYPE_INT64, .count = N, .data = (data_ptr_t)data};
     datatable_append(table, &c);
 
     /* verify RowSegment count: ceil(5000/250) = 20 */
@@ -1547,7 +1543,7 @@ static void test_combined_incremental_cross_column_seg(void)
         buf[0] = expect[k];
         DataChunk c;
         DataChunk_init_compat(&c, 1);
-        c.columns[0] = (ColumnVector){.type = TYPE_INT64, .count = 1, .data = (data_ptr_t)buf};
+        c.columns[0] = (VectorBase){.type = TYPE_INT64, .count = 1, .data = (data_ptr_t)buf};
         datatable_append(table, &c);
         free(buf);
         free(c.columns);
@@ -1586,10 +1582,10 @@ static void test_combined_projection_cross_boundary(void)
     }
     DataChunk c;
     DataChunk_init_compat(&c, 4);
-    c.columns[0] = (ColumnVector){.type = TYPE_INT32, .count = N, .data = (data_ptr_t)d0};
-    c.columns[1] = (ColumnVector){.type = TYPE_INT64, .count = N, .data = (data_ptr_t)d1};
-    c.columns[2] = (ColumnVector){.type = TYPE_FLOAT32, .count = N, .data = (data_ptr_t)d2};
-    c.columns[3] = (ColumnVector){.type = TYPE_FLOAT64, .count = N, .data = (data_ptr_t)d3};
+    c.columns[0] = (VectorBase){.type = TYPE_INT32, .count = N, .data = (data_ptr_t)d0};
+    c.columns[1] = (VectorBase){.type = TYPE_INT64, .count = N, .data = (data_ptr_t)d1};
+    c.columns[2] = (VectorBase){.type = TYPE_FLOAT32, .count = N, .data = (data_ptr_t)d2};
+    c.columns[3] = (VectorBase){.type = TYPE_FLOAT64, .count = N, .data = (data_ptr_t)d3};
     datatable_append(table, &c);
 
     /* project only cols 1 (INT64) and 3 (FLOAT64) — both 8-byte types,
@@ -1651,7 +1647,7 @@ static void test_large_100k_i64(void)
 
     DataChunk c;
     DataChunk_init_compat(&c, 1);
-    c.columns[0] = (ColumnVector){.type = TYPE_INT64, .count = N, .data = (data_ptr_t)data};
+    c.columns[0] = (VectorBase){.type = TYPE_INT64, .count = N, .data = (data_ptr_t)data};
     datatable_append(table, &c);
 
     /* verify segment topology */
@@ -1690,7 +1686,7 @@ static void test_large_100k_i32(void)
 
     DataChunk c;
     DataChunk_init_compat(&c, 1);
-    c.columns[0] = (ColumnVector){.type = TYPE_INT32, .count = N, .data = (data_ptr_t)data};
+    c.columns[0] = (VectorBase){.type = TYPE_INT32, .count = N, .data = (data_ptr_t)data};
     datatable_append(table, &c);
 
     usize col_segs = count_segments(segmentTree_get_root_segment(&table->column_storage_tree[0]));
@@ -1737,10 +1733,10 @@ static void test_large_50k_mixed_4col(void)
 
     DataChunk c;
     DataChunk_init_compat(&c, 4);
-    c.columns[0] = (ColumnVector){.type = TYPE_INT32, .count = N, .data = (data_ptr_t)d0};
-    c.columns[1] = (ColumnVector){.type = TYPE_INT64, .count = N, .data = (data_ptr_t)d1};
-    c.columns[2] = (ColumnVector){.type = TYPE_FLOAT32, .count = N, .data = (data_ptr_t)d2};
-    c.columns[3] = (ColumnVector){.type = TYPE_FLOAT64, .count = N, .data = (data_ptr_t)d3};
+    c.columns[0] = (VectorBase){.type = TYPE_INT32, .count = N, .data = (data_ptr_t)d0};
+    c.columns[1] = (VectorBase){.type = TYPE_INT64, .count = N, .data = (data_ptr_t)d1};
+    c.columns[2] = (VectorBase){.type = TYPE_FLOAT32, .count = N, .data = (data_ptr_t)d2};
+    c.columns[3] = (VectorBase){.type = TYPE_FLOAT64, .count = N, .data = (data_ptr_t)d3};
     datatable_append(table, &c);
 
     /* verify segment counts for each column */
@@ -1798,7 +1794,7 @@ static void test_large_exact_segment_multiple(void)
 
     DataChunk c;
     DataChunk_init_compat(&c, 1);
-    c.columns[0] = (ColumnVector){.type = TYPE_INT64, .count = N, .data = (data_ptr_t)data};
+    c.columns[0] = (VectorBase){.type = TYPE_INT64, .count = N, .data = (data_ptr_t)data};
     datatable_append(table, &c);
 
     usize col_segs = count_segments(segmentTree_get_root_segment(&table->column_storage_tree[0]));
@@ -1859,7 +1855,7 @@ static void test_large_incremental_batch_append(void)
     {
         DataChunk c;
         DataChunk_init_compat(&c, 1);
-        c.columns[0] = (ColumnVector){
+        c.columns[0] = (VectorBase){
             .type = TYPE_INT64,
             .count = BATCH,
             .data = (data_ptr_t)(expect + b * BATCH),
@@ -1909,10 +1905,10 @@ static void test_large_projection_30k(void)
 
     DataChunk c;
     DataChunk_init_compat(&c, 4);
-    c.columns[0] = (ColumnVector){.type = TYPE_INT32, .count = N, .data = (data_ptr_t)d0};
-    c.columns[1] = (ColumnVector){.type = TYPE_INT64, .count = N, .data = (data_ptr_t)d1};
-    c.columns[2] = (ColumnVector){.type = TYPE_FLOAT32, .count = N, .data = (data_ptr_t)d2};
-    c.columns[3] = (ColumnVector){.type = TYPE_FLOAT64, .count = N, .data = (data_ptr_t)d3};
+    c.columns[0] = (VectorBase){.type = TYPE_INT32, .count = N, .data = (data_ptr_t)d0};
+    c.columns[1] = (VectorBase){.type = TYPE_INT64, .count = N, .data = (data_ptr_t)d1};
+    c.columns[2] = (VectorBase){.type = TYPE_FLOAT32, .count = N, .data = (data_ptr_t)d2};
+    c.columns[3] = (VectorBase){.type = TYPE_FLOAT64, .count = N, .data = (data_ptr_t)d3};
     datatable_append(table, &c);
 
     /* project only col 1 (INT64) and col 3 (FLOAT64) */
@@ -1960,7 +1956,7 @@ static void test_large_boundary_sentinels(void)
 
     DataChunk c;
     DataChunk_init_compat(&c, 1);
-    c.columns[0] = (ColumnVector){.type = TYPE_INT64, .count = N, .data = (data_ptr_t)data};
+    c.columns[0] = (VectorBase){.type = TYPE_INT64, .count = N, .data = (data_ptr_t)data};
     datatable_append(table, &c);
 
     usize ids[] = {0};
@@ -2002,7 +1998,7 @@ static void test_large_streaming_verify(void)
 
     DataChunk c;
     DataChunk_init_compat(&c, 1);
-    c.columns[0] = (ColumnVector){.type = TYPE_INT64, .count = N, .data = (data_ptr_t)data};
+    c.columns[0] = (VectorBase){.type = TYPE_INT64, .count = N, .data = (data_ptr_t)data};
     datatable_append(table, &c);
 
     ScanState st;
@@ -2059,7 +2055,7 @@ static void test_large_append_scan_append(void)
     /* append first half */
     DataChunk c;
     DataChunk_init_compat(&c, 1);
-    c.columns[0] = (ColumnVector){.type = TYPE_INT64, .count = HALF, .data = (data_ptr_t)data};
+    c.columns[0] = (VectorBase){.type = TYPE_INT64, .count = HALF, .data = (data_ptr_t)data};
     datatable_append(table, &c);
 
     /* scan first half */
@@ -2073,7 +2069,7 @@ static void test_large_append_scan_append(void)
 
     /* append second half */
     c.columns[0] =
-        (ColumnVector){.type = TYPE_INT64, .count = HALF, .data = (data_ptr_t)(data + HALF)};
+        (VectorBase){.type = TYPE_INT64, .count = HALF, .data = (data_ptr_t)(data + HALF)};
     datatable_append(table, &c);
 
     /* re-scan all 20K */
@@ -2115,8 +2111,8 @@ static void test_large_mixed_width_20k(void)
 
     DataChunk c;
     DataChunk_init_compat(&c, 2);
-    c.columns[0] = (ColumnVector){.type = TYPE_INT32, .count = N, .data = (data_ptr_t)d0};
-    c.columns[1] = (ColumnVector){.type = TYPE_FLOAT64, .count = N, .data = (data_ptr_t)d1};
+    c.columns[0] = (VectorBase){.type = TYPE_INT32, .count = N, .data = (data_ptr_t)d0};
+    c.columns[1] = (VectorBase){.type = TYPE_FLOAT64, .count = N, .data = (data_ptr_t)d1};
     datatable_append(table, &c);
 
     /* verify different segment counts */
@@ -2204,7 +2200,7 @@ int main(void)
     test_scan_after_exhaustion();
     test_scan_state_init();
 
-    /* K. DataChunk / ColumnVector helpers */
+    /* K. DataChunk / VectorBase helpers */
     test_datachunk_helpers();
     test_datachunk_size_zero_cols();
     test_column_vector_from_vector();

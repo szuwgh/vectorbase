@@ -554,31 +554,31 @@ void test_table_data_roundtrip(void)
     vector_push_back(&types, &t);
 
     DataChunk chunk = MAKE(DataChunk, types);
-    i32* col_a = (i32*)chunk.columns[0].data;
-    i32* col_b = (i32*)chunk.columns[1].data;
+    i32* col_a = (i32*)chunk.arrays[0].data;
+    i32* col_b = (i32*)chunk.arrays[1].data;
     usize batch_size = MIN(N_ROWS, STANDARD_VECTOR_SIZE);
     for (usize i = 0; i < batch_size; i++)
     {
         col_a[i] = (i32)(i * 10);
         col_b[i] = (i32)(i * 10 + 1);
     }
-    chunk.columns[0].count = batch_size;
-    chunk.columns[1].count = batch_size;
+    chunk.arrays[0].count = batch_size;
+    chunk.arrays[1].count = batch_size;
     datatable_append(tbl->datatable, &chunk);
 
     if (N_ROWS > STANDARD_VECTOR_SIZE)
     {
         dataChunk_reset(&chunk);
-        col_a = (i32*)chunk.columns[0].data;
-        col_b = (i32*)chunk.columns[1].data;
+        col_a = (i32*)chunk.arrays[0].data;
+        col_b = (i32*)chunk.arrays[1].data;
         usize remaining = N_ROWS - STANDARD_VECTOR_SIZE;
         for (usize i = 0; i < remaining; i++)
         {
             col_a[i] = (i32)((STANDARD_VECTOR_SIZE + i) * 10);
             col_b[i] = (i32)((STANDARD_VECTOR_SIZE + i) * 10 + 1);
         }
-        chunk.columns[0].count = remaining;
-        chunk.columns[1].count = remaining;
+        chunk.arrays[0].count = remaining;
+        chunk.arrays[1].count = remaining;
         datatable_append(tbl->datatable, &chunk);
     }
     dataChunk_deinit(&chunk);
@@ -699,15 +699,15 @@ void test_table_data_roundtrip_large(void)
     {
         dataChunk_reset(&chunk);
         usize batch = MIN(STANDARD_VECTOR_SIZE, TOTAL_ROWS - rows_written);
-        i32* ids = (i32*)chunk.columns[0].data;
-        f64* vals = (f64*)chunk.columns[1].data;
+        i32* ids = (i32*)chunk.arrays[0].data;
+        f64* vals = (f64*)chunk.arrays[1].data;
         for (usize i = 0; i < batch; i++)
         {
             ids[i] = (i32)(rows_written + i);
             vals[i] = (f64)(rows_written + i) * 1.5;
         }
-        chunk.columns[0].count = batch;
-        chunk.columns[1].count = batch;
+        chunk.arrays[0].count = batch;
+        chunk.arrays[1].count = batch;
         datatable_append(tbl->datatable, &chunk);
         rows_written += batch;
     }
@@ -804,11 +804,11 @@ void test_multi_table_roundtrip(void)
         vector_push_back(&types, &t32);
         vector_push_back(&types, &t32);
         DataChunk chunk = MAKE(DataChunk, types);
-        i32* ca = (i32*)chunk.columns[0].data;
-        i32* cb = (i32*)chunk.columns[1].data;
+        i32* ca = (i32*)chunk.arrays[0].data;
+        i32* cb = (i32*)chunk.arrays[1].data;
         for (int i = 0; i < 20; i++) { ca[i] = i; cb[i] = i * 100; }
-        chunk.columns[0].count = 20;
-        chunk.columns[1].count = 20;
+        chunk.arrays[0].count = 20;
+        chunk.arrays[1].count = 20;
         datatable_append(tbl1->datatable, &chunk);
         dataChunk_deinit(&chunk);
         vector_deinit(&types);
@@ -821,9 +821,9 @@ void test_multi_table_roundtrip(void)
         TypeID t64 = TYPE_FLOAT64;
         vector_push_back(&types, &t64);
         DataChunk chunk = MAKE(DataChunk, types);
-        f64* cx = (f64*)chunk.columns[0].data;
+        f64* cx = (f64*)chunk.arrays[0].data;
         for (int i = 0; i < 30; i++) cx[i] = i * 3.14;
-        chunk.columns[0].count = 30;
+        chunk.arrays[0].count = 30;
         datatable_append(tbl2->datatable, &chunk);
         dataChunk_deinit(&chunk);
         vector_deinit(&types);

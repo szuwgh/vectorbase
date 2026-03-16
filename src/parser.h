@@ -14,6 +14,8 @@ typedef enum
     SQLT_BIGINT = 4,
     SQLT_FLOAT = 5,
     SQLT_DOUBLE = 6,
+    SQLT_VARCHAR = 7,
+    SQLT_VECTOR = 8,
 } SQLType;
 
 TypeID get_internal_type(SQLType type);
@@ -24,11 +26,22 @@ typedef struct
     bool if_not_exists;
 } CreateSchemaInfo;
 void createSchemaInfo_deserialize(CreateSchemaInfo* info, MetaBlockReader* reader);
+
+typedef struct
+{
+    i16 dim;
+} VectorColumnOptions;
+
 typedef struct
 {
     char* name;
     Oid oid;
     SQLType type;
+    union
+    {
+        VectorColumnOptions vector;
+          /* future: DecimalColumnOptions decimal; */
+    } options;
 } ColumnDefinition;
 
 typedef struct

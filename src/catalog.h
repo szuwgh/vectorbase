@@ -7,6 +7,7 @@
 #include "vector.h"
 typedef struct DataTable DataTable;
 typedef struct StorageManager StorageManager;
+typedef struct StorageTable StorageTable;
 
 #define DEFAULT_SCHEMA "main"
 
@@ -64,7 +65,8 @@ typedef struct
 {
     EXTENDS(CatalogEntry);
     SchemaCatalogEntry* schema;
-    DataTable* datatable;
+    DataTable*     datatable;      /* legacy path (src/), may be NULL */
+    StorageTable*  storage_table;  /* new path (tmp/src/), may be NULL */
     ColumnDefinition* columns;
     usize column_count;
 } TableCatalogEntry;
@@ -93,5 +95,8 @@ int catalog_create_table(Catalog* catalog, CreateTableInfo* info);
 
 TableCatalogEntry* catalog_get_table(Catalog* catalog, const char* schema_name,
                                      const char* table_name);
+
+StorageTable* catalog_get_storage_table(Catalog* catalog, const char* schema_name,
+                                        const char* table_name);
 
 #endif

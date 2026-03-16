@@ -60,6 +60,7 @@ static TableCatalogEntry* make_table_entry(Catalog* catalog, SchemaCatalogEntry*
     }
     entry->datatable =
         Datatable_create(catalog->storage, info->schema_name, name, info->col_count, types.data);
+    entry->storage_table = NULL;   /* new path not used on legacy create */
     entry->columns = malloc(info->col_count * sizeof(ColumnDefinition));
     if (!entry->columns)
     {
@@ -271,4 +272,12 @@ void catalog_destroy(Catalog* catalog)
     if (!catalog) return;
     catalogSet_deinit(&catalog->schemas);
     free(catalog);
+}
+
+StorageTable* catalog_get_storage_table(Catalog* catalog, const char* schema_name,
+                                        const char* table_name)
+{
+    TableCatalogEntry* entry = catalog_get_table(catalog, schema_name, table_name);
+    if (!entry) return NULL;
+    return entry->storage_table;
 }

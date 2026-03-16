@@ -43,5 +43,13 @@ void createTableInfo_deserialize(CreateTableInfo* info, MetaBlockReader* reader)
         col->name = DESERIALIZER_READ_STRING(reader);
         col->oid = i;
         col->type = (SQLType)DESERIALIZER_READ_U8(reader);
+        switch (col->type)
+        {
+            case SQLT_VECTOR:
+                col->options.vector.dim = DESERIALIZER_READ_I16(reader);
+                break;
+            default:
+                break;
+        }
     }
 }

@@ -74,20 +74,13 @@ void Datatable_destroy(DataTable* table)
     free(table);
 }
 
-void ColumnVector_init(ColumnVector* vector, TypeID type)
-{
-    vector->type = type;
-    vector->count = 0;
-    vector->data = NULL;
-}
-
 void DataChunk_init(DataChunk* chunk, Vector types)
 {
-    chunk->column_count = types.size;
-    chunk->columns = calloc(chunk->column_count, sizeof(ColumnVector));
-    for (usize i = 0; i < chunk->column_count; i++)
+    chunk->count = types.size;
+    chunk->arrays = calloc(chunk->count, sizeof(VectorBase));
+    for (usize i = 0; i < chunk->count; i++)
     {
-        ColumnVector_init(&chunk->columns[i], VECTOR_AT(&types, i, TypeID));
+        VectorBase_init(&chunk->arrays[i], VECTOR_AT(&types, i, TypeID));
     }
 
     usize size = 0;
@@ -101,9 +94,9 @@ void DataChunk_init(DataChunk* chunk, Vector types)
     chunk->data = own_data;
     chunk->size = size;
     memset(own_data, 0, size);
-    for (usize i = 0; i < chunk->column_count; i++)
+    for (usize i = 0; i < chunk->count; i++)
     {
-        chunk->columns[i].data = own_data;
+        chunk->arrays[i].data = own_data;
         own_data += get_typeid_size(VECTOR_AT(&types, i, TypeID)) * STANDARD_VECTOR_SIZE;
     }
 }
@@ -120,46 +113,46 @@ void dataChunk_deinit(DataChunk* chunk)
     else
     {
         // 各列独立分配的模式（非 DataChunk_init 创建）
-        for (usize i = 0; i < chunk->column_count; i++) columnVector_deinit(&chunk->columns[i]);
+        for (usize i = 0; i < chunk->count; i++) VectorBase_deinit(&chunk->arrays[i]);
     }
-    free(chunk->columns);
-    chunk->columns = NULL;
-    chunk->column_count = 0;
+    free(chunk->arrays);
+    chunk->arrays = NULL;
+    chunk->count = 0;
 }
 
 void dataChunk_clear(DataChunk* chunk)
 {
-    for (usize i = 0; i < chunk->column_count; i++)
+    for (usize i = 0; i < chunk->count; i++)
     {
-        chunk->columns[i].count = 0;
+        chunk->arrays[i].count = 0;
     }
 }
 
 void dataChunk_reset(DataChunk* chunk)
 {
     data_ptr_t ptr = chunk->data;
-    for (usize i = 0; i < chunk->column_count; i++)
+    for (usize i = 0; i < chunk->count; i++)
     {
-        chunk->columns[i].count = 0;
-        chunk->columns[i].data = ptr;
-        ptr += get_typeid_size(chunk->columns[i].type) * STANDARD_VECTOR_SIZE;
+        chunk->arrays[i].count = 0;
+        chunk->arrays[i].data = ptr;
+        ptr += get_typeid_size(chunk->arrays[i].type) * STANDARD_VECTOR_SIZE;
     }
 }
 
-void dataChunk_append(DataChunk* chunk, usize index, ColumnVector src)
+void dataChunk_append(DataChunk* chunk, usize index, VectorBase src)
 {
-    assert(index < chunk->column_count);
-    chunk->columns[index] = src;
+    assert(index < chunk->count);
+    chunk->arrays[index] = src;
 }
 
 usize dataChunk_size(DataChunk* chunk)
 {
-    if (chunk->column_count == 0) return 0;
-    return chunk->columns[0].count;
+    if (chunk->count == 0) return 0;
+    return chunk->arrays[0].count;
 }
 
-static void datatable_append_vector(DataTable* table, ColumnVector* vector, usize column_index,
-                                    usize offset, usize count)
+static void datatable_append_column_vector(DataTable* table, VectorBase* vector, usize column_index,
+                                           usize offset, usize count)
 {
     ColumnSegment* seg =
         (ColumnSegment*)segmentTree_get_last_segment(&table->column_storage_tree[column_index]);
@@ -180,11 +173,27 @@ static void datatable_append_vector(DataTable* table, ColumnVector* vector, usiz
         ColumnSegment* new_seg = ColumnSegment_create2(seg->base.start + seg->base.count);
         segmentTree_append_segment(&table->column_storage_tree[column_index],
                                    (SegmentBase*)new_seg);
-        datatable_append_vector(table, vector, column_index, offset, count - elements_to_copy);
+        datatable_append_column_vector(table, vector, column_index, offset,
+                                       count - elements_to_copy);
     }
 }
 
-void datatable_append(DataTable* table, DataChunk* chunk)
+static void datatable_append_row_one(DataTable* table, VectorBase* vector)
+{
+    ColumnSegment* seg = (ColumnSegment*)segmentTree_get_last_segment(&table->row_storage_tree);
+}
+
+// 行式存储
+void datatable_append_row(DataTable* table, DataChunk* chunk)
+{
+    for (usize i = 0; i < chunk->size; i++)
+    {
+        datatable_append_row_one(table, &chunk->arrays[i]);
+    }
+}
+
+// 列式存储
+void datatable_append_column(DataTable* table, DataChunk* chunk)
 {
     usize size = dataChunk_size(chunk);
     if (size == 0) return;
@@ -200,7 +209,7 @@ void datatable_append(DataTable* table, DataChunk* chunk)
         {
             for (usize i = 0; i < table->column_count; i++)
             {
-                datatable_append_vector(table, &chunk->columns[i], i, offset, to_copy);
+                datatable_append_column_vector(table, &chunk->arrays[i], i, offset, to_copy);
             }
             last_seg->base.count += to_copy;
             offset += to_copy;
@@ -228,7 +237,7 @@ void datatable_append(DataTable* table, DataChunk* chunk)
  *
  *  Corresponds to DuckDB src/storage/data_table.cpp RetrieveColumnData()
  * ---------------------------------------------------------------------- */
-static void retrieve_column_data(ColumnVector* result, TypeID type, ColumnPointer* pointer,
+static void retrieve_column_data(VectorBase* result, TypeID type, ColumnPointer* pointer,
                                  usize count)
 {
     usize type_size = get_typeid_size(type);
@@ -298,7 +307,7 @@ void scanstate_deinit(ScanState* state)
  *  was produced, false when the scan is exhausted.
  *
  *  `column_ids` / `col_count` specify which table columns to project.
- *  `output` must have `col_count` pre-allocated ColumnVectors whose
+ *  `output` must have `col_count` pre-allocated VectorBases whose
  *  `data` buffers are large enough for STORAGE_CHUNK_SIZE elements.
  *
  *  Corresponds to DuckDB DataTable::Scan() (simplified, no MVCC).
@@ -319,8 +328,8 @@ bool datatable_scan(DataTable* table, ScanState* state, DataChunk* output, usize
             for (usize i = 0; i < col_count; i++)
             {
                 usize col_id = column_ids[i];
-                output->columns[i].type = table->column_types[col_id];
-                retrieve_column_data(&output->columns[i], table->column_types[col_id],
+                output->arrays[i].type = table->column_types[col_id];
+                retrieve_column_data(&output->arrays[i], table->column_types[col_id],
                                      &state->columns[col_id], scan_count);
             }
 

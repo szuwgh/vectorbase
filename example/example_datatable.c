@@ -96,7 +96,7 @@ static void print_table(DataTable* table, const char** column_names, usize* colu
     DataChunk output;
     DataChunk_init(&output, col_count);
     for (usize c = 0; c < col_count; c++)
-        output.columns[c] = (ColumnVector){
+        output.columns[c] = (VectorBase){
             .type = table->column_types[proj[c]],
             .count = 0,
             .data = malloc(STORAGE_CHUNK_SIZE * elem_sz[c]),
@@ -241,18 +241,18 @@ int main(void)
 
     DataChunk chunk;
     DataChunk_init(&chunk, NUM_COLS);
-    chunk.columns[0] = (ColumnVector){TYPE_INT64, 5, (data_ptr_t)&ids[0]};
-    chunk.columns[1] = (ColumnVector){TYPE_INT32, 5, (data_ptr_t)&ages[0]};
-    chunk.columns[2] = (ColumnVector){TYPE_FLOAT32, 5, (data_ptr_t)&scores[0]};
-    chunk.columns[3] = (ColumnVector){TYPE_FLOAT64, 5, (data_ptr_t)&balances[0]};
+    chunk.arrays[0] = (VectorBase){TYPE_INT64, 5, (data_ptr_t)&ids[0]};
+    chunk.arrays[1] = (VectorBase){TYPE_INT32, 5, (data_ptr_t)&ages[0]};
+    chunk.arrays[2] = (VectorBase){TYPE_FLOAT32, 5, (data_ptr_t)&scores[0]};
+    chunk.arrays[3] = (VectorBase){TYPE_FLOAT64, 5, (data_ptr_t)&balances[0]};
     datatable_append(table, &chunk);
 
     /* ========== 4. Append — second batch (rows 5..9) ========== */
 
-    chunk.columns[0] = (ColumnVector){TYPE_INT64, 5, (data_ptr_t)&ids[5]};
-    chunk.columns[1] = (ColumnVector){TYPE_INT32, 5, (data_ptr_t)&ages[5]};
-    chunk.columns[2] = (ColumnVector){TYPE_FLOAT32, 5, (data_ptr_t)&scores[5]};
-    chunk.columns[3] = (ColumnVector){TYPE_FLOAT64, 5, (data_ptr_t)&balances[5]};
+    chunk.arrays[0] = (VectorBase){TYPE_INT64, 5, (data_ptr_t)&ids[5]};
+    chunk.arrays[1] = (VectorBase){TYPE_INT32, 5, (data_ptr_t)&ages[5]};
+    chunk.arrays[2] = (VectorBase){TYPE_FLOAT32, 5, (data_ptr_t)&scores[5]};
+    chunk.arrays[3] = (VectorBase){TYPE_FLOAT64, 5, (data_ptr_t)&balances[5]};
     datatable_append(table, &chunk);
     free(chunk.columns);
 

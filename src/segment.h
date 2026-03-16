@@ -63,7 +63,7 @@ void ColumnSegment_destroy(ColumnSegment* segment);
 typedef struct
 {
     ColumnSegment* segment; // 指向的 ColumnSegment
-    usize bytes_offset; // 指向的字节偏移量
+    usize bytes_offset;
 } ColumnPointer;
 
 typedef struct

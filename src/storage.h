@@ -253,6 +253,9 @@ void metaBlockReader_destroy(MetaBlockReader* reader);
 #define DESERIALIZER_READ_F32(dr_ptr) DESERIALIZER_READ_TYPE(dr_ptr, (data_ptr_t) & _tmp, f32)
 #define DESERIALIZER_READ_F64(dr_ptr) DESERIALIZER_READ_TYPE(dr_ptr, (data_ptr_t) & _tmp, f64)
 #define DESERIALIZER_READ_U64(dr_ptr) DESERIALIZER_READ_TYPE(dr_ptr, (data_ptr_t) & _tmp, u64)
+#define DESERIALIZER_READ_I16(dr_ptr) DESERIALIZER_READ_TYPE(dr_ptr, (data_ptr_t) & _tmp, i16)
+#define DESERIALIZER_READ_I32(dr_ptr) DESERIALIZER_READ_TYPE(dr_ptr, (data_ptr_t) & _tmp, i32)
+#define DESERIALIZER_READ_I64(dr_ptr) DESERIALIZER_READ_TYPE(dr_ptr, (data_ptr_t) & _tmp, i64)
 
 #define DESERIALIZER_READ_STRING(dr_ptr)                                   \
     ({                                                                     \
@@ -313,6 +316,12 @@ void metaBlockWriter_write_data(MetaBlockWriter* self, data_ptr_t buffer, usize 
 
 #define SERIALIZER_WRITE_U8(sw_ptr, value) \
     SERIALIZER_WRITE_TYPE(sw_ptr, (data_ptr_t) & (u8){value}, u8)
+
+#define SERIALIZER_WRITE_U16(sw_ptr, value) \
+    SERIALIZER_WRITE_TYPE(sw_ptr, (data_ptr_t) & (u16){value}, u16)
+
+#define SERIALIZER_WRITE_I16(sw_ptr, value) \
+    SERIALIZER_WRITE_TYPE(sw_ptr, (data_ptr_t) & (i16){value}, i16)
 
 #define SERIALIZER_WRITE_STRING(sw_ptr, str)                           \
     do {                                                               \

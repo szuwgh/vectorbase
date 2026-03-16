@@ -1457,10 +1457,10 @@ void test_create_table_append_scan(void)
     vector_push_back(&chunk_types, &t_i64);
     vector_push_back(&chunk_types, &t_f64);
     DataChunk_init(&chunk, chunk_types);
-    memcpy(chunk.columns[0].data, ids, 5 * sizeof(i64));
-    memcpy(chunk.columns[1].data, scores, 5 * sizeof(f64));
-    chunk.columns[0].count = 5;
-    chunk.columns[1].count = 5;
+    memcpy(chunk.arrays[0].data, ids, 5 * sizeof(i64));
+    memcpy(chunk.arrays[1].data, scores, 5 * sizeof(f64));
+    chunk.arrays[0].count = 5;
+    chunk.arrays[1].count = 5;
     datatable_append(dt, &chunk);
     dataChunk_deinit(&chunk);
     vector_deinit(&chunk_types);

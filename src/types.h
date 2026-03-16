@@ -2,6 +2,8 @@
 #define TYPES_H
 #include "vb_type.h"
 #include "vector.h"
+#include "interface.h"
+
 // internal types
 typedef enum
 {
@@ -22,21 +24,16 @@ typedef struct
     TypeID type;
     usize count;
     data_ptr_t data;
-} ColumnVector;
+} VectorBase;
 
-void ColumnVector_init(ColumnVector* vector, TypeID type);
+void VectorBase_init(VectorBase* vector, TypeID type);
 
-void ColumnVector_from_vector(ColumnVector* vector, Vector src, TypeID type);
+void VectorBase_from_vector(VectorBase* vector, Vector src, TypeID type);
 
-void columnVector_deinit(ColumnVector* vector);
+void VectorBase_deinit(VectorBase* vector);
 
-// from pgvector
-typedef struct
-{
-    i32 vl_len_;  /* varlena header (do not touch directly!) */
-    i16 dim;   /* number of dimensions */
-    i16 unused;   /* reserved for future use, always zero */
-    float x[FLEXIBLE_ARRAY_MEMBER];
-} EmbeddingVector;
+usize VectorBase_size(VectorBase* vector);
+
+data_ptr_t VectorBase_get_data(VectorBase* vector);
 
 #endif
