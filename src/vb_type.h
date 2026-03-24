@@ -24,6 +24,7 @@ typedef int16 i16;
 typedef uint16 u16;
 
 typedef u64 Oid;
+typedef u64 TxnId;
 
 /**
  * MAKE(type, init_fn, ...) - 零初始化 + 调用 init 函数，返回结构体值

@@ -65,8 +65,8 @@ typedef struct
 {
     EXTENDS(CatalogEntry);
     SchemaCatalogEntry* schema;
-    DataTable*     datatable;      /* legacy path (src/), may be NULL */
-    StorageTable*  storage_table;  /* new path (tmp/src/), may be NULL */
+    DataTable* datatable;      /* legacy path (src/), may be NULL */
+    StorageTable* storage_table;  /* new path (tmp/src/), may be NULL */
     ColumnDefinition* columns;
     usize column_count;
 } TableCatalogEntry;

@@ -1,7 +1,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
-#include "datatable.h"
+#include "table.h"
 #include "segment.h"
 #include "vb_type.h"
 #include "vector.h"
@@ -49,7 +49,7 @@ DataTable* Datatable_create(StorageManager* manager, char* schema_name, char* ta
 
 static void column_segment_destroy_cb(SegmentBase* base)
 {
-    BlockSegment_destroy(base);
+    BlockSegment_destroy((BlockSegment*)base);
 }
 
 static void row_segment_destroy_cb(SegmentBase* base)
@@ -61,7 +61,7 @@ void Datatable_destroy(DataTable* table)
 {
     if (!table) return;
 
-    /* free column storage trees (ColumnSegments + their Blocks) */
+    /* free column storage trees (BlockSegments + their Blocks) */
     for (usize i = 0; i < table->column_count; i++)
     {
         SegmentTree_deinit(&table->column_storage_tree[i], column_segment_destroy_cb);
@@ -363,3 +363,116 @@ bool datatable_scan(DataTable* table, ScanState* state, DataChunk* output, usize
 
     return false;
 }
+
+/* Stack-buffer size for heap tuple column values */
+#define HEAP_COLS_MAX 64
+
+/* Max scalar columns per TamColTable (stack buffer bound) */
+#define COL_TABLE_MAX 64
+
+/*
+ * build_heap_tuple — fill a RowTuple for heap insert/update.
+ *
+ * emb_ctid: stored directly in out->hdr.t_emb_ctid (no hidden column needed).
+ * payload_vals: user-visible heap columns (all ncols_def slots).
+ */
+static void build_heap_tuple(const HeapTable* heap, ItemPtr emb_ctid, const TupleVal* payload_vals,
+                             usize nvals, TupleVal cols_buf[HEAP_COLS_MAX], HeapTuple* out)
+{
+    usize ncols = heap->ncols_def < HEAP_COLS_MAX ? heap->ncols_def : HEAP_COLS_MAX;
+    u32 null_bits = 0;
+
+    /* User payload columns at cols[0..ncols-1] */
+    for (usize k = 0; k < ncols; k++)
+    {
+        cols_buf[k] =
+            (payload_vals && k < nvals) ? payload_vals[k] : (TupleVal){.type = TUPLE_COL_NULL};
+        if (cols_buf[k].type == TUPLE_COL_NULL) null_bits |= (1u << k);
+    }
+
+    out->cols = ncols > 0 ? cols_buf : NULL;
+    out->ncols = (u16)ncols;
+    out->hdr.null_bits = null_bits;
+    out->hdr.t_emb_ctid = emb_ctid;
+}
+
+static void heapTable_append(TableAmRoutine* am, VectorBase* v, TupleVal* payloads,
+                             usize n_payloads)
+{
+    HeapTable* ht = (HeapTable*)am;
+    u64 base_sc = heapStore_slot_count(&ht->store);
+}
+
+static void heapTable_append_chunk(TableAmRoutine* am, const DataChunk* chunk, TamInsertCtx* ctx)
+{
+    HeapTable* ht = (HeapTable*)am;
+    u64 base_sc = heapStore_slot_count(&ht->store);
+    for (usize i = 0; i < chunk->count; i++)
+    {
+        u64 rid = base_sc + i;
+        const TupleVal* val = chunk->payloads[i];
+        ItemPtr ctid = ctx->emb_ctids[i];
+        TupleVal cols_buf[HEAP_COLS_MAX];
+        HeapTuple heap_tup = {0};
+        build_heap_tuple(ht, ctid, val, chunk->n_payloads, cols_buf, &heap_tup);
+        heapStore_append(&ht->store, rid, &heap_tup);
+        ctx->out_row_ids[i] =
+            rid; /* record heap-assigned row_id — used by ANN when row_ids==NULL */
+    }
+}
+
+static int heapTable_read_chunk(TableAmRoutine* am, const DataChunk* chunk, TamReadCtx* ctx,
+                                u64 idx, DataChunk* out)
+{
+}
+
+static void heapTable_write_blocks(TableAmRoutine* am, BlockManager* bm, MetaBlockWriter* w) {}
+
+static void heapTable_load_blocks(TableAmRoutine* am, BlockManager* bm, MetaBlockReader* r) {}
+
+static void heapTable_destory(TableAmRoutine* am) {}
+
+static void embeddingTable_append(TableAmRoutine* am, VectorBase* v, TupleVal* payloads,
+                                  usize n_payloads)
+{
+}
+
+static void embeddingTable_append_chunk(TableAmRoutine* am, const DataChunk* chunk,
+                                        TamInsertCtx* ctx)
+{
+    EmbeddingTable* et = (EmbeddingTable*)am;
+    for (usize i = 0; i < chunk->count; i++)
+    {
+        ItemPtr ctid = embeddingStore_append_and_get_ctid(&et->store, &chunk->arrays[i]);
+        if (ctx && ctx->emb_ctids) ctx->emb_ctids[i] = ctid;
+    }
+}
+
+static int embeddingTable_read_chunk(TableAmRoutine* am, const DataChunk* chunk, TamReadCtx* ctx,
+                                     u64 idx, DataChunk* out)
+{
+}
+
+static void embeddingTable_write_blocks(TableAmRoutine* am, BlockManager* bm, MetaBlockWriter* w) {}
+
+static void embeddingTable_load_blocks(TableAmRoutine* am, BlockManager* bm, MetaBlockReader* r) {}
+
+static void embeddingTable_destory(TableAmRoutine* am) {}
+
+static const TableAmRoutineVTable heap_am_routine = {
+    .append = heapTable_append,
+    .append_chunk = heapTable_append_chunk,
+    .read_chunk = heapTable_read_chunk,
+    .write_blocks = heapTable_write_blocks,
+    .load_blocks = heapTable_load_blocks,
+    .destroy = heapTable_destory,
+};
+
+static const TableAmRoutineVTable embedding_am_routine = {
+    .append = embeddingTable_append,
+    .append_chunk = embeddingTable_append_chunk,
+    .read_chunk = embeddingTable_read_chunk,
+    .write_blocks = embeddingTable_write_blocks,
+    .load_blocks = embeddingTable_load_blocks,
+    .destroy = embeddingTable_destory,
+};

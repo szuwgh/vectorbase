@@ -30,10 +30,10 @@ void SegmentTree_deinit(SegmentTree* tree, void (*node_destroy)(SegmentBase*))
     tree->root_node = NULL;
 }
 
-ColumnSegment* ColumnSegment_create1(BlockManager* manager, block_id_t block_id, usize offset,
-                                     usize count)
+BlockSegment* BlockSegment_create1(BlockManager* manager, block_id_t block_id, usize offset,
+                                   usize count)
 {
-    ColumnSegment* segment = malloc(sizeof(ColumnSegment));
+    BlockSegment* segment = malloc(sizeof(BlockSegment));
     segment->base.start = 0;
     segment->base.count = count;
     segment->base.next = NULL;
@@ -44,9 +44,9 @@ ColumnSegment* ColumnSegment_create1(BlockManager* manager, block_id_t block_id,
     return segment;
 }
 
-ColumnSegment* ColumnSegment_create2(usize start)
+BlockSegment* BlockSegment_create2(usize start)
 {
-    ColumnSegment* segment = malloc(sizeof(ColumnSegment));
+    BlockSegment* segment = malloc(sizeof(BlockSegment));
     segment->base.start = start;
     segment->base.count = 0;
     segment->base.next = NULL;
@@ -57,15 +57,16 @@ ColumnSegment* ColumnSegment_create2(usize start)
     return segment;
 }
 
-void ColumnSegment_destroy(ColumnSegment* segment)
+void BlockSegment_destroy(SegmentBase* segment)
 {
-    if (!segment) return;
-    if (segment->block)
+    BlockSegment* seg = (BlockSegment*)segment;
+    if (!seg) return;
+    if (seg->block)
     {
-        block_destroy(segment->block);
-        segment->block = NULL;
+        block_destroy(seg->block);
+        seg->block = NULL;
     }
-    free(segment);
+    free(seg);
 }
 
 RowSegment* RowSegment_create(DataTable* table, usize start)
@@ -122,7 +123,7 @@ SegmentBase* segmentTree_get_last_segment(SegmentTree* tree)
     return ((SegmentNode*)vector_back(tree->nodes))->node;
 }
 
-data_ptr_t segment_get_data(ColumnSegment* segment)
+data_ptr_t segment_get_data(BlockSegment* segment)
 {
     if (segment->block == NULL)
     {

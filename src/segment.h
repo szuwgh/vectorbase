@@ -27,7 +27,7 @@ struct SegmentBase
 typedef struct
 {
     usize row_start;    // 指向的行起始索引
-    SegmentBase* node; // 指向的 ColumnSegment 或 RowSegment
+    SegmentBase* node; // 指向的 BlockSegment 或 RowSegment
 } SegmentNode;
 
 // 行存储树
@@ -51,18 +51,18 @@ typedef struct
     usize byte_offset; // 指向的字节偏移量
     BlockManager* block_manager; // 指向的块管理器
     Block* block; // 指向的块
-} ColumnSegment;
+} BlockSegment;
 
-ColumnSegment* ColumnSegment_create1(BlockManager* manager, block_id_t block_id, usize offset,
-                                     usize count);
+BlockSegment* BlockSegment_create1(BlockManager* manager, block_id_t block_id, usize offset,
+                                   usize count);
 
-ColumnSegment* ColumnSegment_create2(usize start);
+BlockSegment* BlockSegment_create2(usize start);
 
-void ColumnSegment_destroy(ColumnSegment* segment);
+void BlockSegment_destroy(SegmentBase* segment);
 
 typedef struct
 {
-    ColumnSegment* segment; // 指向的 ColumnSegment
+    BlockSegment* segment; // 指向的 BlockSegment
     usize bytes_offset;
 } ColumnPointer;
 
@@ -84,6 +84,6 @@ SegmentBase* SegmentTree_get_segment(SegmentTree* tree, usize index);
 
 SegmentBase* segmentTree_get_last_segment(SegmentTree* tree);
 
-data_ptr_t segment_get_data(ColumnSegment* segment);
+data_ptr_t segment_get_data(BlockSegment* segment);
 
 #endif
