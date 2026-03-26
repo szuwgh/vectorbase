@@ -6,20 +6,34 @@
 #include "types.h"
 #include "vb_type.h"
 
-#define INVALID_ITEM_PTR \
-    ((ItemPtr){.ip_blkid_hi = UINT16_MAX, .ip_blkid_lo = UINT16_MAX, .ip_posid = UINT16_MAX})
-
-#define INVALID_TXN_ID ((TxnId)0)  /* 未设置 / 占位 */
+typedef struct TableSchema TableSchema;
 
 /* Forward declaration — full definition is in datatable.h.
  * Pointer-only use here; datatable.h provides the struct body.
  * Avoids the circular: datatable.h → store.h → datatable.h. */
 typedef struct DataChunk DataChunk;
 
+/* ============================================================
+ * heap store
+ * ============================================================*/
+
+#define INVALID_ITEM_PTR \
+    ((ItemPtr){.ip_blkid_hi = UINT16_MAX, .ip_blkid_lo = UINT16_MAX, .ip_posid = UINT16_MAX})
+
+#define INVALID_TXN_ID    ((TxnId)0)  /* 未设置 / 占位 */
+
+#define HS_BLOCK_HDR_SIZE 6u /* sizeof(pd_lower) + sizeof(pd_upper) + sizeof(pd_flags) */
+#define HS_SLOT_SIZE      4u /* sizeof(RowSlotId) */
+/** PG-compatible page flag: set when page has at least one LP_UNUSED slot. */
+#define PD_HAS_FREE_LINES 0x0001u
+
+// Max tuple size in heap store
+#define HS_MAX_TUPLE_SIZE ((usize)(BLOCK_SIZE - HS_BLOCK_HDR_SIZE - HS_SLOT_SIZE))
+
 typedef enum
 {
     TUPLE_COL_NULL = 0,  /* null / no value */
-    TUPLE_COL_B = 1,
+    TUPLE_COL_BOOL = 1,
     TUPLE_COL_I32 = 2,
     TUPLE_COL_I64 = 3,
     TUPLE_COL_F32 = 4,
@@ -67,8 +81,13 @@ typedef struct
 
 typedef struct
 {
+    u16 lp_off;  /* 2: byte offset of the tuple data within the page */
+    u16 lp_len;  /* 2: length of the tuple data in bytes */
+} TupleSlotId;
+
+typedef struct
+{
     TupleHdr hdr; /* MVCC header (written by row_store_*; read back by get) */
-    u64 row_id; /* logical row identifier */
     TupleVal* cols; /* array of ncols TupleVal (caller-allocated for insert/update) */
     u16 ncols; /* number of columns (must match schema->ncols) */
 } HeapTuple;
@@ -87,32 +106,38 @@ ItemPtr embeddingStore_append_and_get_ctid(EmbeddingStore* store, VectorBase* ve
 typedef struct
 {
     SegmentTree tree;              /* one SegmentTree of slotted-page BlockSegments */
-    hmap id_map;            /* row_id (u64) → latest internal_id (u64) */
     TxnId next_txn_id;       /* MVCC transaction counter */
+    u32 page_count;
     BlockManager* block_manager;
-    Vector free_list;
+    BlockSegment* hint_free_seg; /* PG-style: first segment that may have LP_UNUSED
+                                  * slots (PD_HAS_FREE_LINES set on its page).
+                                  * NULL = no known free page.  Set by vacuum_row_store;
+                                  * consumed lazily by row_store_insert.
+                                  * Not serialized — rebuilt from pd_flags on load. */
 } HeapStore;
 
 void HeapStore_init(HeapStore* store);
 void HeapStore_deinit(HeapStore* store);
-void heapStore_append(HeapStore* store, u64 row_id, HeapTuple* tuple);
-/* Complete EmbeddingStore struct — store.h only has the forward decl.
- * Must match the layout in tmp/src/embedding_store.h for ABI compatibility. */
-struct EmbeddingStore
-{
-    SegmentTree tree;
-    i16 dimension;
-    usize count;
-    usize elem_size;
-    usize vecs_per_blk;       /* = BLOCK_SIZE / elem_size  (computed once at init)*/
-    Vector free_list;
-    ItemPtr last_ctid;
-};
 
-/* ColumnStore = DataTable forward declaration.
- * Compatible with: typedef DataTable ColumnStore; in tmp/src/column_store.h
- * and with the struct DataTable definition in datatable.h. */
-typedef struct DataTable ColumnStore;
+/**
+ * Insert a new tuple.
+ *
+ * Caller must fill: tuple->cols, tuple->ncols (= schema->ncols), tuple->hdr.null_bits.
+ * row_store_insert fills hdr.{t_xmin,t_xmax,t_ctid} (t_emb_ctid set by table_am layer).
+ *
+ * Returns the physical ctid (ItemPtr) assigned to this row.
+ * The returned ctid is the authoritative row identity for all subsequent operations.
+ */
+ItemPtr heapStore_insert(HeapStore* store, HeapTuple* tuple);
+
+/**
+ * Read the physical row at ctid into *out (regardless of MVCC status).
+ * Useful for inspecting old versions and the MVCC version chain.
+ * Returns 0 on success, -1 if ctid is invalid or the tuple is deleted.
+ * Updated-but-not-deleted old versions are returned normally for chain traversal.
+ * out->cols is heap-allocated; call row_tuple_free(out, schema) when done.
+ */
+int heapStore_get_by_ctid(HeapStore* store, TableSchema* schema, ItemPtr ctid, HeapTuple* out);
 
 /**
  * Build a physical ItemPtr from (block_id, 0-based slot_idx).
@@ -152,11 +177,31 @@ static inline bool item_ptr_is_valid(ItemPtr p)
     return p.ip_blkid_hi != UINT16_MAX;
 }
 
-u64 heapStore_slot_count(HeapStore* store)
-{
-    SegmentBase* last = segmentTree_get_last_segment(&store->tree);
-    if (!last) return 0;
-    return (u64)(last->start + last->count);
-}
+u64 heapStore_slot_count(HeapStore* store);
 
+/* ============================================================
+ * embedding store
+ * ============================================================*/
+
+/* Complete EmbeddingStore struct — store.h only has the forward decl.
+ * Must match the layout in tmp/src/embedding_store.h for ABI compatibility. */
+struct EmbeddingStore
+{
+    SegmentTree tree;
+    i16 dimension;
+    usize count;
+    usize elem_size;
+    usize vecs_per_blk;       /* = BLOCK_SIZE / elem_size  (computed once at init)*/
+    Vector free_list;
+    ItemPtr last_ctid;
+};
+
+/* ============================================================
+ * column store
+ * ============================================================*/
+typedef struct ColumnStore ColumnStore;
+
+struct ColumnStore
+{
+};
 #endif

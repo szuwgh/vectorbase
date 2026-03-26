@@ -13,10 +13,6 @@ typedef struct DataChunk DataChunk;
 #define STORAGE_CHUNK_VECTORS 5
 #define STORAGE_CHUNK_SIZE    (STANDARD_VECTOR_SIZE * STORAGE_CHUNK_VECTORS)
 
-typedef struct
-{
-} HeapTupleData;
-
 typedef enum
 {
     CHUNK_COLUMN = 0, // 列式
@@ -58,39 +54,39 @@ usize dataChunk_size(DataChunk* chunk);
 // StorageChunk 和 BlockSegment 的分段边界不一定对齐。一个 INT32 列的 BlockSegment（256KB）能装
 // 262144/4 = 65536 行，而一个 StorageChunk 只管 10240
 // 行。所以一个 BlockSegment 可能跨多个 StorageChunk。
-struct DataTable
-{
-    char* schema_name;
-    char* table_name;
-    StorageManager* manager;
-    SegmentTree row_storage_tree;
-    SegmentTree* column_storage_tree; // 列式存储
-    TypeID* column_types;
-    usize column_count;
-};
+// struct DataTable
+// {
+//     char* schema_name;
+//     char* table_name;
+//     StorageManager* manager;
+//     SegmentTree row_storage_tree;
+//     SegmentTree* column_storage_tree; // 列式存储
+//     TypeID* column_types;
+//     usize column_count;
+// };
 
-DataTable* Datatable_create(StorageManager* manager, char* schema_name, char* table_name,
-                            usize column_count, TypeID* column_types);
+// DataTable* Datatable_create(StorageManager* manager, char* schema_name, char* table_name,
+//                             usize column_count, TypeID* column_types);
 
-void Datatable_destroy(DataTable* table);
+// void Datatable_destroy(DataTable* table);
 
-void datatable_append_column(DataTable* table, DataChunk* chunk);
+// void datatable_append_column(DataTable* table, DataChunk* chunk);
 
-void datatable_append_row(DataTable* table, DataChunk* chunk);
+// void datatable_append_row(DataTable* table, DataChunk* chunk);
 
-typedef struct
-{
-    RowSegment* current_chunk;     // 当前正在扫描的 RowSegment
-    ColumnPointer* columns;        // 每列的读取位置（segment + byte offset）
-    usize offset;                  // current_chunk 内已扫描的行偏移
-    RowSegment* last_chunk;        // 表中最后一个 RowSegment（用于判断结束）
-    usize last_chunk_count;        // last_chunk 的行数（扫描开始时快照）
-} ScanState;
+// typedef struct
+// {
+//     RowSegment* current_chunk;     // 当前正在扫描的 RowSegment
+//     ColumnPointer* columns;        // 每列的读取位置（segment + byte offset）
+//     usize offset;                  // current_chunk 内已扫描的行偏移
+//     RowSegment* last_chunk;        // 表中最后一个 RowSegment（用于判断结束）
+//     usize last_chunk_count;        // last_chunk 的行数（扫描开始时快照）
+// } ScanState;
 
-void datatable_init_scan(DataTable* table, ScanState* state);
-void scanstate_deinit(ScanState* state);
-bool datatable_scan(DataTable* table, ScanState* state, DataChunk* output, usize* column_ids,
-                    usize col_count);
+// void datatable_init_scan(DataTable* table, ScanState* state);
+// void scanstate_deinit(ScanState* state);
+// bool datatable_scan(DataTable* table, ScanState* state, DataChunk* output, usize* column_ids,
+//                     usize col_count);
 
 typedef enum TableAmRoutineType
 {
@@ -134,20 +130,37 @@ typedef struct
     EmbeddingStore store;  /* pointer — complete type from tmp/src/embedding_store.h */
 } EmbeddingTable;
 
+/** Ordered list of column definitions.  Borrowed by RowStore. */
+struct TableSchema
+{
+    const TupleColType* cols;
+    u16 ncols;
+};
+
 typedef struct
 {
     EXTENDS(TableAmRoutine);
     HeapStore store;
-    usize ncols_def;      /* number of user-visible heap columns */
-    TupleColType* column_types;
+    TableSchema schema; /* column types for heap tuples (ncols = schema.ncols) */
 } HeapTable;
 
 typedef struct
 {
     EXTENDS(TableAmRoutine);
     ColumnStore store;  /* pointer — complete type from datatable.h */
-    usize ncols_def;      /* number of user-visible column columns */
-    TypeID* column_types;
+    TableSchema schema
 } ColumnTable;
+
+struct DataTable
+{
+    /* data */
+    char* schema_name;   /* owned */
+    char* table_name;    /* owned */
+    TableAmRoutine* tables;
+    usize ntables;
+    usize ncols;
+};
+
+void dataTable_insert_datachunk(DataTable* datatable);
 
 #endif

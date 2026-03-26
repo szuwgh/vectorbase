@@ -10,7 +10,7 @@
 #include "types.h"
 #include "vb_type.h"
 #include "vector.h"
-#include "datatable.h"
+#include "table.h"
 #include "operator.h"
 
 Block* Block_create(block_id_t block_id)
@@ -814,54 +814,54 @@ static void tableDataWriter_write_data_pointers(TableDataWriter* self)
     }
 }
 
-static void tableDataWriter_write_data(TableDataWriter* self)
-{
-    ScanState state;
-    datatable_init_scan(self->table->datatable, &state);
-    // 为每列准备一个  Block 作为写缓冲区：
-    Vector column_ids = VEC(Oid, self->table->column_count);
-    for (int i = 0; i < self->table->column_count; i++)
-    {
-        vector_push_back(&column_ids, &self->table->columns[i].oid);
-    }
-    Vector types = tableCatalogEntry_get_types(self->table);
-    DataChunk chunk = MAKE(DataChunk, types);
-    usize zero = 0;
-    for (int i = 0; i < self->table->column_count; i++)
-    {
-        // for each column, create a block that serves as the buffer for that blocks data
-        Block* blk = Block_create(INVALID_BLOCK);
-        vector_push_back(&self->blocks, &blk);
-        vector_push_back(&self->offsets, &zero);
-        vector_push_back(&self->tuple_counts, &zero);
-        vector_push_back(&self->row_numbers, &zero);
-        Vector dp_list;
-        Vector_init(&dp_list, sizeof(DataPointer), 0);
-        vector_push_back(&self->data_pointers, &dp_list);
-    }
-    while (true)
-    {
-        dataChunk_reset(&chunk);
-        datatable_scan(self->table->datatable, &state, &chunk, column_ids.data,
-                       self->table->column_count);
+// static void tableDataWriter_write_data(TableDataWriter* self)
+// {
+//     ScanState state;
+//     datatable_init_scan(self->table->datatable, &state);
+//     // 为每列准备一个  Block 作为写缓冲区：
+//     Vector column_ids = VEC(Oid, self->table->column_count);
+//     for (int i = 0; i < self->table->column_count; i++)
+//     {
+//         vector_push_back(&column_ids, &self->table->columns[i].oid);
+//     }
+//     Vector types = tableCatalogEntry_get_types(self->table);
+//     DataChunk chunk = MAKE(DataChunk, types);
+//     usize zero = 0;
+//     for (int i = 0; i < self->table->column_count; i++)
+//     {
+//         // for each column, create a block that serves as the buffer for that blocks data
+//         Block* blk = Block_create(INVALID_BLOCK);
+//         vector_push_back(&self->blocks, &blk);
+//         vector_push_back(&self->offsets, &zero);
+//         vector_push_back(&self->tuple_counts, &zero);
+//         vector_push_back(&self->row_numbers, &zero);
+//         Vector dp_list;
+//         Vector_init(&dp_list, sizeof(DataPointer), 0);
+//         vector_push_back(&self->data_pointers, &dp_list);
+//     }
+//     while (true)
+//     {
+//         dataChunk_reset(&chunk);
+//         datatable_scan(self->table->datatable, &state, &chunk, column_ids.data,
+//                        self->table->column_count);
 
-         // 每次返回最多 STANDARD_VECTOR_SIZE
-        if (dataChunk_size(&chunk) == 0) break;
-        for (usize i = 0; i < chunk.count; i++)
-        {
-            assert(chunk.arrays[i].type == get_internal_type(self->table->columns[i].type));
-            tableDataWriter_writecolumndata(self, &chunk, i);
-        }
-    }
-    for (int i = 0; i < self->table->column_count; i++)
-    {
-        TableDataWriter_flush_block(self, i);
-    }
-    scanstate_deinit(&state);
-    vector_deinit(&column_ids);
-    vector_deinit(&types);
-    tableDataWriter_write_data_pointers(self);
-}
+//          // 每次返回最多 STANDARD_VECTOR_SIZE
+//         if (dataChunk_size(&chunk) == 0) break;
+//         for (usize i = 0; i < chunk.count; i++)
+//         {
+//             assert(chunk.arrays[i].type == get_internal_type(self->table->columns[i].type));
+//             tableDataWriter_writecolumndata(self, &chunk, i);
+//         }
+//     }
+//     for (int i = 0; i < self->table->column_count; i++)
+//     {
+//         TableDataWriter_flush_block(self, i);
+//     }
+//     scanstate_deinit(&state);
+//     vector_deinit(&column_ids);
+//     vector_deinit(&types);
+//     tableDataWriter_write_data_pointers(self);
+// }
 
 //   DBHeader.meta_block
 //       → metadata_writer 链 (Schema 定义 + Table 定义 + td_block/td_offset)

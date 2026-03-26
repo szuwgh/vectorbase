@@ -5,7 +5,7 @@
 #include "catalog.h"
 #include "hash.h"
 #include "parser.h"
-#include "datatable.h"
+#include "table.h"
 
 void catalogSet_init(CatalogSet* set)
 {
