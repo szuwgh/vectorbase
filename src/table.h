@@ -109,16 +109,29 @@ typedef struct
 typedef struct
 {
     ItemPtr heap_ctid;    /* physical ctid of the heap slot */
-    u64 seq_idx;      /* sequential row index (for TamColTable) */
     ItemPtr emb_ctid;     /* emb position (for TamEmbTable) */
     HeapTuple* heap_tup;     /* pre-fetched heap tuple (for TamHeapTable); NULL if unused */
 } TamReadCtx;
+
+typedef struct
+{
+    ItemPtr heap_ctid;    /* physical ctid of the heap slot */
+    ItemPtr emb_ctid;     /* emb position (for TamEmbTable) */
+} TamUpdateCtx;
+
+typedef struct
+{
+    ItemPtr heap_ctid;    /* physical ctid of the heap slot */
+    ItemPtr emb_ctid;     /* emb position (for TamEmbTable) */
+} TamDeleteCtx;
 
 // clang-format off
 DEFINE_CLASS(TableAmRoutine,
     VMETHOD(TableAmRoutine, append, void, VectorBase* v, TupleVal* payloads, usize n_payloads)
     VMETHOD(TableAmRoutine, append_chunk, void, const DataChunk* chunk, TamInsertCtx* ctx)
     VMETHOD(TableAmRoutine, read_chunk, int, const DataChunk* chunk, TamReadCtx* ctx, u64 idx, DataChunk* out)
+    VMETHOD(TableAmRoutine, update, int, VectorBase* v, TupleVal* payloads, TamUpdateCtx* ctx)
+    VMETHOD(TableAmRoutine, delete, int, TamDeleteCtx* ctx)
     VMETHOD(TableAmRoutine,write_blocks, void, BlockManager* bm, MetaBlockWriter* w)
     VMETHOD(TableAmRoutine,load_blocks, void, BlockManager* bm, MetaBlockReader* r)
     VMETHOD(TableAmRoutine,destroy, void)

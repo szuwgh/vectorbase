@@ -114,37 +114,37 @@ ItemPtr embeddingStore_append_and_get_ctid(EmbeddingStore* store, VectorBase* ve
  * heap store
  * ============================================================ */
 
-static inline u16* hs_pd_lower(u8* page)
+static inline u16* heapStore_pd_lower(u8* page)
 {
     return (u16*)page;
 }
 
-static inline u16* hs_pd_upper(u8* page)
+static inline u16* heapStore_pd_upper(u8* page)
 {
     return (u16*)(page + 2);
 }
 
-static inline u16* hs_pd_flags(u8* page)
+static inline u16* heapStore_pd_flags(u8* page)
 {
     return (u16*)(page + 4);
 }
 
-static inline TupleSlotId* hs_slots(u8* page)
+static inline TupleSlotId* heapStore_slots(u8* page)
 {
     return (TupleSlotId*)(page + HS_BLOCK_HDR_SIZE);
 }
 
-static inline u16 hs_free_space(u8* page)
+static inline u16 heapStore_free_space(u8* page)
 {
-    return *hs_pd_upper(page) - *hs_pd_lower(page);
+    return *heapStore_pd_upper(page) - *heapStore_pd_lower(page);
 }
 
 /** Initialise a fresh page (pd_lower=6, pd_upper=BLOCK_SIZE, pd_flags=0). */
 static void rs_page_init(u8* page)
 {
-    *hs_pd_lower(page) = (u16)HS_BLOCK_HDR_SIZE;
-    *hs_pd_upper(page) = (u16)BLOCK_SIZE;
-    *hs_pd_flags(page) = 0;
+    *heapStore_pd_lower(page) = (u16)HS_BLOCK_HDR_SIZE;
+    *heapStore_pd_upper(page) = (u16)BLOCK_SIZE;
+    *heapStore_pd_flags(page) = 0;
 }
 
 u64 heapStore_slot_count(HeapStore* store)
@@ -242,15 +242,15 @@ static void serialize_tuple_into(u8* dest, const HeapTuple* tuple)
  * Move direction: always upward (src ≤ dest), so memmove is correct even
  * when adjacent blocks overlap.  O(page_size).
  * ============================================================ */
-static void hs_page_compact(u8* page)
+static void heapStore_page_compact(u8* page)
 {
-    u16 pd_lower = *hs_pd_lower(page);
+    u16 pd_lower = *heapStore_pd_lower(page);
     usize n_slots = (pd_lower - HS_BLOCK_HDR_SIZE) / HS_SLOT_SIZE;
     u16 new_upper = (u16)BLOCK_SIZE;
 
     for (usize i = 0; i < n_slots; i++)
     {
-        TupleSlotId* sl = &hs_slots(page)[i];
+        TupleSlotId* sl = &heapStore_slots(page)[i];
         if (sl->lp_len == 0) continue;  /* LP_UNUSED: skip */
 
         u16 tup_len = sl->lp_len;
@@ -263,10 +263,10 @@ static void hs_page_compact(u8* page)
         }
     }
 
-    *hs_pd_upper(page) = new_upper;
+    *heapStore_pd_upper(page) = new_upper;
 }
 
-static ItemPtr hs_reuse_slot(HeapStore* store, ItemPtr ctid, HeapTuple* tuple)
+static ItemPtr heapStore_reuse_slot(HeapStore* store, ItemPtr ctid, HeapTuple* tuple)
 {
     BlockSegment* seg = rs_find_seg_by_block(store, item_ptr_block_id(ctid));
     if (!seg) return INVALID_ITEM_PTR;
@@ -275,7 +275,7 @@ static ItemPtr hs_reuse_slot(HeapStore* store, ItemPtr ctid, HeapTuple* tuple)
     u8* page = (u8*)segment_get_data(seg);
     if ((usize)slot_idx >= seg->base.count) return INVALID_ITEM_PTR;
 
-    TupleSlotId* sl = &hs_slots(page)[slot_idx];
+    TupleSlotId* sl = &heapStore_slots(page)[slot_idx];
     if (sl->lp_len != 0) return INVALID_ITEM_PTR;  /* not LP_UNUSED: safety check */
 
     usize ser_size = compute_tuple_size(tuple);
@@ -283,10 +283,10 @@ static ItemPtr hs_reuse_slot(HeapStore* store, ItemPtr ctid, HeapTuple* tuple)
 
     /* No new slot entry needed (the slot already exists in the array).
      * We only need ser_size bytes of tuple space from free space. */
-    if ((usize)hs_free_space(page) < ser_size)
+    if ((usize)heapStore_free_space(page) < ser_size)
     {
-        hs_page_compact(page);  /* reclaim dead bytes above pd_upper */
-        if ((usize)hs_free_space(page) < ser_size)
+        heapStore_page_compact(page);  /* reclaim dead bytes above pd_upper */
+        if ((usize)heapStore_free_space(page) < ser_size)
             return INVALID_ITEM_PTR;  /* page is genuinely full even after compaction */
     }
 
@@ -294,8 +294,8 @@ static ItemPtr hs_reuse_slot(HeapStore* store, ItemPtr ctid, HeapTuple* tuple)
     tuple->hdr.t_ctid = make_item_ptr(seg->block_id, slot_idx);
 
     /* Carve tuple space from pd_upper downward. */
-    *hs_pd_upper(page) -= (u16)ser_size;
-    u16 tup_off = *hs_pd_upper(page);
+    *heapStore_pd_upper(page) -= (u16)ser_size;
+    u16 tup_off = *heapStore_pd_upper(page);
 
     /* Serialize directly into the page — zero-copy. */
     serialize_tuple_into(page + tup_off, tuple);
@@ -314,18 +314,18 @@ static ItemPtr hs_reuse_slot(HeapStore* store, ItemPtr ctid, HeapTuple* tuple)
  * Caller must have already verified rs_free_space(page) >= RS_SLOT_SIZE + len.
  * out_slot_idx receives the assigned 0-based slot index.
  */
-static u8* hs_page_reserve_slot(u8* page, u16 len, u16* out_slot_idx)
+static u8* heapStore_page_reserve_slot(u8* page, u16 len, u16* out_slot_idx)
 {
-    u16 pd_upper = *hs_pd_upper(page);
+    u16 pd_upper = *heapStore_pd_upper(page);
     u16 tup_off = (u16)(pd_upper - len);
 
-    u16 slot_idx = (u16)((*hs_pd_lower(page) - HS_BLOCK_HDR_SIZE) / HS_SLOT_SIZE);
-    TupleSlotId* slot = hs_slots(page) + slot_idx;
+    u16 slot_idx = (u16)((*heapStore_pd_lower(page) - HS_BLOCK_HDR_SIZE) / HS_SLOT_SIZE);
+    TupleSlotId* slot = heapStore_slots(page) + slot_idx;
     slot->lp_off = tup_off;
     slot->lp_len = len;
 
-    *hs_pd_lower(page) = (u16)(*hs_pd_lower(page) + HS_SLOT_SIZE);
-    *hs_pd_upper(page) = tup_off;
+    *heapStore_pd_lower(page) = (u16)(*heapStore_pd_lower(page) + HS_SLOT_SIZE);
+    *heapStore_pd_upper(page) = tup_off;
 
     if (out_slot_idx) *out_slot_idx = slot_idx;
     return page + tup_off;
@@ -370,7 +370,7 @@ static ItemPtr heapStore_append_tuple(HeapStore* store, HeapTuple* tuple)
     }
 
     /* 3. Compute slot index from current pd_lower (= number of existing slots). */
-    u16 slot_idx = (u16)((*hs_pd_lower(page) - HS_BLOCK_HDR_SIZE) / HS_SLOT_SIZE);
+    u16 slot_idx = (u16)((*heapStore_pd_lower(page) - HS_BLOCK_HDR_SIZE) / HS_SLOT_SIZE);
 
     /* 4. Stamp ctid using the segment's real disk block_id. */
     block_id_t block_id = seg->block_id;
@@ -378,7 +378,7 @@ static ItemPtr heapStore_append_tuple(HeapStore* store, HeapTuple* tuple)
 
     /* 5. Reserve page slot and serialize directly into it (zero intermediate buffer). */
     u16 actual_slot;
-    u8* dest = hs_page_reserve_slot(page, (u16)ser_size, &actual_slot);
+    u8* dest = heapStore_page_reserve_slot(page, (u16)ser_size, &actual_slot);
     assert(actual_slot == slot_idx);  /* must match pre-computed slot */
     serialize_tuple_into(dest, tuple);
 
@@ -425,15 +425,15 @@ ItemPtr heapStore_insert(HeapStore* store, HeapTuple* tuple)
         {
             data_ptr_t page = segment_get_data(scan);
             // Find a page with free space
-            if (*hs_pd_flags(page) & PD_HAS_FREE_LINES)
+            if (*heapStore_pd_flags(page) & PD_HAS_FREE_LINES)
             {
-                usize n_slots = (*hs_pd_lower(page) - HS_BLOCK_HDR_SIZE) / HS_SLOT_SIZE;
+                usize n_slots = (*heapStore_pd_lower(page) - HS_BLOCK_HDR_SIZE) / HS_SLOT_SIZE;
                 for (usize i = 0; i < n_slots; i++)
                 {
-                    if (hs_slots(page)[i].lp_len != 0) continue;  /* not LP_UNUSED */
+                    if (heapStore_slots(page)[i].lp_len != 0) continue;  /* not LP_UNUSED */
 
                     ItemPtr free_ctid = make_item_ptr(scan->block_id, (u16)i);
-                    ItemPtr ctid = hs_reuse_slot(store, free_ctid, tuple);
+                    ItemPtr ctid = heapStore_reuse_slot(store, free_ctid, tuple);
                     if (item_ptr_is_valid(ctid))
                     {
                         break;
@@ -441,7 +441,7 @@ ItemPtr heapStore_insert(HeapStore* store, HeapTuple* tuple)
                 }
 
                 /* No usable LP_UNUSED slot on this page — clear its hint bit. */
-                *hs_pd_flags(page) &= (u16)~PD_HAS_FREE_LINES;
+                *heapStore_pd_flags(page) &= (u16)~PD_HAS_FREE_LINES;
             }
             scan = (BlockSegment*)scan->base.next;
         }
@@ -454,7 +454,7 @@ ItemPtr heapStore_insert(HeapStore* store, HeapTuple* tuple)
     }
 }
 
-static BlockSegment* hs_find_seg_by_block(const HeapStore* store, block_id_t block_id)
+static BlockSegment* heapStore_find_seg_by_block(const HeapStore* store, block_id_t block_id)
 {
     for (SegmentBase* s = segmentTree_get_root_segment(&store->tree); s != NULL; s = s->next)
     {
@@ -465,9 +465,9 @@ static BlockSegment* hs_find_seg_by_block(const HeapStore* store, block_id_t blo
 }
 
 /** Return a pointer to the tuple at slot_idx within page. */
-static inline u8* hs_page_get_tuple(u8* page, u16 slot_idx)
+static inline u8* heapStore_page_get_tuple(u8* page, u16 slot_idx)
 {
-    return page + hs_slots(page)[slot_idx].lp_off;
+    return page + heapStore_slots(page)[slot_idx].lp_off;
 }
 
 static const u8* read_col_ptr(const u8* src, TupleVal* out)
@@ -546,16 +546,16 @@ int heapStore_get_by_ctid(HeapStore* store, TableSchema* schema, ItemPtr ctid, H
 {
     block_id_t block_id = item_ptr_block_id(ctid);
     u16 slot_idx = item_ptr_slot(ctid);
-    BlockSegment* seg = hs_find_seg_by_block(store, block_id);
+    BlockSegment* seg = heapStore_find_seg_by_block(store, block_id);
     if (!seg) return -1;
 
     u8* page = (u8*)segment_get_data(seg);
     if ((usize)slot_idx >= seg->base.count) return -1;
 
-    TupleSlotId* slot = &hs_slots(page)[slot_idx];
+    TupleSlotId* slot = &heapStore_slots(page)[slot_idx];
     if (slot->lp_len == 0) return -1; /* LP_UNUSED */
 
-    u8* tup_ptr = hs_page_get_tuple(page, slot_idx);
+    u8* tup_ptr = heapStore_page_get_tuple(page, slot_idx);
 
     memset(out, 0, sizeof(HeapTuple));
     out->ncols = schema->ncols;
@@ -592,21 +592,21 @@ int heapStore_get_by_ctid(HeapStore* store, TableSchema* schema, ItemPtr ctid, H
 }
 
 /* Lookup tuple pointer from ctid. Returns NULL if slot is LP_UNUSED or ctid invalid. */
-static u8* hs_lookup_ctid(HeapStore* store, ItemPtr ctid)
+static u8* heapStore_lookup_ctid(HeapStore* store, ItemPtr ctid)
 {
     block_id_t block_id = item_ptr_block_id(ctid);
     u16 slot_idx = item_ptr_slot(ctid);
-    BlockSegment* seg = hs_find_seg_by_block(store, block_id);
+    BlockSegment* seg = heapStore_find_seg_by_block(store, block_id);
     if (!seg) return NULL;
     if ((usize)slot_idx >= seg->base.count) return NULL;
     u8* page = (u8*)segment_get_data(seg);
-    if (hs_slots(page)[slot_idx].lp_len == 0) return NULL;
-    return hs_page_get_tuple(page, slot_idx);
+    if (heapStore_slots(page)[slot_idx].lp_len == 0) return NULL;
+    return heapStore_page_get_tuple(page, slot_idx);
 }
 
-TxnId heapstore_update_by_ctid(HeapStore* store, ItemPtr old_ctid, HeapTuple* new_tuple)
+TxnId heapStore_update_by_ctid(HeapStore* store, ItemPtr old_ctid, HeapTuple* new_tuple)
 {
-    u8* old_tup = hs_lookup_ctid(store, old_ctid);
+    u8* old_tup = heapStore_lookup_ctid(store, old_ctid);
     if (!old_tup) return INVALID_TXN_ID;
 
     /* Verify old version is alive */
@@ -628,7 +628,7 @@ TxnId heapstore_update_by_ctid(HeapStore* store, ItemPtr old_ctid, HeapTuple* ne
      * node array, but block->data buffers are stable (separate allocations).
      * The re-lookup is technically unnecessary but guards against future
      * layout changes that inline block data into the node array. */
-    old_tup = hs_lookup_ctid(store, old_ctid);
+    old_tup = heapStore_lookup_ctid(store, old_ctid);
     if (old_tup)
     {
         memcpy(&old_hdr, old_tup, sizeof(TupleHdr));
@@ -641,9 +641,9 @@ TxnId heapstore_update_by_ctid(HeapStore* store, ItemPtr old_ctid, HeapTuple* ne
     return txn_id;
 }
 
-TxnId heapstore_delete_by_ctid(HeapStore* store, ItemPtr ctid)
+TxnId heapStore_delete_by_ctid(HeapStore* store, ItemPtr ctid)
 {
-    u8* tup = hs_lookup_ctid(store, ctid);
+    u8* tup = heapStore_lookup_ctid(store, ctid);
     if (!tup) return INVALID_TXN_ID;
 
     TupleHdr hdr;

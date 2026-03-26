@@ -421,11 +421,12 @@ static void heapTable_append(TableAmRoutine* am, TamInsertCtx* ctx, VectorBase* 
 static void heapTable_append_chunk(TableAmRoutine* am, const DataChunk* chunk, TamInsertCtx* ctx)
 {
     HeapTable* ht = (HeapTable*)am;
+    LWLockAcquire(&ht->store.lock, LW_EXCLUSIVE);
     for (usize i = 0; i < chunk->count; i++)
     {
         ctx->current_index = i;
-        heapTable_append(am, ctx, &chunk->arrays[i], chunk->payloads ? chunk->payloads[i] : NULL,
-                         chunk->n_payloads);
+        heapTable_append_impl(am, ctx, &chunk->arrays[i],
+                              chunk->payloads ? chunk->payloads[i] : NULL, chunk->n_payloads);
         // const TupleVal* val = chunk->payloads[i];
         // ItemPtr ctid = ctx->emb_ctids[i];
         // TupleVal cols_buf[HEAP_COLS_MAX];
@@ -433,6 +434,7 @@ static void heapTable_append_chunk(TableAmRoutine* am, const DataChunk* chunk, T
         // build_heap_tuple(ht, ctid, val, chunk->n_payloads, cols_buf, &heap_tup);
         // heapStore_insert(&ht->store, &heap_tup);
     }
+    LWLockRelease(&ht->store.lock);
 }
 
 static int heapTable_read_chunk(TableAmRoutine* am, const DataChunk* chunk, TamReadCtx* ctx,

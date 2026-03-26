@@ -142,6 +142,25 @@ ItemPtr heapStore_insert(HeapStore* store, HeapTuple* tuple);
 int heapStore_get_by_ctid(HeapStore* store, TableSchema* schema, ItemPtr ctid, HeapTuple* out);
 
 /**
+ * MVCC delete: mark the current version as deleted.
+ *
+ * Sets t_xmax=txn (non-zero marks tuple as deleted).
+ * t_ctid stays self-pointing.
+ * Returns the txn_id used on success, INVALID_TXN_ID if ctid is not found or already dead.
+ */
+TxnId heapStore_delete_by_ctid(HeapStore* store, ItemPtr ctid);
+/**
+ * MVCC update: append a new version and mark the old one superseded.
+ *
+ * OLD tuple: t_xmax=txn, t_ctid=new_location (forward pointer).
+ * NEW tuple: t_xmin=txn, t_xmax=INVALID_TXN_ID, t_ctid=self.
+ *
+ * Caller fills: new_tuple->cols, new_tuple->ncols, new_tuple->hdr.null_bits.
+ * After return, new_tuple->hdr.t_ctid holds the new physical ctid.
+ * Returns the txn_id used on success, INVALID_TXN_ID if old_ctid is not found or dead.
+ */
+TxnId heapStore_update_by_ctid(HeapStore* store, ItemPtr old_ctid, HeapTuple* new_tuple);
+/**
  * Build a physical ItemPtr from (block_id, 0-based slot_idx).
  * Stores lower 32 bits of block_id; ip_posid = slot_idx + 1 (1-based).
  */
