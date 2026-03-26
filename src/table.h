@@ -13,6 +13,8 @@ typedef struct DataChunk DataChunk;
 #define STORAGE_CHUNK_VECTORS 5
 #define STORAGE_CHUNK_SIZE    (STANDARD_VECTOR_SIZE * STORAGE_CHUNK_VECTORS)
 
+#define TAM_CTX_STACK_MAX     64
+
 typedef enum
 {
     CHUNK_COLUMN = 0, // 列式
@@ -97,10 +99,11 @@ typedef enum TableAmRoutineType
 
 typedef struct
 {
-    u64* out_row_ids; /* [count] — filled by heap; read by ANN insert when row_ids==NULL */
+   // u64* out_row_ids; /* [count] — filled by heap; read by ANN insert when row_ids==NULL */
     ItemPtr* emb_ctids;   /* [count] — filled by phase-0 (emb) engines; read by heap */
     const u64* row_ids;     /* caller-supplied logical IDs (NULL = auto-assign) */
     usize count;
+    usize current_index;
 } TamInsertCtx;
 
 typedef struct
@@ -161,6 +164,6 @@ struct DataTable
     usize ncols;
 };
 
-void dataTable_insert_datachunk(DataTable* datatable);
+void dataTable_insert_datachunk(DataTable* datatable, DataChunk* chunk);
 
 #endif

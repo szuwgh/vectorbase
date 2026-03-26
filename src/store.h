@@ -5,6 +5,7 @@
 #include "segment.h"
 #include "types.h"
 #include "vb_type.h"
+#include "lock.h"
 
 typedef struct TableSchema TableSchema;
 
@@ -114,6 +115,7 @@ typedef struct
                                   * NULL = no known free page.  Set by vacuum_row_store;
                                   * consumed lazily by row_store_insert.
                                   * Not serialized — rebuilt from pd_flags on load. */
+    LWLock lock;  /* EXCLUSIVE=write/vacuum, SHARED=read*/
 } HeapStore;
 
 void HeapStore_init(HeapStore* store);

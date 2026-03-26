@@ -398,28 +398,40 @@ static void build_heap_tuple(const HeapTable* heap, ItemPtr emb_ctid, const Tupl
     out->hdr.t_emb_ctid = emb_ctid;
 }
 
-static void heapTable_append(TableAmRoutine* am, VectorBase* v, TupleVal* payloads,
+static void heapTable_append_impl(TableAmRoutine* am, TamInsertCtx* ctx, VectorBase* v,
+                                  TupleVal* val, usize n_payloads)
+{
+    HeapTable* ht = (HeapTable*)am;
+    ItemPtr ctid = ctx->emb_ctids[ctx->current_index];
+    TupleVal cols_buf[HEAP_COLS_MAX];
+    HeapTuple heap_tup = {0};
+    build_heap_tuple(ht, ctid, val, n_payloads, cols_buf, &heap_tup);
+    heapStore_insert(&ht->store, &heap_tup);
+}
+
+static void heapTable_append(TableAmRoutine* am, TamInsertCtx* ctx, VectorBase* v, TupleVal* val,
                              usize n_payloads)
 {
     HeapTable* ht = (HeapTable*)am;
-    u64 base_sc = heapStore_slot_count(&ht->store);
+    LWLockAcquire(&ht->store.lock, LW_EXCLUSIVE);
+    heapTable_append_impl(am, ctx, v, val, n_payloads);
+    LWLockRelease(&ht->store.lock);
 }
 
 static void heapTable_append_chunk(TableAmRoutine* am, const DataChunk* chunk, TamInsertCtx* ctx)
 {
     HeapTable* ht = (HeapTable*)am;
-    u64 base_sc = heapStore_slot_count(&ht->store);
     for (usize i = 0; i < chunk->count; i++)
     {
-        u64 rid = base_sc + i;
-        const TupleVal* val = chunk->payloads[i];
-        ItemPtr ctid = ctx->emb_ctids[i];
-        TupleVal cols_buf[HEAP_COLS_MAX];
-        HeapTuple heap_tup = {0};
-        build_heap_tuple(ht, ctid, val, chunk->n_payloads, cols_buf, &heap_tup);
-        heapStore_append(&ht->store, rid, &heap_tup);
-        ctx->out_row_ids[i] =
-            rid; /* record heap-assigned row_id — used by ANN when row_ids==NULL */
+        ctx->current_index = i;
+        heapTable_append(am, ctx, &chunk->arrays[i], chunk->payloads ? chunk->payloads[i] : NULL,
+                         chunk->n_payloads);
+        // const TupleVal* val = chunk->payloads[i];
+        // ItemPtr ctid = ctx->emb_ctids[i];
+        // TupleVal cols_buf[HEAP_COLS_MAX];
+        // HeapTuple heap_tup = {0};
+        // build_heap_tuple(ht, ctid, val, chunk->n_payloads, cols_buf, &heap_tup);
+        // heapStore_insert(&ht->store, &heap_tup);
     }
 }
 
@@ -478,3 +490,27 @@ static const TableAmRoutineVTable embedding_am_routine = {
     .load_blocks = embeddingTable_load_blocks,
     .destroy = embeddingTable_destory,
 };
+
+void dataTable_insert_datachunk(DataTable* datatable, DataChunk* chunk)
+{
+    ItemPtr heap_ctid_stack[TAM_CTX_STACK_MAX];
+    ItemPtr emb_ctid_stack[TAM_CTX_STACK_MAX];
+
+    // ItemPtr* heap_ctid_buf = out_heap_ctids ? out_heap_ctids
+    //                          : (chunk->count <= TAM_CTX_STACK_MAX)
+    //                              ? heap_ctid_stack
+    //                              : (ItemPtr*)malloc(chunk->count * sizeof(ItemPtr));
+
+    TamInsertCtx ctx = {
+        .emb_ctids = emb_ctid_stack,
+        .row_ids = NULL,
+        .count = chunk->count,
+        .current_index = 0,
+    };
+
+    for (usize i = 0; i < datatable->ntables; i++)
+    {
+        TableAmRoutine* am = &datatable->tables[i];
+        am->vtable->append_chunk(am, chunk, &ctx);
+    }
+}
