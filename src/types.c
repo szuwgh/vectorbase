@@ -23,6 +23,13 @@ usize get_typeid_size(TypeID type)
     }
 }
 
+void VectorBase_init(VectorBase* vector, TypeID type)
+{
+    vector->type  = type;
+    vector->count = 0;
+    vector->data  = NULL;
+}
+
 void VectorBase_from_vector(VectorBase* vector, Vector src, TypeID type)
 {
     vector->type = type;

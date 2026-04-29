@@ -62,6 +62,64 @@ typedef struct
     } v;
 } TupleVal;
 
+/* ============================================================
+ * Datum — PostgreSQL-style unified value representation (u64).
+ *
+ * By-value types (BOOL, INT32, INT64, FLOAT32, FLOAT64):
+ *   Stored inline in the low bits of the u64.
+ *
+ * By-reference types (TEXT, BYTEA, JSONB):
+ *   Stored as pointer (PointerGetDatum), in-memory layout:
+ *     TEXT / BYTEA: [u32 content_len][data bytes...]
+ *     JSONB:        VbJsonb* — vl_len_ bytes total (includes 4-byte header)
+ *
+ * null_bits (u64 in TupleHdr): bit i set → col i is NULL → Datum[i] undefined.
+ * ============================================================ */
+
+typedef u64 Datum;  // 每个字段的数据载体
+
+/* ---- By-value → Datum ---- */
+#define BoolGetDatum(v)  ((Datum)(u8)(!!(v)))
+#define Int32GetDatum(v) ((Datum)(u64)(i64)(i32)(v))
+#define Int64GetDatum(v) ((Datum)(u64)(i64)(v))
+static inline Datum Float32GetDatum(f32 v)
+{
+    u32 b;
+    memcpy(&b, &v, 4);
+    return (Datum)b;
+}
+static inline Datum Float64GetDatum(f64 v)
+{
+    u64 b;
+    memcpy(&b, &v, 8);
+    return b;
+}
+
+/* ---- Datum → by-value ---- */
+#define DatumGetBool(d)  ((bool)((u8)(d) != 0))
+#define DatumGetInt32(d) ((i32)(i64)(u64)(d))
+#define DatumGetInt64(d) ((i64)(u64)(d))
+static inline f32 DatumGetFloat32(Datum d)
+{
+    u32 b = (u32)(d);
+    f32 v;
+    memcpy(&v, &b, 4);
+    return v;
+}
+static inline f64 DatumGetFloat64(Datum d)
+{
+    u64 b = (u64)(d);
+    f64 v;
+    memcpy(&v, &b, 8);
+    return v;
+}
+
+/* ---- By-reference ---- */
+#define PointerGetDatum(p) ((Datum)(uintptr_t)(const void*)(p))
+#define DatumGetPointer(d) ((void*)(uintptr_t)(d))
+#define DatumGetJsonb(d)   ((VbJsonb*)DatumGetPointer(d))
+#define JsonbGetDatum(jb)  PointerGetDatum(jb)
+
 typedef u32 CommandId;
 
 typedef struct
@@ -89,7 +147,7 @@ typedef struct
 typedef struct
 {
     TupleHdr hdr; /* MVCC header (written by row_store_*; read back by get) */
-    TupleVal* cols; /* array of ncols TupleVal (caller-allocated for insert/update) */
+    Datum* cols; /* array of ncols TupleVal (caller-allocated for insert/update) */
     u16 ncols; /* number of columns (must match schema->ncols) */
 } HeapTuple;
 
@@ -103,6 +161,7 @@ typedef struct EmbeddingStore EmbeddingStore;
 void EmbeddingStore_init(EmbeddingStore* store, i16 dimension);
 void EmbeddingStore_deinit(EmbeddingStore* store);
 ItemPtr embeddingStore_append_and_get_ctid(EmbeddingStore* store, VectorBase* vec);
+const f32* embedding_store_get_ptr_ctid(EmbeddingStore* store, ItemPtr emb_ctid);
 
 typedef struct
 {
@@ -115,11 +174,32 @@ typedef struct
                                   * NULL = no known free page.  Set by vacuum_row_store;
                                   * consumed lazily by row_store_insert.
                                   * Not serialized — rebuilt from pd_flags on load. */
+    const TableSchema* schema;
     LWLock lock;  /* EXCLUSIVE=write/vacuum, SHARED=read*/
 } HeapStore;
 
-void HeapStore_init(HeapStore* store);
+void HeapStore_init(HeapStore* store, const TableSchema* schema, BlockManager* bm);
 void HeapStore_deinit(HeapStore* store);
+
+/* ============================================================
+ * HeapTupleRef — zero-copy in-page tuple view (PG buffer-pin style)
+ *
+ * Holds LW_SHARED on store->content_lock for the ref lifetime.
+ * hdr / col_data point directly into the page buffer.
+ *
+ * Lifecycle:
+ *   row_store_acquire_ref() → use hdr / col_data / heap_deform_tuple()
+ *   row_store_release_ref() → LW_SHARED released
+ * ============================================================ */
+typedef struct
+{
+    const TupleHdr* hdr;       /* direct page-buffer pointer */
+    const u8* col_data;  /* hdr + sizeof(TupleHdr)     */
+    const TableSchema* schema;
+    HeapStore* store;
+} HeapTupleRef;
+
+int heapStore_deform_tuple(const HeapTupleRef* ref, Datum* out, usize ncols);
 
 /**
  * Insert a new tuple.
@@ -130,7 +210,8 @@ void HeapStore_deinit(HeapStore* store);
  * Returns the physical ctid (ItemPtr) assigned to this row.
  * The returned ctid is the authoritative row identity for all subsequent operations.
  */
-ItemPtr heapStore_insert(HeapStore* store, HeapTuple* tuple);
+ItemPtr heapStore_insert(HeapStore* store, TxnId xid, ItemPtr emb_ctid, const Datum* values,
+                         u64 null_bits);
 
 /**
  * Read the physical row at ctid into *out (regardless of MVCC status).
@@ -139,7 +220,8 @@ ItemPtr heapStore_insert(HeapStore* store, HeapTuple* tuple);
  * Updated-but-not-deleted old versions are returned normally for chain traversal.
  * out->cols is heap-allocated; call row_tuple_free(out, schema) when done.
  */
-int heapStore_get_by_ctid(HeapStore* store, TableSchema* schema, ItemPtr ctid, HeapTuple* out);
+int heapStore_get_by_ctid(HeapStore* store, const TableSchema* schema, ItemPtr ctid,
+                          HeapTuple* out);
 
 /**
  * MVCC delete: mark the current version as deleted.
@@ -160,6 +242,21 @@ TxnId heapStore_delete_by_ctid(HeapStore* store, ItemPtr ctid);
  * Returns the txn_id used on success, INVALID_TXN_ID if old_ctid is not found or dead.
  */
 TxnId heapStore_update_by_ctid(HeapStore* store, ItemPtr old_ctid, HeapTuple* new_tuple);
+
+typedef struct
+{
+    HeapStore* store;
+    SegmentBase* curr_seg;
+    u32 slot_idx;
+    u16 curr_tup_len;
+    const TupleHdr* hdr;
+    const u8* curr_col_data; /* points directly into page buffer (valid while lock held) */
+} HeapStoreIter;
+
+void heapStoreIter_begin(HeapStoreIter* iter, HeapStore* store);
+const TupleHdr* heapStoreIter_next(HeapStoreIter* iter);
+void heapStoreIter_end(HeapStoreIter* iter);
+
 /**
  * Build a physical ItemPtr from (block_id, 0-based slot_idx).
  * Stores lower 32 bits of block_id; ip_posid = slot_idx + 1 (1-based).
@@ -215,6 +312,7 @@ struct EmbeddingStore
     usize vecs_per_blk;       /* = BLOCK_SIZE / elem_size  (computed once at init)*/
     Vector free_list;
     ItemPtr last_ctid;
+    LWLock lock;   /* EXCLUSIVE=write, SHARED=read*/
 };
 
 /* ============================================================

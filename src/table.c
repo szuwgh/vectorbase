@@ -7,384 +7,179 @@
 #include "vector.h"
 #include "operator.h"
 
-// static RowSegment* datatable_append_row_segment(DataTable* table, usize start)
-// {
-//     RowSegment* seg = RowSegment_create(table, start);
-//     seg->columns_count = table->column_count;
+static void heapTable_append(TableAmRoutine* am, VectorBase* v, TupleVal* payloads,
+                             usize n_payloads);
+static void heapTable_append_chunk(TableAmRoutine* am, const DataChunk* chunk, TamInsertCtx* ctx);
+static int heapTable_scan(TableAmRoutine* am, TamScanCtx* ctx, TableQueryResult* results,
+                          usize max_results);
+static void heapTable_write_blocks(TableAmRoutine* am, BlockManager* bm, MetaBlockWriter* w);
+static void heapTable_load_blocks(TableAmRoutine* am, BlockManager* bm, MetaBlockReader* r);
+static void heapTable_destory(TableAmRoutine* am);
 
-//     seg->columns = calloc(seg->columns_count, sizeof(ColumnPointer));
-//     for (usize i = 0; i < table->column_count; i++)
-//     {
-//         seg->columns[i].segment =
-//             (BlockSegment*)((SegmentNode*)vector_back(table->column_storage_tree[i].nodes))->node;
-//         seg->columns[i].bytes_offset = seg->columns[i].segment->base.count;
-//     }
-//     segmentTree_append_segment(&table->row_storage_tree, (SegmentBase*)seg);
-//     return seg;
-// }
+static void embeddingHeapTable_append(TableAmRoutine* am, VectorBase* v, TupleVal* payloads,
+                                      usize n_payloads);
+static void embeddingHeapTable_append_chunk(TableAmRoutine* am, const DataChunk* chunk,
+                                            TamInsertCtx* ctx);
+static int embeddingHeapTable_scan_chunk(TableAmRoutine* am, TamScanCtx* ctx,
+                                         TableQueryResult* results, usize max_results);
+static void embeddingHeapTable_write_blocks(TableAmRoutine* am, BlockManager* bm,
+                                            MetaBlockWriter* w);
+static void embeddingHeapTable_load_blocks(TableAmRoutine* am, BlockManager* bm,
+                                           MetaBlockReader* r);
+static void embeddingHeapTable_destory(TableAmRoutine* am);
 
-// DataTable* Datatable_create(StorageManager* manager, char* schema_name, char* table_name,
-//                             usize column_count, TypeID* column_types)
-// {
-//     DataTable* table = malloc(sizeof(DataTable));
-//     table->manager = manager;
-//     table->schema_name = schema_name;
-//     table->table_name = table_name;
-//     table->column_count = column_count;
-//     table->column_types = column_types;
+static const TableAmRoutineVTable heap_am_routine = {
+    .append = heapTable_append,
+    .append_chunk = heapTable_append_chunk,
+    .scan = heapTable_scan,
+    .write_blocks = heapTable_write_blocks,
+    .load_blocks = heapTable_load_blocks,
+    .destroy = heapTable_destory,
+};
 
-//     table->column_storage_tree = calloc(column_count, sizeof(SegmentTree));
-//     for (usize i = 0; i < column_count; i++)
-//     {
-//         SegmentTree_init(&table->column_storage_tree[i]);
-//         segmentTree_append_segment(&table->column_storage_tree[i],
-//                                    (SegmentBase*)BlockSegment_create2(0));
-//     }
+static const TableAmRoutineVTable embedding_heap_am_routine = {
+    .append = embeddingHeapTable_append,
+    .append_chunk = embeddingHeapTable_append_chunk,
+    .scan = embeddingHeapTable_scan_chunk,
+    .write_blocks = embeddingHeapTable_write_blocks,
+    .load_blocks = embeddingHeapTable_load_blocks,
+    .destroy = embeddingHeapTable_destory,
+};
 
-//     SegmentTree_init(&table->row_storage_tree);
-//     datatable_append_row_segment(table, 0);
+/* 创建旧版 DataTable 对象；当前只分配壳结构，具体存储初始化已迁移到新路径。 */
+DataTable* Datatable_create(StorageManager* manager, char* schema_name, char* table_name,
+                            usize column_count, TypeID* column_types)
+{
+    DataTable* table = malloc(sizeof(DataTable));
+    (void)manager;
+    (void)schema_name;
+    (void)table_name;
+    (void)column_count;
+    (void)column_types;
+    return table;
+}
 
-//     return table;
-// }
+/* 初始化一个批量列容器，并为每一列分配连续缓冲区。 */
+void DataChunk_init(DataChunk* chunk, Vector types)
+{
+    chunk->count = types.size;
+    chunk->arrays = calloc(chunk->count, sizeof(VectorBase));
+    for (usize i = 0; i < chunk->count; i++)
+    {
+        VectorBase_init(&chunk->arrays[i], VECTOR_AT(&types, i, TypeID));
+    }
 
-// static void column_segment_destroy_cb(SegmentBase* base)
-// {
-//     BlockSegment_destroy(base);
-// }
+    usize size = 0;
+    VECTOR_FOREACH(&types, type)
+    {
+        size += get_typeid_size(*(TypeID*)type) * STANDARD_VECTOR_SIZE;
+    }
+    assert(size > 0);
+    data_ptr_t own_data = malloc(size);
+    chunk->data = own_data;
+    chunk->size = size;
+    memset(own_data, 0, size);
+    for (usize i = 0; i < chunk->count; i++)
+    {
+        chunk->arrays[i].data = own_data;
+        own_data += get_typeid_size(VECTOR_AT(&types, i, TypeID)) * STANDARD_VECTOR_SIZE;
+    }
+}
 
-// static void row_segment_destroy_cb(SegmentBase* base)
-// {
-//     RowSegment_destroy((RowSegment*)base);
-// }
+/* 释放 DataChunk 持有的列数组和底层数据缓冲区。 */
+void dataChunk_deinit(DataChunk* chunk)
+{
+    if (chunk->data)
+    {
+        free(chunk->data);
+        chunk->data = NULL;
+    }
+    else
+    {
+        for (usize i = 0; i < chunk->count; i++) VectorBase_deinit(&chunk->arrays[i]);
+    }
+    free(chunk->arrays);
+    chunk->arrays = NULL;
+    chunk->count = 0;
+}
 
-// void Datatable_destroy(DataTable* table)
-// {
-//     if (!table) return;
+/* 仅清空每列的元素计数，保留已分配的缓冲区以便复用。 */
+void dataChunk_clear(DataChunk* chunk)
+{
+    for (usize i = 0; i < chunk->count; i++)
+    {
+        chunk->arrays[i].count = 0;
+    }
+}
 
-//     /* free column storage trees (BlockSegments + their Blocks) */
-//     for (usize i = 0; i < table->column_count; i++)
-//     {
-//         SegmentTree_deinit(&table->column_storage_tree[i], column_segment_destroy_cb);
-//     }
-//     free(table->column_storage_tree);
+/* 把 DataChunk 重置为初始写入状态，并恢复每列的数据指针布局。 */
+void dataChunk_reset(DataChunk* chunk)
+{
+    data_ptr_t ptr = chunk->data;
+    for (usize i = 0; i < chunk->count; i++)
+    {
+        chunk->arrays[i].count = 0;
+        chunk->arrays[i].data = ptr;
+        ptr += get_typeid_size(chunk->arrays[i].type) * STANDARD_VECTOR_SIZE;
+    }
+}
 
-//     /* free row storage tree (RowSegments + their columns arrays) */
-//     SegmentTree_deinit(&table->row_storage_tree, row_segment_destroy_cb);
+/* 用给定列向量覆盖指定位置的列描述。 */
+void dataChunk_append(DataChunk* chunk, usize index, VectorBase src)
+{
+    assert(index < chunk->count);
+    chunk->arrays[index] = src;
+}
 
-//     free(table);
-// }
+/* 返回当前批量里第一列的元素个数，作为整批的行数。 */
+usize dataChunk_size(DataChunk* chunk)
+{
+    if (chunk->count == 0) return 0;
+    return chunk->arrays[0].count;
+}
 
-// void DataChunk_init(DataChunk* chunk, Vector types)
-// {
-//     chunk->count = types.size;
-//     chunk->arrays = calloc(chunk->count, sizeof(VectorBase));
-//     for (usize i = 0; i < chunk->count; i++)
-//     {
-//         VectorBase_init(&chunk->arrays[i], VECTOR_AT(&types, i, TypeID));
-//     }
+/* 旧列存插入入口的占位实现；当前新架构不会走到这里。 */
+void datatable_append_column(DataTable* table, DataChunk* chunk)
+{
+    (void)table;
+    (void)chunk;
+}
 
-//     usize size = 0;
-//     VECTOR_FOREACH(&types, type)
-//     {
-//         size += get_typeid_size(*(TypeID*)type) * STANDARD_VECTOR_SIZE;
-//     }
-//     assert(size > 0);
-//     // 连续内存
-//     data_ptr_t own_data = malloc(size);
-//     chunk->data = own_data;
-//     chunk->size = size;
-//     memset(own_data, 0, size);
-//     for (usize i = 0; i < chunk->count; i++)
-//     {
-//         chunk->arrays[i].data = own_data;
-//         own_data += get_typeid_size(VECTOR_AT(&types, i, TypeID)) * STANDARD_VECTOR_SIZE;
-//     }
-// }
+/* 旧列存扫描入口的占位实现；当前始终返回无数据。 */
+bool datatable_scan(DataTable* table, ScanState* state, DataChunk* output, usize* column_ids,
+                    usize col_count)
+{
+    (void)table;
+    (void)state;
+    (void)output;
+    (void)column_ids;
+    (void)col_count;
+    return false;
+}
 
-// void dataChunk_deinit(DataChunk* chunk)
-// {
-//     if (chunk->data)
-//     {
-//         // DataChunk_init 分配了一块连续内存给所有列共享，
-//         // 只需 free 一次基地址，不能对每列分别 free（否则 double-free）
-//         free(chunk->data);
-//         chunk->data = NULL;
-//     }
-//     else
-//     {
-//         // 各列独立分配的模式（非 DataChunk_init 创建）
-//         for (usize i = 0; i < chunk->count; i++) VectorBase_deinit(&chunk->arrays[i]);
-//     }
-//     free(chunk->arrays);
-//     chunk->arrays = NULL;
-//     chunk->count = 0;
-// }
+/* 初始化旧扫描状态对象；当前实现保留为空壳。 */
+void datatable_init_scan(DataTable* table, ScanState* state)
+{
+    (void)table;
+    (void)state;
+}
 
-// void dataChunk_clear(DataChunk* chunk)
-// {
-//     for (usize i = 0; i < chunk->count; i++)
-//     {
-//         chunk->arrays[i].count = 0;
-//     }
-// }
-
-// void dataChunk_reset(DataChunk* chunk)
-// {
-//     data_ptr_t ptr = chunk->data;
-//     for (usize i = 0; i < chunk->count; i++)
-//     {
-//         chunk->arrays[i].count = 0;
-//         chunk->arrays[i].data = ptr;
-//         ptr += get_typeid_size(chunk->arrays[i].type) * STANDARD_VECTOR_SIZE;
-//     }
-// }
-
-// void dataChunk_append(DataChunk* chunk, usize index, VectorBase src)
-// {
-//     assert(index < chunk->count);
-//     chunk->arrays[index] = src;
-// }
-
-// usize dataChunk_size(DataChunk* chunk)
-// {
-//     if (chunk->count == 0) return 0;
-//     return chunk->arrays[0].count;
-// }
-
-// static void datatable_append_column_vector(DataTable* table, VectorBase* vector, usize
-// column_index,
-//                                            usize offset, usize count)
-// {
-//     BlockSegment* seg =
-//         (BlockSegment*)segmentTree_get_last_segment(&table->column_storage_tree[column_index]);
-
-//     usize type_size = get_typeid_size(table->column_types[column_index]);
-//     usize start_pos = seg->byte_offset;
-//     data_ptr_t data = segment_get_data(seg) + start_pos;
-//     usize elements_to_copy = MIN((BLOCK_SIZE - start_pos) / type_size, count);
-//     if (elements_to_copy > 0)
-//     {
-//         copy_to_storage(vector, data, offset, elements_to_copy);
-//         offset += elements_to_copy;
-//         seg->base.count += elements_to_copy;
-//         seg->byte_offset += elements_to_copy * type_size;
-//     }
-//     if (elements_to_copy < count)
-//     {
-//         BlockSegment* new_seg = BlockSegment_create2(seg->base.start + seg->base.count);
-//         segmentTree_append_segment(&table->column_storage_tree[column_index],
-//                                    (SegmentBase*)new_seg);
-//         datatable_append_column_vector(table, vector, column_index, offset,
-//                                        count - elements_to_copy);
-//     }
-// }
-
-// static void datatable_append_row_one(DataTable* table, VectorBase* vector)
-// {
-//     BlockSegment* seg = (BlockSegment*)segmentTree_get_last_segment(&table->row_storage_tree);
-// }
-
-// // 行式存储
-// void datatable_append_row(DataTable* table, DataChunk* chunk)
-// {
-//     for (usize i = 0; i < chunk->size; i++)
-//     {
-//         datatable_append_row_one(table, &chunk->arrays[i]);
-//     }
-// }
-
-// // 列式存储
-// void datatable_append_column(DataTable* table, DataChunk* chunk)
-// {
-//     usize size = dataChunk_size(chunk);
-//     if (size == 0) return;
-
-//     usize remainder = size;
-//     usize offset = 0;
-//     RowSegment* last_seg =
-//         (RowSegment*)((SegmentNode*)vector_back(table->row_storage_tree.nodes))->node;
-//     while (remainder > 0)
-//     {
-//         usize to_copy = MIN(STORAGE_CHUNK_SIZE - GET_PARENT_FIELD(last_seg, count), remainder);
-//         if (to_copy > 0)
-//         {
-//             for (usize i = 0; i < table->column_count; i++)
-//             {
-//                 datatable_append_column_vector(table, &chunk->arrays[i], i, offset, to_copy);
-//             }
-//             last_seg->base.count += to_copy;
-//             offset += to_copy;
-//             remainder -= to_copy;
-//         }
-//         if (remainder > 0)
-//         {
-//             last_seg =
-//                 datatable_append_row_segment(table, last_seg->base.start + last_seg->base.count);
-//         }
-//     }
-// }
-
-// /* ===========================================================================
-//  *  Scan Implementation
-//  *  Modeled after DuckDB DataTable::Scan() / RetrieveColumnData()
-//  *  - No transaction / MVCC — all rows are visible
-//  *  - Each call returns at most one RowSegment's worth of rows
-//  * =========================================================================== */
-
-// /* retrieve_column_data --------------------------------------------------
-//  *  Reads `count` elements from the column segment chain starting at
-//  *  `pointer`, writing them into `result->data`.  Advances `pointer`
-//  *  past the data that was read (handles cross-segment boundaries).
-//  *
-//  *  Corresponds to DuckDB src/storage/data_table.cpp RetrieveColumnData()
-//  * ---------------------------------------------------------------------- */
-// static void retrieve_column_data(VectorBase* result, TypeID type, ColumnPointer* pointer,
-//                                  usize count)
-// {
-//     usize type_size = get_typeid_size(type);
-//     usize written = 0;
-
-//     while (count > 0)
-//     {
-//         usize avail = (BLOCK_SIZE - pointer->bytes_offset) / type_size;
-//         usize to_copy = MIN(count, avail);
-
-//         if (to_copy > 0)
-//         {
-//             data_ptr_t src = segment_get_data(pointer->segment) + pointer->bytes_offset;
-//             memcpy(result->data + written * type_size, src, to_copy * type_size);
-//             pointer->bytes_offset += to_copy * type_size;
-//             written += to_copy;
-//             count -= to_copy;
-//         }
-
-//         if (count > 0)
-//         {
-//             assert(pointer->segment->base.next);
-//             pointer->segment = (BlockSegment*)pointer->segment->base.next;
-//             pointer->bytes_offset = 0;
-//         }
-//     }
-
-//     result->count = written;
-// }
-
-// /* datatable_init_scan ---------------------------------------------------
-//  *  Initializes a ScanState for a full sequential scan of `table`.
-//  *  The caller must use the same `column_ids` across all subsequent
-//  *  datatable_scan() calls for this state.
-//  *
-//  *  Corresponds to DuckDB DataTable::InitializeScan()
-//  * ---------------------------------------------------------------------- */
-// void datatable_init_scan(DataTable* table, ScanState* state)
-// {
-//     state->current_chunk = (RowSegment*)segmentTree_get_root_segment(&table->row_storage_tree);
-//     state->last_chunk = (RowSegment*)segmentTree_get_last_segment(&table->row_storage_tree);
-//     state->last_chunk_count = state->last_chunk->base.count;
-//     state->offset = 0;
-
-//     state->columns = malloc(sizeof(ColumnPointer) * table->column_count);
-//     for (usize i = 0; i < table->column_count; i++)
-//     {
-//         ColumnPointer* src_col = &state->current_chunk->columns[i];
-//         state->columns[i].segment = src_col->segment;
-//         /* RowSegment stores element offset in bytes_offset;
-//          * convert to actual byte offset for scan reads. */
-//         state->columns[i].bytes_offset = 0;
-//     }
-// }
-
-// void scanstate_deinit(ScanState* state)
-// {
-//     if (!state) return;
-//     free(state->columns);
-//     state->columns = NULL;
-//     state->current_chunk = NULL;
-//     state->last_chunk = NULL;
-// }
-
-// /* datatable_scan --------------------------------------------------------
-//  *  Reads the next batch of rows into `output`.  Returns true if data
-//  *  was produced, false when the scan is exhausted.
-//  *
-//  *  `column_ids` / `col_count` specify which table columns to project.
-//  *  `output` must have `col_count` pre-allocated VectorBases whose
-//  *  `data` buffers are large enough for STORAGE_CHUNK_SIZE elements.
-//  *
-//  *  Corresponds to DuckDB DataTable::Scan() (simplified, no MVCC).
-//  * ---------------------------------------------------------------------- */
-// bool datatable_scan(DataTable* table, ScanState* state, DataChunk* output, usize* column_ids,
-//                     usize col_count)
-// {
-//     while (state->current_chunk)
-//     {
-//         RowSegment* current = state->current_chunk;
-
-//         usize end = (current == state->last_chunk) ? state->last_chunk_count :
-//         current->base.count;
-
-//         usize scan_count = MIN(end - state->offset, STANDARD_VECTOR_SIZE);
-
-//         if (scan_count > 0)
-//         {
-//             for (usize i = 0; i < col_count; i++)
-//             {
-//                 usize col_id = column_ids[i];
-//                 output->arrays[i].type = table->column_types[col_id];
-//                 retrieve_column_data(&output->arrays[i], table->column_types[col_id],
-//                                      &state->columns[col_id], scan_count);
-//             }
-
-//             state->offset += scan_count;
-
-//             if (state->offset >= end)
-//             {
-//                 if (current == state->last_chunk)
-//                     state->current_chunk = NULL;
-//                 else
-//                 {
-//                     state->current_chunk = (RowSegment*)current->base.next;
-//                     state->offset = 0;
-//                 }
-//             }
-
-//             return true;
-//         }
-
-//         /* Empty chunk — skip to next */
-//         if (current == state->last_chunk)
-//         {
-//             state->current_chunk = NULL;
-//         }
-//         else
-//         {
-//             state->current_chunk = (RowSegment*)current->base.next;
-//             state->offset = 0;
-//         }
-//     }
-
-//     return false;
-// }
-
-/* Stack-buffer size for heap tuple column values */
+/* 释放旧扫描状态对象持有的资源；当前实现无实际释放动作。 */
+void scanstate_deinit(ScanState* state)
+{
+    (void)state;
+}
 #define HEAP_COLS_MAX 64
 
-/* Max scalar columns per TamColTable (stack buffer bound) */
 #define COL_TABLE_MAX 64
 
-/*
- * build_heap_tuple — fill a RowTuple for heap insert/update.
- *
- * emb_ctid: stored directly in out->hdr.t_emb_ctid (no hidden column needed).
- * payload_vals: user-visible heap columns (all ncols_def slots).
- */
+/* 组装 heap 写入所需的临时元组，把 payload 和 emb_ctid 填到输出结构里。 */
 static void build_heap_tuple(const HeapTable* heap, ItemPtr emb_ctid, const TupleVal* payload_vals,
                              usize nvals, TupleVal cols_buf[HEAP_COLS_MAX], HeapTuple* out)
 {
     usize ncols = heap->schema.ncols < HEAP_COLS_MAX ? heap->schema.ncols : HEAP_COLS_MAX;
     u32 null_bits = 0;
 
-    /* User payload columns at cols[0..ncols-1] */
     for (usize k = 0; k < ncols; k++)
     {
         cols_buf[k] =
@@ -398,26 +193,33 @@ static void build_heap_tuple(const HeapTable* heap, ItemPtr emb_ctid, const Tupl
     out->hdr.t_emb_ctid = emb_ctid;
 }
 
+/* 执行一次 heap 侧真实插入，必要时从批量上下文读取 emb_ctid 和 xid。 */
 static void heapTable_append_impl(TableAmRoutine* am, TamInsertCtx* ctx, VectorBase* v,
-                                  TupleVal* val, usize n_payloads)
+                                  const Datum* val, usize n_payloads)
 {
     HeapTable* ht = (HeapTable*)am;
-    ItemPtr ctid = ctx->emb_ctids[ctx->current_index];
-    TupleVal cols_buf[HEAP_COLS_MAX];
-    HeapTuple heap_tup = {0};
-    build_heap_tuple(ht, ctid, val, n_payloads, cols_buf, &heap_tup);
-    heapStore_insert(&ht->store, &heap_tup);
+    TxnId xid = ctx ? ctx->xid : 0;
+    ItemPtr emb_ctid =
+        (ctx && ctx->emb_ctids) ? ctx->emb_ctids[ctx->current_index] : INVALID_ITEM_PTR;
+    (void)v;
+    (void)n_payloads;
+    heapStore_insert(&ht->store, xid, emb_ctid, val, 0);
 }
 
-static void heapTable_append(TableAmRoutine* am, TamInsertCtx* ctx, VectorBase* v, TupleVal* val,
+/* 处理单行 heap 追加；当前路径不携带 embedding 位置。 */
+static void heapTable_append(TableAmRoutine* am, VectorBase* v, TupleVal* payloads,
                              usize n_payloads)
 {
     HeapTable* ht = (HeapTable*)am;
     LWLockAcquire(&ht->store.lock, LW_EXCLUSIVE);
-    heapTable_append_impl(am, ctx, v, val, n_payloads);
+    heapStore_insert(&ht->store, 0, INVALID_ITEM_PTR, NULL, 0);
     LWLockRelease(&ht->store.lock);
+    (void)v;
+    (void)payloads;
+    (void)n_payloads;
 }
 
+/* 批量把 DataChunk 中的行写入 heap 存储。 */
 static void heapTable_append_chunk(TableAmRoutine* am, const DataChunk* chunk, TamInsertCtx* ctx)
 {
     HeapTable* ht = (HeapTable*)am;
@@ -427,92 +229,315 @@ static void heapTable_append_chunk(TableAmRoutine* am, const DataChunk* chunk, T
         ctx->current_index = i;
         heapTable_append_impl(am, ctx, &chunk->arrays[i],
                               chunk->payloads ? chunk->payloads[i] : NULL, chunk->n_payloads);
-        // const TupleVal* val = chunk->payloads[i];
-        // ItemPtr ctid = ctx->emb_ctids[i];
-        // TupleVal cols_buf[HEAP_COLS_MAX];
-        // HeapTuple heap_tup = {0};
-        // build_heap_tuple(ht, ctid, val, chunk->n_payloads, cols_buf, &heap_tup);
-        // heapStore_insert(&ht->store, &heap_tup);
     }
     LWLockRelease(&ht->store.lock);
 }
 
-static int heapTable_read_chunk(TableAmRoutine* am, const DataChunk* chunk, TamReadCtx* ctx,
-                                u64 idx, DataChunk* out)
+/* heap 扫描接口的旧实现占位；当前未完成具体逻辑。 */
+static int heapTable_scan(TableAmRoutine* am, TamScanCtx* ctx, TableQueryResult* results,
+                          usize max_results)
 {
+    HeapTable* ht = (HeapTable*)am;
+    (void)ht;
+    (void)ctx;
+    (void)results;
+    (void)max_results;
+    return 0;
 }
 
-static void heapTable_write_blocks(TableAmRoutine* am, BlockManager* bm, MetaBlockWriter* w) {}
-
-static void heapTable_load_blocks(TableAmRoutine* am, BlockManager* bm, MetaBlockReader* r) {}
-
-static void heapTable_destory(TableAmRoutine* am) {}
-
-static void embeddingTable_append(TableAmRoutine* am, VectorBase* v, TupleVal* payloads,
-                                  usize n_payloads)
+/* 把 heap 表写入块存储；当前为空实现。 */
+static void heapTable_write_blocks(TableAmRoutine* am, BlockManager* bm, MetaBlockWriter* w)
 {
+    (void)am;
+    (void)bm;
+    (void)w;
 }
 
-static void embeddingTable_append_chunk(TableAmRoutine* am, const DataChunk* chunk,
-                                        TamInsertCtx* ctx)
+/* 从块存储恢复 heap 表；当前为空实现。 */
+static void heapTable_load_blocks(TableAmRoutine* am, BlockManager* bm, MetaBlockReader* r)
 {
-    EmbeddingTable* et = (EmbeddingTable*)am;
+    (void)am;
+    (void)bm;
+    (void)r;
+}
+
+/* 初始化 HeapTable，包括底层 HeapStore 和对应的 vtable。 */
+void HeapTable_init(HeapTable* table, const TableSchema* schema, BlockManager* bm)
+{
+    HeapStore_init(&table->store, schema, bm);
+    table->schema = *schema;
+    table->base.vtable = (TableAmRoutineVTable*)&heap_am_routine;
+}
+
+/* 销毁 HeapTable 的 vtable 入口；当前不额外释放资源。 */
+static void heapTable_destory(TableAmRoutine* am)
+{
+    (void)am;
+}
+
+/* 释放 HeapTable 底层的 HeapStore 资源。 */
+void HeapTable_deinit(HeapTable* table)
+{
+    HeapStore_deinit(&table->store);
+}
+
+/* 释放向量+heap 组合表持有的 embedding 与 heap 资源。 */
+void EmbeddingHeapTable_deinit(EmbeddingHeapTable* table)
+{
+    EmbeddingStore_deinit(&table->embed_store);
+    HeapStore_deinit(&table->heap_table.store);
+    LWLockDestroy(&table->embed_store.lock);
+    LWLockDestroy(&table->heap_table.store.lock);
+}
+
+/* 初始化向量+heap 组合表，使其同时具备向量存储和 heap 存储能力。 */
+void EmbeddingHeapTable_init(EmbeddingHeapTable* table, i16 dimension, const TableSchema* schema,
+                             BlockManager* bm)
+{
+    HeapTable_init(&table->heap_table, schema, bm);
+    EmbeddingStore_init(&table->embed_store, dimension);
+    table->base.vtable = (TableAmRoutineVTable*)&embedding_heap_am_routine;
+}
+
+/* 处理组合表的单行追加；当前未实现具体逻辑。 */
+static void embeddingHeapTable_append(TableAmRoutine* am, VectorBase* v, TupleVal* payloads,
+                                      usize n_payloads)
+{
+    (void)am;
+    (void)v;
+    (void)payloads;
+    (void)n_payloads;
+}
+
+/* 先写 embedding，再把对应 payload 写入 heap，完成组合表批量插入。 */
+static void embeddingHeapTable_append_chunk(TableAmRoutine* am, const DataChunk* chunk,
+                                            TamInsertCtx* ctx)
+{
+    EmbeddingHeapTable* et = (EmbeddingHeapTable*)am;
+    LWLockAcquire(&et->embed_store.lock, LW_EXCLUSIVE);
     for (usize i = 0; i < chunk->count; i++)
     {
-        ItemPtr ctid = embeddingStore_append_and_get_ctid(&et->store, &chunk->arrays[i]);
+        ItemPtr ctid = embeddingStore_append_and_get_ctid(&et->embed_store, &chunk->arrays[i]);
         if (ctx && ctx->emb_ctids) ctx->emb_ctids[i] = ctid;
+    }
+    LWLockRelease(&et->embed_store.lock);
+
+    TableAmRoutine* heap_am = (TableAmRoutine*)&et->heap_table;
+    LWLockAcquire(&et->heap_table.store.lock, LW_EXCLUSIVE);
+    for (usize i = 0; i < chunk->count; i++)
+    {
+        ctx->current_index = i;
+        heapTable_append_impl(heap_am, ctx, &chunk->arrays[i],
+                              chunk->payloads ? chunk->payloads[i] : NULL, chunk->n_payloads);
+    }
+    LWLockRelease(&et->heap_table.store.lock);
+}
+
+typedef struct
+{
+    ItemPtr heap_ctid;
+    f32 dist;
+    Datum* vals;
+    const f32* vec;
+    u64 null_bits;
+} EmbScanCand;
+
+/* 比较两个扫描候选的距离，用于按距离排序。 */
+static int emb_scan_cand_cmp(const void* a, const void* b)
+{
+    f32 da = ((const EmbScanCand*)a)->dist;
+    f32 db = ((const EmbScanCand*)b)->dist;
+    return da < db ? -1 : da > db ? 1 : 0;
+}
+
+/* 把一个候选压入 top-k 最大堆。 */
+static void topk_push(EmbScanCand* h, usize* sz, EmbScanCand c)
+{
+    h[(*sz)++] = c;
+    usize i = *sz - 1;
+    while (i > 0)
+    {
+        usize p = (i - 1) / 2;
+        if (h[p].dist >= h[i].dist) break;
+        EmbScanCand t = h[p];
+        h[p] = h[i];
+        h[i] = t;
+        i = p;
     }
 }
 
-static int embeddingTable_read_chunk(TableAmRoutine* am, const DataChunk* chunk, TamReadCtx* ctx,
-                                     u64 idx, DataChunk* out)
+/* 用更好的候选替换堆顶，并重新维护最大堆性质。 */
+static void topk_replace_root(EmbScanCand* h, usize n, EmbScanCand c)
 {
+    free(h[0].vals);
+    h[0] = c;
+    usize i = 0;
+    for (;;)
+    {
+        usize l = 2 * i + 1, r = 2 * i + 2, m = i;
+        if (l < n && h[l].dist > h[m].dist) m = l;
+        if (r < n && h[r].dist > h[m].dist) m = r;
+        if (m == i) break;
+        EmbScanCand t = h[i];
+        h[i] = h[m];
+        h[m] = t;
+        i = m;
+    }
 }
 
-static void embeddingTable_write_blocks(TableAmRoutine* am, BlockManager* bm, MetaBlockWriter* w) {}
+#define TOPK_STACK_MAX 64
 
-static void embeddingTable_load_blocks(TableAmRoutine* am, BlockManager* bm, MetaBlockReader* r) {}
+/* 对组合表执行向量扫描，返回距离最近的 top-k 结果。 */
+static int embeddingHeapTable_scan_chunk(TableAmRoutine* am, TamScanCtx* ctx,
+                                         TableQueryResult* results, usize max_results)
+{
+    const VectorCondition* vc = ctx->vec_cond;
+    if (max_results == 0 || !vc) return 0;
+    EmbeddingHeapTable* et = (EmbeddingHeapTable*)am;
+    const TableSchema* schema = &et->heap_table.schema;
+    usize heap_ncols = (usize)schema->ncols;
+    usize heap_cap = max_results;
+    EmbScanCand stack_buf[TOPK_STACK_MAX];
+    EmbScanCand* topk =
+        heap_cap <= TOPK_STACK_MAX ? stack_buf : malloc(heap_cap * sizeof(EmbScanCand));
+    usize ksz = 0; /* 当前最大堆中的候选数量 */
+    HeapStoreIter iter;
+    heapStoreIter_begin(&iter, &et->heap_table.store);
+    const TupleHdr* hdr;
+    while ((hdr = heapStoreIter_next(&iter)) != NULL)
+    {
+        if (hdr->t_xmax != INVALID_TXN_ID) continue;
+        if (!item_ptr_is_valid(hdr->t_emb_ctid)) continue;
+        const f32* vec = embedding_store_get_ptr_ctid(&et->embed_store, hdr->t_emb_ctid);
+        if (!vec) continue;
+        VectorBase stored = {TYPE_FLOAT32, vc->query.count, (data_ptr_t)vec};
+        f32 dist = vec_compute_distance(&stored, &vc->query, vc->metric);
 
-static void embeddingTable_destory(TableAmRoutine* am) {}
+        if (ksz == heap_cap && dist >= topk[0].dist) continue;
 
-static const TableAmRoutineVTable heap_am_routine = {
-    .append = heapTable_append,
-    .append_chunk = heapTable_append_chunk,
-    .read_chunk = heapTable_read_chunk,
-    .write_blocks = heapTable_write_blocks,
-    .load_blocks = heapTable_load_blocks,
-    .destroy = heapTable_destory,
-};
+        Datum* vals = (heap_ncols > 0) ? malloc(heap_ncols * sizeof(Datum)) : NULL;
+        if (heap_ncols > 0 && !vals) continue;
+        u64 null_bits = 0;
+        if (!vals) continue;
 
-static const TableAmRoutineVTable embedding_am_routine = {
-    .append = embeddingTable_append,
-    .append_chunk = embeddingTable_append_chunk,
-    .read_chunk = embeddingTable_read_chunk,
-    .write_blocks = embeddingTable_write_blocks,
-    .load_blocks = embeddingTable_load_blocks,
-    .destroy = embeddingTable_destory,
-};
+        if (heap_ncols > 0)
+        {
+            HeapTupleRef ref = {
+                .hdr = hdr,
+                .col_data = iter.curr_col_data,
+                .schema = schema,
+                .store = NULL,
+            };
+            if (heapStore_deform_tuple(&ref, vals, heap_ncols) != 0)
+            {
+                free(vals);
+                continue;
+            }
+            null_bits = hdr->null_bits << 1;
+        }
 
+        EmbScanCand c = {hdr->t_ctid, dist, vals, vec, null_bits};
+        if (ksz < heap_cap)
+            topk_push(topk, &ksz, c);
+        else
+            topk_replace_root(topk, ksz, c);
+    }
+    heapStoreIter_end(&iter);
+
+    qsort(topk, ksz, sizeof(EmbScanCand), emb_scan_cand_cmp);
+    usize nout = 0;
+    for (usize i = 0; i < ksz && nout < max_results; i++)
+    {
+        if (!topk[i].vals) continue;
+
+        results[nout].heap_ctid = topk[i].heap_ctid;
+        results[nout].distance = topk[i].dist;
+        results[nout].payloads = topk[i].vals;
+        results[nout].vector.data = (data_ptr_t)topk[i].vec;
+        results[nout].vector.count = vc->query.count;
+        results[nout].vector.type = TYPE_FLOAT32;
+        topk[i].vals = NULL;
+        nout++;
+    }
+
+    for (usize i = 0; i < ksz; i++)
+    {
+        if (topk[i].vals) free(topk[i].vals);
+    }
+    if (topk != stack_buf) free(topk);
+
+    return (int)nout;
+}
+
+/* 把组合表写入块存储；当前为空实现。 */
+static void embeddingHeapTable_write_blocks(TableAmRoutine* am, BlockManager* bm,
+                                            MetaBlockWriter* w)
+{
+    (void)am;
+    (void)bm;
+    (void)w;
+}
+
+/* 从块存储恢复组合表；当前为空实现。 */
+static void embeddingHeapTable_load_blocks(TableAmRoutine* am, BlockManager* bm, MetaBlockReader* r)
+{
+    (void)am;
+    (void)bm;
+    (void)r;
+}
+
+/* 销毁组合表的 vtable 入口；当前不额外释放资源。 */
+static void embeddingHeapTable_destory(TableAmRoutine* am)
+{
+    (void)am;
+}
+
+/* 通过表的 append_chunk 接口把一个 DataChunk 写入 DataTable。 */
 void dataTable_insert_datachunk(DataTable* datatable, DataChunk* chunk)
 {
     ItemPtr heap_ctid_stack[TAM_CTX_STACK_MAX];
     ItemPtr emb_ctid_stack[TAM_CTX_STACK_MAX];
 
-    // ItemPtr* heap_ctid_buf = out_heap_ctids ? out_heap_ctids
-    //                          : (chunk->count <= TAM_CTX_STACK_MAX)
-    //                              ? heap_ctid_stack
-    //                              : (ItemPtr*)malloc(chunk->count * sizeof(ItemPtr));
-
     TamInsertCtx ctx = {
         .emb_ctids = emb_ctid_stack,
-        .row_ids = NULL,
+        .heap_ctids = heap_ctid_stack,
         .count = chunk->count,
         .current_index = 0,
     };
 
-    for (usize i = 0; i < datatable->ntables; i++)
-    {
-        TableAmRoutine* am = &datatable->tables[i];
-        am->vtable->append_chunk(am, chunk, &ctx);
-    }
+    VCALL(datatable->table, append_chunk, chunk, &ctx);
+
+    // 索引插入逻辑待实现
+}
+
+/* 按向量条件扫描 DataTable，并把结果写入调用方缓冲区。 */
+int dataTable_scan(DataTable* datatable, const VectorCondition* vec_cond, TableQueryResult* results,
+                   usize max_results)
+{
+    TamScanCtx ctx = {
+        .vec_cond = (VectorCondition*)vec_cond,
+        .k = max_results,
+    };
+
+    return VCALL(datatable->table, scan, &ctx, results, max_results);
+}
+
+/* 把 DataTable 结构体字段重置到默认空状态。 */
+void DataTable_init(DataTable* datatable)
+{
+    datatable->schema_name = NULL;
+    datatable->table_name = NULL;
+    datatable->table = NULL;
+    datatable->ncols = 0;
+}
+
+/* 释放 DataTable 自身持有的名称字符串并清空字段。 */
+void DataTable_deinit(DataTable* datatable)
+{
+    if (!datatable) return;
+    free(datatable->schema_name);
+    free(datatable->table_name);
+    datatable->schema_name = NULL;
+    datatable->table_name = NULL;
+    datatable->table = NULL;
 }

@@ -1,4 +1,5 @@
 #include <string.h>
+#include <stdlib.h>
 #include <assert.h>
 
 #include "store.h"
@@ -25,6 +26,7 @@ void EmbeddingStore_init(EmbeddingStore* store, i16 dimension)
 
     Vector_init(&store->free_list, sizeof(ItemPtr), 0);
     store->last_ctid = INVALID_ITEM_PTR;
+    LWLockInit(&store->lock, "EmbeddingStore.lock");
 }
 
 void EmbeddingStore_deinit(EmbeddingStore* store)
@@ -110,6 +112,22 @@ ItemPtr embeddingStore_append_and_get_ctid(EmbeddingStore* store, VectorBase* ve
     }
 }
 
+const f32* embedding_store_get_ptr_ctid(EmbeddingStore* store, ItemPtr emb_ctid)
+{
+    LWLockAcquire(&store->lock, LW_SHARED);
+    usize seg_idx = (usize)item_ptr_block_id(emb_ctid);
+    usize local_idx = (usize)item_ptr_slot(emb_ctid);
+    SegmentNode* sn = (SegmentNode*)vector_get(store->tree.nodes, seg_idx);
+    const f32* ptr = NULL;
+    if (sn)
+    {
+        BlockSegment* seg = (BlockSegment*)sn->node;
+        ptr = (const f32*)((u8*)segment_get_data(seg) + local_idx * store->elem_size);
+    }
+    LWLockRelease(&store->lock);
+    return ptr;
+}
+
 /* ============================================================
  * heap store
  * ============================================================ */
@@ -139,12 +157,156 @@ static inline u16 heapStore_free_space(u8* page)
     return *heapStore_pd_upper(page) - *heapStore_pd_lower(page);
 }
 
+/*
+ * datum_deform_copy — read one column from page into Datum (copy path).
+ *
+ * Fixed-size types: by-value Datum, no malloc.
+ * Varlena types (TEXT/BYTEA/JSONB): malloc'd copy — caller must free.
+ *
+ * Returns pointer past the column bytes on success, NULL on malloc failure.
+ */
+static const u8* datum_deform_copy(const u8* p, TupleColType type, Datum* out)
+{
+    switch (type)
+    {
+        case TUPLE_COL_BOOL:
+            *out = BoolGetDatum(*p != 0);
+            p += 1;
+            break;
+        case TUPLE_COL_I32:
+        {
+            i32 v;
+            memcpy(&v, p, 4);
+            *out = Int32GetDatum(v);
+            p += 4;
+            break;
+        }
+        case TUPLE_COL_I64:
+        {
+            i64 v;
+            memcpy(&v, p, 8);
+            *out = Int64GetDatum(v);
+            p += 8;
+            break;
+        }
+        case TUPLE_COL_F32:
+        {
+            f32 v;
+            memcpy(&v, p, 4);
+            *out = Float32GetDatum(v);
+            p += 4;
+            break;
+        }
+        case TUPLE_COL_F64:
+        {
+            f64 v;
+            memcpy(&v, p, 8);
+            *out = Float64GetDatum(v);
+            p += 8;
+            break;
+        }
+        default:
+            *out = (Datum)0;
+            break;
+    }
+    return p;
+}
+
+/*
+ * rs_deform_all — deserialize all non-null columns from page into Datum[].
+ *
+ * Returns 0 on success, -1 on malloc failure (partial datums freed on error).
+ */
+static int heapStore_deform_all(const u8* col_data, const TableSchema* schema, u64 null_bits,
+                                Datum* out)
+{
+    const u8* p = col_data;
+    for (u16 i = 0; i < schema->ncols; i++)
+    {
+        if (null_bits & ((u64)1 << i))
+        {
+            out[i] = (Datum)0;
+            continue;
+        }
+        p = datum_deform_copy(p, schema->cols[i], &out[i]);
+        if (!p)
+        {
+            /* malloc failure: free already-allocated varlena Datums */
+            u64 done = 0;
+            for (u16 j = 0; j < i; j++)
+            {
+                if (null_bits & ((u64)1 << j)) continue;
+                TupleColType ct = schema->cols[j];
+                if (ct == TUPLE_COL_TEXT || ct == TUPLE_COL_JSONB)
+                {
+                    void* ptr = DatumGetPointer(out[j]);
+                    if (ptr) free(ptr);
+                }
+                done |= ((u64)1 << j);
+            }
+            (void)done;
+            return -1;
+        }
+    }
+    return 0;
+}
+
 /** Initialise a fresh page (pd_lower=6, pd_upper=BLOCK_SIZE, pd_flags=0). */
-static void rs_page_init(u8* page)
+static void heapStore_page_init(u8* page)
 {
     *heapStore_pd_lower(page) = (u16)HS_BLOCK_HDR_SIZE;
     *heapStore_pd_upper(page) = (u16)BLOCK_SIZE;
     *heapStore_pd_flags(page) = 0;
+}
+
+void HeapStore_init(HeapStore* store, const TableSchema* schema, BlockManager* bm)
+{
+    store->block_manager = bm;
+    store->schema = schema;
+    store->hint_free_seg = NULL;
+    LWLockInit(&store->lock, "HeapStore.content_lock");
+
+    SegmentTree_init(&store->tree);
+
+    BlockSegment* seg = BlockSegment_create2(0);
+    block_id_t bid;
+    if (bm != NULL)
+    {
+        bid = VCALL(bm, get_free_block_id);
+        seg->block_manager = bm;
+    }
+    else
+    {
+        bid = 0;
+    }
+    seg->block_id = bid;
+    seg->block = Block_create(bid);
+    heapStore_page_init((u8*)segment_get_data(seg));
+    segmentTree_append_segment(&store->tree, (SegmentBase*)seg);
+}
+
+void HeapStore_deinit(HeapStore* store)
+{
+    if (!store) return;
+    SegmentTree_deinit(&store->tree, BlockSegment_destroy);
+    store->page_count = 0;
+}
+
+/*
+ * heap_deform_tuple — populate Datum[] from a HeapTupleRef.
+ *
+ * Fixed-size types: by-value Datum (inline, no malloc).
+ * Varlena types:    malloc'd copy — caller owns; free with datum_array_free.
+ * Null columns:     bit set in ref->hdr->null_bits — Datum = 0 (unused).
+ *
+ * Returns 0 on success, -1 on malloc failure.
+ */
+int heapStore_deform_tuple(const HeapTupleRef* ref, Datum* out, usize ncols)
+{
+    if (!ref->col_data || !out) return -1;
+    usize use_ncols = ncols < (usize)ref->schema->ncols ? ncols : (usize)ref->schema->ncols;
+    return heapStore_deform_all(ref->col_data, ref->schema, ref->hdr->null_bits, out);
+    (void)use_ncols;
 }
 
 u64 heapStore_slot_count(HeapStore* store)
@@ -154,31 +316,41 @@ u64 heapStore_slot_count(HeapStore* store)
     return (u64)(last->start + last->count);
 }
 
-static u8* wirte_col(u8* dest, const TupleVal* col)
+static u8* wirte_col(u8* p, TupleColType type, Datum d)
 {
-    switch (col->type)
+    switch (type)
     {
         case TUPLE_COL_BOOL:
-            *dest = col->v.b ? 1 : 0;
-            return dest + 1;
+            *p = DatumGetBool(d) ? 1u : 0u;
+            return p + 1;
         case TUPLE_COL_I32:
-            memcpy(dest, &col->v.i32, sizeof(i32));
-            return dest + sizeof(i32);
+            i32 v1 = DatumGetInt32(d);
+            memcpy(p, &v1, sizeof(i32));
+            return p += sizeof(i32);
         case TUPLE_COL_I64:
-            memcpy(dest, &col->v.i64, sizeof(i64));
-            return dest + sizeof(i64);
+            i64 v2 = DatumGetInt64(d);
+            memcpy(p, &v2, sizeof(i64));
+            return p + sizeof(i64);
         case TUPLE_COL_F32:
-            memcpy(dest, &col->v.f32, sizeof(f32));
-            return dest + sizeof(f32);
+            f32 v3 = DatumGetFloat32(d);
+            memcpy(p, &v3, sizeof(f32));
+            return p + sizeof(f32);
         case TUPLE_COL_F64:
-            memcpy(dest, &col->v.f64, sizeof(f64));
-            return dest + sizeof(f64);
+            f64 v4 = DatumGetFloat64(d);
+            memcpy(p, &v4, sizeof(f64));
+            return p + sizeof(f64);
         case TUPLE_COL_TEXT:
-            memcpy(dest, &col->v.text.len, sizeof(u32));
-            memcpy(dest + sizeof(u32), col->v.text.ptr, col->v.text.len);
-            return dest + sizeof(u32) + col->v.text.len;
+        {
+            /* In-memory: [u32 content_len][data...] — same as on-disk. */
+            u8* ptr = (u8*)DatumGetPointer(d);
+            u32 len = 0;
+            memcpy(&len, ptr, 4);
+            memcpy(p, ptr, (usize)4 + len);
+            p += (usize)4 + len;
+            return p;
+        }
         default:
-            return dest; /* should not happen */
+            return p; /* should not happen */
     }
 }
 
@@ -186,9 +358,9 @@ static u8* wirte_col(u8* dest, const TupleVal* col)
  * Serialization helpers (unchanged from previous design)
  * ============================================================ */
 
-static usize compute_col_size(const TupleVal* v)
+static usize compute_col_size(TupleColType type, Datum d)
 {
-    switch (v->type)
+    switch (type)
     {
         case TUPLE_COL_BOOL:
             return 1;
@@ -201,33 +373,40 @@ static usize compute_col_size(const TupleVal* v)
         case TUPLE_COL_F64:
             return 8;
         case TUPLE_COL_TEXT:
-            return sizeof(u32) + v->v.text.len;
+        {
+            /* In-memory layout: [u32 content_len][data...] — disk format is identical. */
+            u32 len = 0;
+            memcpy(&len, DatumGetPointer(d), 4);
+            return (usize)4 + len;
+        }
         default:
             return 0;
     }
 }
 
-static usize compute_tuple_size(const HeapTuple* tuple)
+static usize compute_tuple_size(const TableSchema* schema, const Datum* vals)
 {
-    usize size = sizeof(TupleHdr) + tuple->ncols * sizeof(TupleVal);
-    for (usize i = 0; i < tuple->ncols; i++)
+    usize size = sizeof(TupleHdr);
+    for (u16 i = 0; i < schema->ncols; i++)
     {
-        size += compute_col_size(&tuple->cols[i]);
+        // if (null_bits & ((u64)1 << i)) continue;
+        if (!vals) continue;
+        size += compute_col_size(schema->cols[i], vals[i]);
     }
     return size;
 }
 
 /** Serialize tuple directly into dest (must have compute_tuple_size bytes available). */
-static void serialize_tuple_into(u8* dest, const HeapTuple* tuple)
+static void serialize_tuple_into(u8* dst, const TupleHdr* hdr, const TableSchema* schema,
+                                 const Datum* vals)
 {
-    u8* p = dest;
-    memcpy(p, &tuple->hdr, sizeof(TupleHdr));
-    p += sizeof(TupleHdr);
-
-    for (u16 i = 0; i < tuple->ncols; i++)
+    memcpy(dst, hdr, sizeof(TupleHdr));
+    u8* p = dst + sizeof(TupleHdr);
+    for (u16 i = 0; i < schema->ncols; i++)
     {
-        if (tuple->hdr.null_bits & (1u << i)) continue;
-        p = write_col(p, &tuple->cols[i]);
+        if (hdr->null_bits & ((u64)1 << i)) continue;
+        if (!vals) continue;
+        p = wirte_col(p, schema->cols[i], vals[i]);
     }
 }
 
@@ -251,7 +430,7 @@ static void heapStore_page_compact(u8* page)
     for (usize i = 0; i < n_slots; i++)
     {
         TupleSlotId* sl = &heapStore_slots(page)[i];
-        if (sl->lp_len == 0) continue;  /* LP_UNUSED: skip */
+        if (sl->lp_len == 0) continue; /* LP_UNUSED: skip */
 
         u16 tup_len = sl->lp_len;
         new_upper -= tup_len;
@@ -266,9 +445,18 @@ static void heapStore_page_compact(u8* page)
     *heapStore_pd_upper(page) = new_upper;
 }
 
-static ItemPtr heapStore_reuse_slot(HeapStore* store, ItemPtr ctid, HeapTuple* tuple)
+/* Forward declaration — defined later in this file. */
+static BlockSegment* heapStore_find_seg_by_block(const HeapStore* store, block_id_t block_id);
+
+static TxnId rs_alloc_xid(HeapStore* store)
 {
-    BlockSegment* seg = rs_find_seg_by_block(store, item_ptr_block_id(ctid));
+    return ++store->next_txn_id;
+}
+
+static ItemPtr heapStore_reuse_slot(HeapStore* store, ItemPtr ctid, TupleHdr* hdr,
+                                    const Datum* vals)
+{
+    BlockSegment* seg = heapStore_find_seg_by_block(store, item_ptr_block_id(ctid));
     if (!seg) return INVALID_ITEM_PTR;
 
     u16 slot_idx = item_ptr_slot(ctid);
@@ -276,29 +464,29 @@ static ItemPtr heapStore_reuse_slot(HeapStore* store, ItemPtr ctid, HeapTuple* t
     if ((usize)slot_idx >= seg->base.count) return INVALID_ITEM_PTR;
 
     TupleSlotId* sl = &heapStore_slots(page)[slot_idx];
-    if (sl->lp_len != 0) return INVALID_ITEM_PTR;  /* not LP_UNUSED: safety check */
+    if (sl->lp_len != 0) return INVALID_ITEM_PTR; /* not LP_UNUSED: safety check */
 
-    usize ser_size = compute_tuple_size(tuple);
+    usize ser_size = compute_tuple_size(store->schema, vals);
     assert(ser_size <= HS_MAX_TUPLE_SIZE);
 
     /* No new slot entry needed (the slot already exists in the array).
      * We only need ser_size bytes of tuple space from free space. */
     if ((usize)heapStore_free_space(page) < ser_size)
     {
-        heapStore_page_compact(page);  /* reclaim dead bytes above pd_upper */
+        heapStore_page_compact(page); /* reclaim dead bytes above pd_upper */
         if ((usize)heapStore_free_space(page) < ser_size)
-            return INVALID_ITEM_PTR;  /* page is genuinely full even after compaction */
+            return INVALID_ITEM_PTR; /* page is genuinely full even after compaction */
     }
 
     /* Stamp physical ctid: (block_id, slot_idx) — unchanged within the same page. */
-    tuple->hdr.t_ctid = make_item_ptr(seg->block_id, slot_idx);
+    hdr->t_ctid = make_item_ptr(seg->block_id, slot_idx);
 
     /* Carve tuple space from pd_upper downward. */
     *heapStore_pd_upper(page) -= (u16)ser_size;
     u16 tup_off = *heapStore_pd_upper(page);
 
     /* Serialize directly into the page — zero-copy. */
-    serialize_tuple_into(page + tup_off, tuple);
+    serialize_tuple_into(page + tup_off, hdr, store->schema, vals);
 
     /* Reactivate the slot entry. */
     sl->lp_off = tup_off;
@@ -331,18 +519,18 @@ static u8* heapStore_page_reserve_slot(u8* page, u16 len, u16* out_slot_idx)
     return page + tup_off;
 }
 
-static ItemPtr heapStore_append_tuple(HeapStore* store, HeapTuple* tuple)
+static ItemPtr heapStore_append_tuple(HeapStore* store, TupleHdr* hdr, const Datum* vals)
 {
     /* 1. Compute serialized size first (t_ctid not yet stamped, but TupleHdr
      *    size is fixed — ctid doesn't affect total tuple size). */
-    usize ser_size = compute_tuple_size(tuple);
+    usize ser_size = compute_tuple_size(store->schema, vals);
     assert(ser_size <= HS_MAX_TUPLE_SIZE && "tuple too large for one page");
 
     /* 2. Find current page; create a new one if it won't fit. */
     BlockSegment* seg = (BlockSegment*)segmentTree_get_last_segment(&store->tree);
     u8* page = (u8*)segment_get_data(seg);
 
-    if (rs_free_space(page) < (u16)(HS_SLOT_SIZE + ser_size))
+    if (heapStore_free_space(page) < (u16)(HS_SLOT_SIZE + ser_size))
     {
         /* Compute start for new segment from last segment. */
         usize new_start = seg->base.start + seg->base.count;
@@ -357,13 +545,13 @@ static ItemPtr heapStore_append_tuple(HeapStore* store, HeapTuple* tuple)
         }
         else
         {
-            bid = (block_id_t)store->page_count;  /* sequential local fallback */
+            bid = (block_id_t)store->page_count; /* sequential local fallback */
         }
         ns->block_id = bid;
         ns->block = Block_create(bid);
 
         page = (u8*)segment_get_data(ns);
-        rs_page_init(page);
+        heapStore_page_init(page);
         segmentTree_append_segment(&store->tree, (SegmentBase*)ns);
         seg = ns;
         store->page_count++;
@@ -374,16 +562,16 @@ static ItemPtr heapStore_append_tuple(HeapStore* store, HeapTuple* tuple)
 
     /* 4. Stamp ctid using the segment's real disk block_id. */
     block_id_t block_id = seg->block_id;
-    tuple->hdr.t_ctid = make_item_ptr(block_id, slot_idx);
+    hdr->t_ctid = make_item_ptr(block_id, slot_idx);
 
     /* 5. Reserve page slot and serialize directly into it (zero intermediate buffer). */
     u16 actual_slot;
     u8* dest = heapStore_page_reserve_slot(page, (u16)ser_size, &actual_slot);
-    assert(actual_slot == slot_idx);  /* must match pre-computed slot */
-    serialize_tuple_into(dest, tuple);
+    assert(actual_slot == slot_idx); /* must match pre-computed slot */
+    serialize_tuple_into(dest, hdr, store->schema, vals);
 
     seg->base.count++;
-    return tuple->hdr.t_ctid;
+    return hdr->t_ctid;
 }
 
 //   地址 0
@@ -410,12 +598,16 @@ static ItemPtr heapStore_append_tuple(HeapStore* store, HeapTuple* tuple)
 //   └──────────────────────────────────────────┘ offset=8192
 
 //   ---
-ItemPtr heapStore_insert(HeapStore* store, HeapTuple* tuple)
+ItemPtr heapStore_insert(HeapStore* store, TxnId xid, ItemPtr emb_ctid, const Datum* values,
+                         u64 null_bits)
 {
-    TxnId txn_id = store->next_txn_id++;
-    tuple->hdr.t_xmin = txn_id;
-    tuple->hdr.t_xmax = INVALID_TXN_ID;
-   // tuple->row_id = row_id;
+    TupleHdr hdr;
+    memset(&hdr, 0, sizeof(hdr));
+    hdr.t_xmin = xid ? xid : rs_alloc_xid(store);
+    hdr.t_xmax = INVALID_TXN_ID;
+    hdr.t_emb_ctid = emb_ctid;
+    hdr.null_bits = null_bits;
+    // tuple->row_id = row_id;
     ItemPtr ctid = INVALID_ITEM_PTR;
 
     if (store->hint_free_seg != NULL)
@@ -430,10 +622,10 @@ ItemPtr heapStore_insert(HeapStore* store, HeapTuple* tuple)
                 usize n_slots = (*heapStore_pd_lower(page) - HS_BLOCK_HDR_SIZE) / HS_SLOT_SIZE;
                 for (usize i = 0; i < n_slots; i++)
                 {
-                    if (heapStore_slots(page)[i].lp_len != 0) continue;  /* not LP_UNUSED */
+                    if (heapStore_slots(page)[i].lp_len != 0) continue; /* not LP_UNUSED */
 
                     ItemPtr free_ctid = make_item_ptr(scan->block_id, (u16)i);
-                    ItemPtr ctid = heapStore_reuse_slot(store, free_ctid, tuple);
+                    ItemPtr ctid = heapStore_reuse_slot(store, free_ctid, &hdr, values);
                     if (item_ptr_is_valid(ctid))
                     {
                         break;
@@ -446,12 +638,13 @@ ItemPtr heapStore_insert(HeapStore* store, HeapTuple* tuple)
             scan = (BlockSegment*)scan->base.next;
         }
         if (!item_ptr_is_valid(ctid))
-            store->hint_free_seg = NULL;  /* no free pages remain; reset hint */
+            store->hint_free_seg = NULL; /* no free pages remain; reset hint */
     }
     if (!item_ptr_is_valid(ctid))
     {
-        ctid = heapStore_append_tuple(store, tuple);
+        ctid = heapStore_append_tuple(store, &hdr, values);
     }
+    return ctid;
 }
 
 static BlockSegment* heapStore_find_seg_by_block(const HeapStore* store, block_id_t block_id)
@@ -507,42 +700,52 @@ static const u8* read_col_ptr(const u8* src, TupleVal* out)
 
 /**
  * Deserialize one tuple from a contiguous memory pointer.
- * out->cols is heap-allocated; call row_tuple_free(out, schema) when done.
+ * out->cols is heap-allocated (Datum[]); call row_tuple_free(out, schema) when done.
  */
-static bool deserialize_tuple_from_ptr(const u8* p, TableSchema* schema, HeapTuple* out)
+static bool deserialize_tuple_from_ptr(const u8* p, const TableSchema* schema, HeapTuple* out)
 {
     memcpy(&out->hdr, p, sizeof(TupleHdr));
     p += sizeof(TupleHdr);
 
     out->ncols = schema->ncols;
-    out->cols = (TupleVal*)calloc(schema->ncols, sizeof(TupleVal));
+    if (schema->ncols == 0)
+    {
+        out->cols = NULL;
+        return true;
+    }
+    out->cols = (Datum*)calloc(schema->ncols, sizeof(Datum));
     if (!out->cols) return false;
 
-    for (u16 i = 0; i < schema->ncols; i++)
+    if (heapStore_deform_all(p, schema, out->hdr.null_bits, out->cols) != 0)
     {
-        if (out->hdr.null_bits & (1u << i))
-        {
-            out->cols[i].type = TUPLE_COL_NULL;
-            continue;
-        }
-        p = read_col_ptr(p, &out->cols[i]);
-        if (!p)
-        {
-            for (u16 j = 0; j < i; j++)
-            {
-                TupleVal* v = &out->cols[j];
-                if (v->type == TUPLE_COL_TEXT) free(v->v.text.ptr);
-            }
-            free(out->cols);
-            out->cols = NULL;
-            out->ncols = 0;
-            return false;
-        }
+        free(out->cols);
+        out->cols = NULL;
+        return false;
     }
     return true;
 }
 
-int heapStore_get_by_ctid(HeapStore* store, TableSchema* schema, ItemPtr ctid, HeapTuple* out)
+/**
+ * Free heap-allocated column data in a HeapTuple (varlena Datums + the cols array itself).
+ */
+static void row_tuple_free(HeapTuple* out, const TableSchema* schema)
+{
+    if (!out->cols) return;
+    for (u16 i = 0; i < out->ncols && i < schema->ncols; i++)
+    {
+        if (out->hdr.null_bits & ((u64)1 << i)) continue;
+        TupleColType ct = schema->cols[i];
+        if (ct == TUPLE_COL_TEXT || ct == TUPLE_COL_JSONB)
+        {
+            void* ptr = DatumGetPointer(out->cols[i]);
+            if (ptr) free(ptr);
+        }
+    }
+    free(out->cols);
+    out->cols = NULL;
+}
+
+int heapStore_get_by_ctid(HeapStore* store, const TableSchema* schema, ItemPtr ctid, HeapTuple* out)
 {
     block_id_t block_id = item_ptr_block_id(ctid);
     u16 slot_idx = item_ptr_slot(ctid);
@@ -604,42 +807,42 @@ static u8* heapStore_lookup_ctid(HeapStore* store, ItemPtr ctid)
     return heapStore_page_get_tuple(page, slot_idx);
 }
 
-TxnId heapStore_update_by_ctid(HeapStore* store, ItemPtr old_ctid, HeapTuple* new_tuple)
-{
-    u8* old_tup = heapStore_lookup_ctid(store, old_ctid);
-    if (!old_tup) return INVALID_TXN_ID;
+// TxnId heapStore_update_by_ctid(HeapStore* store, ItemPtr old_ctid, HeapTuple* new_tuple)
+// {
+//     u8* old_tup = heapStore_lookup_ctid(store, old_ctid);
+//     if (!old_tup) return INVALID_TXN_ID;
 
-    /* Verify old version is alive */
-    TupleHdr old_hdr;
-    memcpy(&old_hdr, old_tup, sizeof(TupleHdr));
-    if (old_hdr.t_xmax != INVALID_TXN_ID) return INVALID_TXN_ID;
+//     /* Verify old version is alive */
+//     TupleHdr old_hdr;
+//     memcpy(&old_hdr, old_tup, sizeof(TupleHdr));
+//     if (old_hdr.t_xmax != INVALID_TXN_ID) return INVALID_TXN_ID;
 
-    TxnId txn_id = store->next_txn_id++;
+//     TxnId txn_id = store->next_txn_id++;
 
-    /* Stamp new-version header (t_ctid set by rs_append_to_store). */
-    new_tuple->hdr.t_xmin = txn_id;
-    new_tuple->hdr.t_xmax = INVALID_TXN_ID;
+//     /* Stamp new-version header (t_ctid set by rs_append_to_store). */
+//     new_tuple->hdr.t_xmin = txn_id;
+//     new_tuple->hdr.t_xmax = INVALID_TXN_ID;
 
-    ItemPtr new_ctid = heapStore_append_tuple(store, new_tuple);
-    /* new_tuple->hdr.t_ctid now holds the physical ctid of the new version. */
-    ItemPtr new_ptr = new_tuple->hdr.t_ctid; /* (new_block_id, new_slot+1) */
+//     ItemPtr new_ctid = heapStore_append_tuple(store, new_tuple);
+//     /* new_tuple->hdr.t_ctid now holds the physical ctid of the new version. */
+//     ItemPtr new_ptr = new_tuple->hdr.t_ctid; /* (new_block_id, new_slot+1) */
 
-    /* Re-lookup defensively: rs_append_to_store may realloc the SegmentTree
-     * node array, but block->data buffers are stable (separate allocations).
-     * The re-lookup is technically unnecessary but guards against future
-     * layout changes that inline block data into the node array. */
-    old_tup = heapStore_lookup_ctid(store, old_ctid);
-    if (old_tup)
-    {
-        memcpy(&old_hdr, old_tup, sizeof(TupleHdr));
-        old_hdr.t_xmax = txn_id;
-        old_hdr.t_ctid = new_ptr; /* forward pointer to new physical location */
-        memcpy(old_tup, &old_hdr, sizeof(TupleHdr));
-    }
+//     /* Re-lookup defensively: rs_append_to_store may realloc the SegmentTree
+//      * node array, but block->data buffers are stable (separate allocations).
+//      * The re-lookup is technically unnecessary but guards against future
+//      * layout changes that inline block data into the node array. */
+//     old_tup = heapStore_lookup_ctid(store, old_ctid);
+//     if (old_tup)
+//     {
+//         memcpy(&old_hdr, old_tup, sizeof(TupleHdr));
+//         old_hdr.t_xmax = txn_id;
+//         old_hdr.t_ctid = new_ptr; /* forward pointer to new physical location */
+//         memcpy(old_tup, &old_hdr, sizeof(TupleHdr));
+//     }
 
-    (void)new_ctid; /* ctid is encoded in new_tuple->hdr.t_ctid for caller */
-    return txn_id;
-}
+//     (void)new_ctid; /* ctid is encoded in new_tuple->hdr.t_ctid for caller */
+//     return txn_id;
+// }
 
 TxnId heapStore_delete_by_ctid(HeapStore* store, ItemPtr ctid)
 {
@@ -657,4 +860,48 @@ TxnId heapStore_delete_by_ctid(HeapStore* store, ItemPtr ctid)
     memcpy(tup, &hdr, sizeof(TupleHdr));
 
     return txn_id;
+}
+
+void heapStoreIter_begin(HeapStoreIter* iter, HeapStore* store)
+{
+    LWLockAcquire(&store->lock, LW_SHARED);
+    iter->store = store;
+    iter->curr_seg = segmentTree_get_root_segment(&store->tree);
+    iter->slot_idx = 0;
+}
+
+const TupleHdr* heapStoreIter_next(HeapStoreIter* iter)
+{
+    while (iter->curr_seg != NULL)
+    {
+        if ((usize)iter->slot_idx >= iter->curr_seg->count)
+        {
+            iter->curr_seg = iter->curr_seg->next;
+            iter->slot_idx = 0;
+            continue;
+        }
+
+        BlockSegment* bseg = (BlockSegment*)iter->curr_seg;
+        u8* page = (u8*)segment_get_data(bseg);
+        u32 slot = iter->slot_idx++;
+
+        TupleSlotId* sl = &heapStore_slots(page)[slot];
+        if (sl->lp_len == 0) continue; /* LP_UNUSED */
+        const TupleHdr* hdr = (const TupleHdr*)heapStore_page_get_tuple(page, (u16)slot);
+        /* Expose tuple length and col_data pointer (PG lp_len style).
+         * col_data points directly into the page buffer — valid while LW_SHARED held. */
+        iter->curr_tup_len = sl->lp_len;
+        iter->curr_col_data = (const u8*)hdr + sizeof(TupleHdr);
+        return hdr;
+    }
+    return NULL;
+}
+
+void heapStoreIter_end(HeapStoreIter* iter)
+{
+    if (iter->store)
+    {
+        LWLockRelease(&iter->store->lock);
+        iter->store = NULL;
+    }
 }
